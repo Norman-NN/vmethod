@@ -12,6 +12,7 @@ export interface Dependencies {
 export class GitHubClient {
   private readonly token: string;
   private pauseUntil = 0;
+  private reserveUse = 0;
   private readonly reserve: number;
   private readonly retries: number;
 
@@ -38,7 +39,8 @@ export class GitHubClient {
     path: string,
     method: "GET" | "POST",
     body?: unknown,
-    accept?: string
+    accept?: string,
+    retry = true
   ): Promise<Response> {
     if (!path.startsWith("/") || path.startsWith("//") || /[\\\r\n]/.test(path)) {
       throw new Error("Invalid GitHub endpoint");
@@ -49,10 +51,12 @@ export class GitHubClient {
     }
     for (let attempt = 0; ; attempt++) {
       const wait = this.pauseUntil - this.deps.now();
-      if (wait > 0) {
+      if (wait > 0 && !this.reserveUse) {
         await this.deps.sleep(wait);
       }
-      this.pauseUntil = 0;
+      if (!this.reserveUse) {
+        this.pauseUntil = 0;
+      }
       let response: Response;
       try {
         response = await this.deps.fetch(url, {
@@ -68,7 +72,7 @@ export class GitHubClient {
           ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         });
       } catch {
-        if (attempt >= this.retries) {
+        if (!retry || attempt >= this.retries) {
           throw new Error("GitHub network request failed (retry limit reached)");
         }
         this.deps.report("GitHub network failure; retrying");
@@ -99,12 +103,12 @@ export class GitHubClient {
         this.deps.report("BUDGET (secondary): honoring retry-after");
         this.pauseUntil = Math.max(this.pauseUntil, this.deps.now() + Math.max(0, delay));
         await response.body?.cancel();
-        if (attempt >= this.retries) {
+        if (!retry || attempt >= this.retries) {
           throw new Error("BUDGET (secondary): retry limit reached");
         }
         continue;
       }
-      if (response.status >= 500 && attempt < this.retries) {
+      if (retry && response.status >= 500 && attempt < this.retries) {
         this.deps.report(`GitHub HTTP ${response.status}; retrying`);
         await response.body?.cancel();
         await this.deps.sleep(1000 * 2 ** attempt);
@@ -117,8 +121,13 @@ export class GitHubClient {
     }
   }
 
-  async rest(path: string, method: "GET" | "POST" = "GET", body?: unknown): Promise<unknown> {
-    const response = await this.request(path, method, body);
+  async rest(
+    path: string,
+    method: "GET" | "POST" = "GET",
+    body?: unknown,
+    retry = true
+  ): Promise<unknown> {
+    const response = await this.request(path, method, body, undefined, retry);
     try {
       return await response.json();
     } catch {
@@ -130,11 +139,20 @@ export class GitHubClient {
     return (await this.request(path, "GET", undefined, "application/vnd.github.diff")).text();
   }
 
-  async graphql(query: string, variables: Record<string, unknown> = {}): Promise<unknown> {
-    const result = (await this.rest("/graphql", "POST", {
-      query,
-      variables,
-    })) as { data?: unknown; errors?: unknown };
+  async graphql(
+    query: string,
+    variables: Record<string, unknown> = {},
+    retry = true
+  ): Promise<unknown> {
+    const result = (await this.rest(
+      "/graphql",
+      "POST",
+      {
+        query,
+        variables,
+      },
+      retry
+    )) as { data?: unknown; errors?: unknown };
     if (result === null || typeof result !== "object" || Array.isArray(result)) {
       throw new Error("GitHub GraphQL: invalid response");
     }
@@ -163,6 +181,19 @@ export class GitHubClient {
       throw new Error("GitHub GraphQL: missing data");
     }
     return result.data;
+  }
+
+  budgetStopped(): boolean {
+    return this.pauseUntil > this.deps.now();
+  }
+
+  async usingReserve<T>(action: () => Promise<T>): Promise<T> {
+    this.reserveUse++;
+    try {
+      return await action();
+    } finally {
+      this.reserveUse--;
+    }
   }
 }
 

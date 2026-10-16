@@ -1,4 +1,22 @@
+import type { BoardStatus, Card, MigrationResult } from "../board/types.js";
+
 export interface Operations {
+  boardStatus: { input: Record<string, never>; output: BoardStatus };
+  boardMigrate: {
+    input: { dryRun?: boolean; steal?: boolean };
+    output: MigrationResult;
+  };
+  boardItem: { input: { itemId: string }; output: Card };
+  boardSet: {
+    input: {
+      itemId: string;
+      field: "Status" | "Estimate" | "Model" | "Progress";
+      value: string | number | null;
+      progress?: string | null;
+    };
+    output: string;
+  };
+  boardArchive: { input: { itemId: string }; output: string };
   read: {
     input: {
       kind: "pr" | "issue" | "comment" | "checks" | "registry";

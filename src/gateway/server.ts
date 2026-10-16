@@ -23,6 +23,7 @@ import {
 import { checkMarkdown, guardClosingKeywords } from "./markdown.js";
 import { inProcess, type Handlers, type Operations, type Transport } from "./transport.js";
 import { isOwnerApproved } from "./approval.js";
+import { BoardService } from "./board.js";
 
 function reference(
   value: string,
@@ -52,6 +53,25 @@ class GatewayServer {
   private readonly digest: Digest;
   // Lazy: local digest reads and refused operations never need credentials.
   private client?: GitHubClient;
+  private boardClient?: BoardService;
+
+  private get board(): BoardService {
+    return (this.boardClient ??= new BoardService(this.config, this.github, this.deps));
+  }
+
+  boardStatus: Handlers["boardStatus"] = async () => this.board.status();
+  boardMigrate: Handlers["boardMigrate"] = async (input) => {
+    if (
+      (input.dryRun !== undefined && typeof input.dryRun !== "boolean") ||
+      (input.steal !== undefined && typeof input.steal !== "boolean")
+    ) {
+      throw new Error("Invalid migration flags");
+    }
+    return this.board.migrate(input);
+  };
+  boardItem: Handlers["boardItem"] = async ({ itemId }) => this.board.item(itemId);
+  boardSet: Handlers["boardSet"] = async (input) => this.board.set(input);
+  boardArchive: Handlers["boardArchive"] = async ({ itemId }) => this.board.archive(itemId);
 
   constructor(
     private root: string,
@@ -465,6 +485,11 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
   const server = new GatewayServer(root, env, deps);
   const config = getConfig(root, env);
   const handlers: Handlers = {
+    boardStatus: server.boardStatus,
+    boardMigrate: server.boardMigrate,
+    boardItem: server.boardItem,
+    boardSet: server.boardSet,
+    boardArchive: server.boardArchive,
     read: server.read,
     post: server.post,
     ghRead: server.ghRead,
@@ -472,6 +497,11 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     ownerApproved: server.ownerApproved,
   };
   const policy = {
+    boardStatus: ["orchestrator"],
+    boardMigrate: ["orchestrator"],
+    boardItem: ["orchestrator"],
+    boardSet: ["orchestrator"],
+    boardArchive: ["orchestrator"],
     read: ["worker", "orchestrator"],
     post: ["worker", "orchestrator"],
     ghRead: ["orchestrator"],
