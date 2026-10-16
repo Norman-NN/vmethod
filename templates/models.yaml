@@ -1,0 +1,4 @@
+- family: sol
+  model: example/replace-me
+  kind: opencode
+  gate: none

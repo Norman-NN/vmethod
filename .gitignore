@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.tmp/
+.worktrees/
+*.tgz
+coverage/
+test/fixtures/consumer/vmethod.yaml
+test/fixtures/consumer/people.yaml
+test/fixtures/consumer/models.yaml
+test/fixtures/consumer/scripts/
+test/fixtures/consumer/.claude/
