@@ -9,6 +9,31 @@ export async function gatewayVerb(
 ): Promise<string> {
   const ctx = context(env);
   switch (verb) {
+    case "board": {
+      const [action, ...flags] = args;
+      if (
+        (action !== "status" && action !== "migrate") ||
+        (action === "status" && flags.length) ||
+        flags.some((flag) => !["--dry-run", "--steal"].includes(flag)) ||
+        new Set(flags).size !== flags.length
+      ) {
+        throw new Error("Usage: vmethod board status|migrate [--dry-run] [--steal]");
+      }
+      return JSON.stringify(
+        action === "status"
+          ? await transport.call("boardStatus", {}, ctx)
+          : await transport.call(
+              "boardMigrate",
+              {
+                dryRun: flags.includes("--dry-run"),
+                steal: flags.includes("--steal"),
+              },
+              ctx
+            ),
+        null,
+        2
+      );
+    }
     case "read": {
       const [kind, ref, option] = args;
       if (

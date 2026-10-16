@@ -115,3 +115,49 @@ Shared boards **expand, then contract** across releases. Contract waits until ev
 repository in `board.repos`, including open tracks and packs, has adopted the
 required version. An ahead but compatible board gives a notice; an incompatible
 board refuses writes while allowing reads. Upgrade instead of bypassing that guard.
+
+Run `npm exec --no -- vmethod board status` to inspect the current version,
+pending migrations and owned-field drift. Preview with `board migrate --dry-run`;
+apply with `board migrate`. These operations require `VMETHOD_ROLE=orchestrator`.
+`--steal` is only for a stale lock (a holder line over one hour old) or an
+orphan. A lock field younger than a minute with no holder line is still being
+acquired: it is refused (`Migration lock being acquired`) and never stealable,
+so a concurrent run cannot mistake an in-flight acquisition for an orphan. A
+lock field with no holder line for a minute or more is an orphan
+(`LOCK ORPHANED (no holder)`), and `--steal` may take it. A lost create
+response never assumes ownership; it reports through the same age rule.
+
+The README's `migrating: N→M by <login> since <time>` window is the authoritative
+quiet signal for watchers. Migrations do not stamp card Progress. A contract's
+explicit `rewrite_progress` may replace a state emoji, preserving the exact suffix.
+Optionally configure `board.announce: owner/repo#123` to post a human-readable
+`[vmethod] board migration N→M` announcement; omitting it is not an error.
+
+### Authoring migrations
+
+Append `board/migrations/NNNN-name.json`; never edit a released migration. Files
+are validated against `schema/board-migration.schema.json`. The package embeds
+the complete ordered list into its single bundle at build time. Its `boardVersion`
+must equal the last migration's version. `0001-baseline.json` is verification-only:
+an unmanaged board must already have the baseline fields to adopt it.
+
+Each file contains `version`, `up`, `expect: { fields, policy: { doneKeeps: 6 } }`
+and optionally `requires` (an exact minimum package version). Field shapes use
+`type: text|number|single_select` and ordered `options` for single selects.
+Operations are objects discriminated by `op`:
+
+- `add_field { field, type, options? }`
+- `add_option { field, option, color?, description? }`
+- `rename_option { field, from, to }`: add the destination and move cards; retain
+  the old option until a contract removes it.
+- `set_option_meta { field, option, color?, description? }`
+- `add_progress_alias { from, to }`: persist the expand alias in the managed block.
+- `rewrite_progress { from, to }`: requires an alias from an earlier migration.
+- `remove_option { field, option }`: refuses an occupied option.
+- `remove_field { field }`
+
+Removal and Progress rewrite operations require `requires`. Contract checks exact
+lockfile pins on each repository's configured base branch and all extant track/pack
+refs, including branches without PRs. Failed adoption releases the lock; a failed
+operation or verification retains it for diagnosis. Budget pauses record the
+operation in `paused at`, release the lock, and report the remaining cards.
