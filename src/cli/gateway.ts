@@ -7,19 +7,7 @@ export async function gatewayVerb(
   args: string[],
   env: NodeJS.ProcessEnv = {},
 ): Promise<string> {
-  const role = env.VMETHOD_ROLE ?? 'worker';
-  if (role !== 'orchestrator' && role !== 'worker')
-    throw new Error('Invalid VMETHOD_ROLE');
-  const task = env.VMETHOD_TASK_PR;
-  if (
-    task !== undefined &&
-    (!/^[1-9]\d*$/.test(task) || !Number.isSafeInteger(Number(task)))
-  )
-    throw new Error('Invalid VMETHOD_TASK_PR');
-  const ctx: CallContext = {
-    role,
-    ...(task === undefined ? {} : { taskPr: Number(task) }),
-  };
+  const ctx = context(env);
   switch (verb) {
     case 'read': {
       const [kind, ref, option] = args;
@@ -51,4 +39,17 @@ export async function gatewayVerb(
     default:
       throw new Error('Unknown gateway verb');
   }
+}
+
+export function context(env: NodeJS.ProcessEnv): CallContext {
+  const role = env.VMETHOD_ROLE ?? 'worker';
+  if (role !== 'orchestrator' && role !== 'worker')
+    throw new Error('Invalid VMETHOD_ROLE');
+  const task = env.VMETHOD_TASK_PR;
+  if (
+    task !== undefined &&
+    (!/^[1-9]\d*$/.test(task) || !Number.isSafeInteger(Number(task)))
+  )
+    throw new Error('Invalid VMETHOD_TASK_PR');
+  return { role, ...(task === undefined ? {} : { taskPr: Number(task) }) };
 }

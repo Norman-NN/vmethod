@@ -2,21 +2,54 @@ import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import packageMetadata from '../../package.json' with { type: 'json' };
 
-export async function checkMarkdown(root: string, text: string): Promise<void> {
-  if (!text.trim() || text.includes('\0'))
+export class MarkdownDependencyError extends Error {}
+
+export async function checkMarkdown(
+  root: string,
+  text: string,
+  requirePeers = false,
+): Promise<void> {
+  const require = createRequire(join(root, 'package.json'));
+  if (requirePeers) {
+    try {
+      require.resolve('jsdom');
+      require.resolve('mermaid');
+    } catch {
+      throw new MarkdownDependencyError(
+        `check-markdown: dependencies missing in ${root}; run HUSKY=0 npm ci there`,
+      );
+    }
+    if (
+      (require('mermaid/package.json') as { version: string }).version !==
+      packageMetadata.peerDependencies.mermaid
+    )
+      throw new MarkdownDependencyError(
+        `mermaid must equal ${packageMetadata.peerDependencies.mermaid}`,
+      );
+  }
+  if ((!requirePeers && !text.trim()) || text.includes('\0'))
     throw new Error('Post must contain nonempty Markdown');
   let fence:
-    | { character: string; length: number; mermaid: boolean; lines: string[] }
+    | {
+        character: string;
+        length: number;
+        mermaid: boolean;
+        lines: string[];
+        line: number;
+      }
     | undefined;
-  const diagrams: string[] = [];
+  const diagrams: { source: string; line: number }[] = [];
+  let lineNumber = 0;
   for (const line of text.split(/\r?\n/)) {
+    lineNumber++;
     const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
     if (!fence && marker) {
       fence = {
         character: marker[1][0],
         length: marker[1].length,
-        mermaid: marker[2].trim() === 'mermaid',
+        mermaid: /^mermaid(?:\s|$)/i.test(marker[2].trim()),
         lines: [],
+        line: lineNumber,
       };
     } else if (
       fence &&
@@ -25,28 +58,41 @@ export async function checkMarkdown(root: string, text: string): Promise<void> {
       marker[1].length >= fence.length &&
       !marker[2].trim()
     ) {
-      if (fence.mermaid) diagrams.push(fence.lines.join('\n'));
+      if (fence.mermaid)
+        diagrams.push({ source: fence.lines.join('\n'), line: fence.line });
       fence = undefined;
     } else if (fence) fence.lines.push(line);
   }
-  if (fence) throw new Error('Markdown has an unclosed code fence');
+  if (fence)
+    throw new Error(
+      requirePeers
+        ? `Unclosed code fence opened at line ${fence.line}`
+        : 'Markdown has an unclosed code fence',
+    );
   if (diagrams.length) {
-    const require = createRequire(join(root, 'package.json'));
     let version: string;
     try {
       version = (require('mermaid/package.json') as { version: string })
         .version;
     } catch {
-      throw new Error(
+      throw new MarkdownDependencyError(
         `Dependency missing: install mermaid@${packageMetadata.peerDependencies.mermaid} and jsdom`,
       );
     }
     if (version !== packageMetadata.peerDependencies.mermaid)
-      throw new Error(
+      throw new MarkdownDependencyError(
         `mermaid must equal ${packageMetadata.peerDependencies.mermaid}`,
       );
     // Resolve only owner-installed peers; no downloading or subprocess rendering.
-    const { JSDOM } = require('jsdom') as {
+    let jsdom: unknown;
+    try {
+      jsdom = require('jsdom');
+    } catch {
+      throw new MarkdownDependencyError(
+        `Dependency missing: install mermaid@${packageMetadata.peerDependencies.mermaid} and jsdom`,
+      );
+    }
+    const { JSDOM } = jsdom as {
       JSDOM: new (html: string) => { window: Window };
     };
     const previous = Object.getOwnPropertyDescriptor(globalThis, 'window');
@@ -74,8 +120,21 @@ export async function checkMarkdown(root: string, text: string): Promise<void> {
         startOnLoad: false,
         securityLevel: 'strict',
       });
-      for (const diagram of diagrams)
-        await mermaidModule.default.parse(diagram);
+      for (const [index, diagram] of diagrams.entries()) {
+        try {
+          await mermaidModule.default.parse(diagram.source);
+        } catch (error) {
+          const detail = error as {
+            message?: string;
+            hash?: { loc?: { first_line?: number } };
+            line?: number;
+          };
+          throw new Error(
+            `Mermaid block ${index + 1} (fence line ${diagram.line}, diagram line ${detail.hash?.loc?.first_line ?? detail.line ?? 1}): ${detail.message ?? String(error)}`,
+            { cause: error },
+          );
+        }
+      }
     } finally {
       if (previous) Object.defineProperty(globalThis, 'window', previous);
       else Reflect.deleteProperty(globalThis, 'window');

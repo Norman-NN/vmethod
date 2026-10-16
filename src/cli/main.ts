@@ -7,6 +7,8 @@ import { init } from '../init.js';
 import { verbs } from '../registry.js';
 import { createGateway } from '../gateway/server.js';
 import { gatewayVerb } from './gateway.js';
+import { workerVerb } from './worker.js';
+import { MarkdownDependencyError } from '../gateway/markdown.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
@@ -20,19 +22,54 @@ try {
     case 'read':
     case 'post':
     case 'gh-read':
-    case 'dropped': {
+    case 'dropped':
+    case 'start-task':
+    case 'read-pr':
+    case 'pr-comment':
+    case 'push':
+    case 'wait-review': {
       const transport = createGateway(root, process.env, {
         fetch,
-        exec: async (file, args) =>
-          (await promisify(execFile)(file, [...args], { timeout: 30000 }))
-            .stdout,
+        exec: async (file, args, options) =>
+          (
+            await promisify(execFile)(file, [...args], {
+              timeout: 30000,
+              ...options,
+            })
+          ).stdout,
         now: Date.now,
         sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
         report: (message) => console.error(message),
       });
-      console.log(await gatewayVerb(transport, verb, args, process.env));
+      const output = [
+        'start-task',
+        'read-pr',
+        'pr-comment',
+        'push',
+        'wait-review',
+      ].includes(verb)
+        ? await workerVerb(transport, root, verb, args, process.env, {
+            exec: async (file, args, options) =>
+              (
+                await promisify(execFile)(file, [...args], {
+                  timeout: 300000,
+                  ...options,
+                })
+              ).stdout,
+            report: (message) => console.error(message),
+          })
+        : await gatewayVerb(transport, verb, args, process.env);
+      if (output) console.log(output);
       break;
     }
+    case 'check-markdown':
+      await workerVerb(undefined, root, verb, args, process.env, {
+        exec: async () => {
+          throw new Error('Unexpected exec');
+        },
+        report: (message) => console.error(message),
+      });
+      break;
     case 'version':
       console.log(
         `vmethod ${__VERSION__}\nboard ${__BOARD_VERSION__}\nNode ${process.version}`,
@@ -81,5 +118,5 @@ try {
   }
 } catch (error) {
   console.error((error as Error).message);
-  process.exitCode = 1;
+  process.exitCode = error instanceof MarkdownDependencyError ? 2 : 1;
 }
