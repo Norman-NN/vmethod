@@ -20,6 +20,7 @@ try {
     case 'read':
     case 'post':
     case 'gh-read':
+    case 'board':
     case 'dropped': {
       const transport = createGateway(root, process.env, {
         fetch,

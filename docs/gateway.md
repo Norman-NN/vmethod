@@ -40,6 +40,8 @@ Names, titles, protocol tags and commit metadata confer no authority.
 - `vmethod post <ref> <file>`
 - `vmethod gh-read <endpoint|file.graphql>`
 - `vmethod dropped [--since <ISO-date>]`
+- `vmethod board status`
+- `vmethod board migrate [--dry-run] [--steal]`
 
 Thread references also accept `org/repo#n` within the configured org. Invoke the
 installed package with `npm exec --no -- vmethod`, never a downloading fallback.
@@ -67,6 +69,15 @@ diagnostic output is fenced as untrusted data, including registry metadata.
 The diagnostic verb is not a generic write transport. New writes belong in named,
 policy-enforcing server operations. Future operations can extend the typed map
 without exposing raw clients to CLI verbs.
+
+Board operations (`boardStatus`, `boardMigrate`, `boardItem`, `boardSet`,
+`boardArchive`) are orchestrator-only on the same transport. Item reads return
+structured Status, Assignee, Estimate, Model and Progress data. `boardSet` accepts
+`{ itemId, field, value, progress? }` for Status, Estimate, Model or Progress;
+`null` clears a field. Status writes require an explicit `progress` value (or
+`null`) and batch both updates in order. Estimates cannot be written on PRs.
+Ordinary writes and archives refuse foreign-repository or draft cards and enforce
+the README compatibility guard; migrations alone act board-wide.
 
 ## Credentials and budget
 

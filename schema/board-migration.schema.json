@@ -1,0 +1,133 @@
+{
+  "$id": "board-migration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "up", "expect"],
+  "properties": {
+    "version": { "type": "integer", "minimum": 1 },
+    "requires": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?$"
+    },
+    "up": { "type": "array", "items": { "$ref": "#/$defs/operation" } },
+    "expect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fields", "policy"],
+      "properties": {
+        "fields": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": { "$ref": "#/$defs/shape" }
+        },
+        "policy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["doneKeeps"],
+          "properties": { "doneKeeps": { "const": 6 } }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "name": { "type": "string", "minLength": 1 },
+    "shape": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "enum": ["text", "number", "single_select"] },
+        "options": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/name" }
+        }
+      },
+      "if": { "properties": { "type": { "const": "single_select" } } },
+      "then": { "properties": { "options": {} }, "required": ["options"] },
+      "else": { "properties": { "options": false } }
+    },
+    "operation": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "field", "type"],
+          "properties": {
+            "op": { "const": "add_field" },
+            "field": { "$ref": "#/$defs/name" },
+            "type": { "enum": ["text", "number", "single_select"] },
+            "options": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": { "$ref": "#/$defs/name" }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "field", "option"],
+          "properties": {
+            "op": { "enum": ["add_option", "set_option_meta"] },
+            "field": { "$ref": "#/$defs/name" },
+            "option": { "$ref": "#/$defs/name" },
+            "color": {
+              "enum": [
+                "GRAY",
+                "BLUE",
+                "GREEN",
+                "YELLOW",
+                "ORANGE",
+                "RED",
+                "PINK",
+                "PURPLE"
+              ]
+            },
+            "description": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "field", "from", "to"],
+          "properties": {
+            "op": { "const": "rename_option" },
+            "field": { "$ref": "#/$defs/name" },
+            "from": { "$ref": "#/$defs/name" },
+            "to": { "$ref": "#/$defs/name" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "from", "to"],
+          "properties": {
+            "op": { "enum": ["add_progress_alias", "rewrite_progress"] },
+            "from": { "$ref": "#/$defs/name" },
+            "to": { "$ref": "#/$defs/name" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "field", "option"],
+          "properties": {
+            "op": { "const": "remove_option" },
+            "field": { "$ref": "#/$defs/name" },
+            "option": { "$ref": "#/$defs/name" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "field"],
+          "properties": {
+            "op": { "const": "remove_field" },
+            "field": { "$ref": "#/$defs/name" }
+          }
+        }
+      ]
+    }
+  }
+}

@@ -1,4 +1,5 @@
 export const verbs = [
+  { name: 'board', stub: 'scripts/agent/board.sh' },
   { name: 'version', stub: 'scripts/agent/version.sh' },
   { name: 'config', stub: 'scripts/agent/config.sh' },
   { name: 'check', stub: 'scripts/agent/check.sh' },
