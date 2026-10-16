@@ -73,16 +73,7 @@
             "field": { "$ref": "#/$defs/name" },
             "option": { "$ref": "#/$defs/name" },
             "color": {
-              "enum": [
-                "GRAY",
-                "BLUE",
-                "GREEN",
-                "YELLOW",
-                "ORANGE",
-                "RED",
-                "PINK",
-                "PURPLE"
-              ]
+              "enum": ["GRAY", "BLUE", "GREEN", "YELLOW", "ORANGE", "RED", "PINK", "PURPLE"]
             },
             "description": { "type": "string" }
           }

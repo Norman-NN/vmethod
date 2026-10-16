@@ -1,11 +1,11 @@
-import { expect } from 'vitest';
-import { Kind, parse } from 'graphql';
-import { BoardService } from '../../src/gateway/board.js';
-import { GitHubClient, type Dependencies } from '../../src/gateway/client.js';
-import { readState, writeState } from '../../src/board/readme.js';
-import { loadMigrations } from '../../src/board/migrations.js';
-import { object, type ObjectData } from '../../src/gateway/people.js';
-import type { Card, Field, Migration, Option } from '../../src/board/types.js';
+import { expect } from "vitest";
+import { Kind, parse } from "graphql";
+import { BoardService } from "../../src/gateway/board.js";
+import { GitHubClient, type Dependencies } from "../../src/gateway/client.js";
+import { readState, writeState } from "../../src/board/readme.js";
+import { loadMigrations } from "../../src/board/migrations.js";
+import { object, type ObjectData } from "../../src/gateway/people.js";
+import type { Card, Field, Migration, Option } from "../../src/board/types.js";
 
 const connection = (nodes: unknown[]) => ({
   nodes,
@@ -17,20 +17,18 @@ export const baseline = loadMigrations()[0];
  * recorded independently of client retries so a caught exception cannot hide one. */
 export class FakeBoard {
   clock = Date.UTC(2026, 9, 16);
-  readme = 'Human notes\n';
-  fields: Field[] = Object.entries(baseline.expect.fields).map(
-    ([name, shape], index) => ({
-      id: `field-${index}`,
+  readme = "Human notes\n";
+  fields: Field[] = Object.entries(baseline.expect.fields).map(([name, shape], index) => ({
+    id: `field-${index}`,
+    name,
+    type: shape.type,
+    options: (shape.options ?? []).map((name, option) => ({
+      id: `option-${index}-${option}`,
       name,
-      type: shape.type,
-      options: (shape.options ?? []).map((name, option) => ({
-        id: `option-${index}-${option}`,
-        name,
-        color: 'GRAY',
-        description: '',
-      })),
-    }),
-  );
+      color: "GRAY",
+      description: "",
+    })),
+  }));
   cards: Card[] = [];
   reports: string[] = [];
   announcements: string[] = [];
@@ -52,26 +50,28 @@ export class FakeBoard {
   editsBeforeReadme = false;
   counter = 0;
   config = {
-    repo: 'example/project',
-    org: 'example',
-    baseBranch: 'dev',
+    repo: "example/project",
+    org: "example",
+    baseBranch: "dev",
     board: {
-      owner: 'example',
+      owner: "example",
       number: 5,
-      repos: ['example/project'] as string[],
+      repos: ["example/project"] as string[],
       announce: undefined as string | undefined,
     },
-    credentials: { githubToken: 'FAKE_TOKEN' },
+    credentials: { githubToken: "FAKE_TOKEN" },
     gateway: { maxRetries: 0 },
   };
   deps: Dependencies = {
     fetch: async (input, init) => {
       const url = new URL(String(input));
-      expect(url.origin).toBe('https://api.github.com');
-      expect(init?.redirect).toBe('error');
+      expect(url.origin).toBe("https://api.github.com");
+      expect(init?.redirect).toBe("error");
       expect(init?.signal).toBeDefined();
-      if (url.pathname !== '/graphql') return this.rest(url, init);
-      expect(init?.method).toBe('POST');
+      if (url.pathname !== "/graphql") {
+        return this.rest(url, init);
+      }
+      expect(init?.method).toBe("POST");
       const payload = JSON.parse(String(init?.body)) as {
         query: string;
         variables: ObjectData;
@@ -82,30 +82,30 @@ export class FakeBoard {
         document.definitions.length !== 1 ||
         definition.kind !== Kind.OPERATION_DEFINITION ||
         !definition.name
-      )
+      ) {
         return this.unknown(payload.query);
+      }
       const name = definition.name.value;
       this.requests.push(name);
-      if (definition.operation === 'mutation') this.mutations.push(name);
+      if (definition.operation === "mutation") {
+        this.mutations.push(name);
+      }
       const variables = payload.variables;
       const arg = object(variables.input);
       let data: ObjectData;
       switch (name) {
-        case 'BoardProject':
-          expect(variables).toEqual({ owner: 'example', number: 5 });
+        case "BoardProject":
+          expect(variables).toEqual({ owner: "example", number: 5 });
           if (this.editsBeforeReadme) {
-            this.readme = this.readme.replace(
-              'Human notes',
-              'Human notes updated',
-            );
+            this.readme = this.readme.replace("Human notes", "Human notes updated");
             this.editsBeforeReadme = false;
           }
           data = {
-            organization: { projectV2: { id: 'project', readme: this.readme } },
+            organization: { projectV2: { id: "project", readme: this.readme } },
           };
           break;
-        case 'BoardFields':
-          expect(variables.id).toBe('project');
+        case "BoardFields":
+          expect(variables.id).toBe("project");
           data = {
             node: {
               fields: this.page(
@@ -113,56 +113,60 @@ export class FakeBoard {
                   ...field,
                   dataType: field.type.toUpperCase(),
                 })),
-                variables.cursor,
+                variables.cursor
               ),
             },
           };
           break;
-        case 'BoardViewer':
-          data = { viewer: { login: 'migrator' } };
+        case "BoardViewer":
+          data = { viewer: { login: "migrator" } };
           break;
-        case 'BoardCreateField': {
-          expect(arg.projectId).toBe('project');
-          if (this.fields.some((field) => field.name === arg.name))
-            return this.error('Name already taken');
+        case "BoardCreateField": {
+          expect(arg.projectId).toBe("project");
+          if (this.fields.some((field) => field.name === arg.name)) {
+            return this.error("Name already taken");
+          }
           const id = `new-${++this.counter}`;
           this.fields.push({
             id,
             name: String(arg.name),
-            type: String(arg.dataType).toLowerCase() as Field['type'],
+            type: String(arg.dataType).toLowerCase() as Field["type"],
             options: Array.isArray(arg.singleSelectOptions)
               ? arg.singleSelectOptions.map(
                   (option, index) =>
                     ({
                       ...object(option),
                       id: `${id}-${index}`,
-                    }) as unknown as Option,
+                    }) as unknown as Option
                 )
               : [],
           });
           if (this.dropCreate) {
             this.dropCreate = false;
-            throw new Error('Lost create response');
+            throw new Error("Lost create response");
           }
           data = { createProjectV2Field: { projectV2Field: { id } } };
           break;
         }
-        case 'BoardReadme':
-          expect(arg.projectId).toBe('project');
+        case "BoardReadme":
+          expect(arg.projectId).toBe("project");
           this.readme = String(arg.readme);
-          data = { updateProjectV2: { projectV2: { id: 'project' } } };
+          data = { updateProjectV2: { projectV2: { id: "project" } } };
           break;
-        case 'BoardDeleteField': {
+        case "BoardDeleteField": {
           const field = this.fields.find((field) => field.id === arg.fieldId);
-          if (!field) return this.error('Field missing');
+          if (!field) {
+            return this.error("Field missing");
+          }
           this.fields = this.fields.filter((entry) => entry !== field);
           data = { deleteProjectV2Field: { deletedFieldId: field.id } };
           break;
         }
-        case 'BoardOptions': {
+        case "BoardOptions": {
           const field = this.fields.find((field) => field.id === arg.fieldId);
-          if (!field || !Array.isArray(arg.singleSelectOptions))
+          if (!field || !Array.isArray(arg.singleSelectOptions)) {
             return this.unknown(payload.query);
+          }
           field.options = arg.singleSelectOptions.map((value) => {
             const option = object(value);
             return {
@@ -174,12 +178,14 @@ export class FakeBoard {
               description: String(option.description),
             };
           });
-          if (this.failExpect) field.options.reverse();
+          if (this.failExpect) {
+            field.options.reverse();
+          }
           data = { updateProjectV2Field: { projectV2Field: { id: field.id } } };
           break;
         }
-        case 'BoardCards':
-          expect(variables.id).toBe('project');
+        case "BoardCards":
+          expect(variables.id).toBe("project");
           data = {
             node: {
               items: this.page(
@@ -189,74 +195,71 @@ export class FakeBoard {
                   content: {
                     __typename: card.kind,
                     repository: card.repo ? { nameWithOwner: card.repo } : null,
-                    assignees: connection(
-                      card.assignees.map((login) => ({ login })),
-                    ),
+                    assignees: connection(card.assignees.map((login) => ({ login }))),
                   },
                 })),
-                variables.cursor,
+                variables.cursor
               ),
             },
           };
           break;
-        case 'BoardItem': {
+        case "BoardItem": {
           const card = this.cards.find((card) => card.id === variables.id);
           data = {
             node: card
               ? {
                   id: card.id,
-                  project: { id: 'project' },
+                  project: { id: "project" },
                   fieldValues: this.values(card),
                   content: {
                     __typename: card.kind,
                     repository: card.repo ? { nameWithOwner: card.repo } : null,
-                    assignees: connection(
-                      card.assignees.map((login) => ({ login })),
-                    ),
+                    assignees: connection(card.assignees.map((login) => ({ login }))),
                   },
                 }
               : null,
           };
           break;
         }
-        case 'BoardValues': {
+        case "BoardValues": {
           const card = this.cards.find((card) => card.id === variables.id);
-          if (!card) return this.unknown(payload.query);
+          if (!card) {
+            return this.unknown(payload.query);
+          }
           data = { node: { fieldValues: this.values(card, variables.cursor) } };
           break;
         }
-        case 'BoardSetCards': {
+        case "BoardSetCards": {
           this.batches++;
           if (this.failMove || this.batches === this.failBatch) {
             this.failMove = false;
-            return this.error('Interrupted move');
+            return this.error("Interrupted move");
           }
           data = {};
           for (const selection of definition.selectionSet.selections) {
             if (
               selection.kind !== Kind.FIELD ||
-              ![
-                'updateProjectV2ItemFieldValue',
-                'clearProjectV2ItemFieldValue',
-              ].includes(selection.name.value)
-            )
+              !["updateProjectV2ItemFieldValue", "clearProjectV2ItemFieldValue"].includes(
+                selection.name.value
+              )
+            ) {
               return this.unknown(payload.query);
+            }
             const alias = selection.alias?.value;
             const input = object(variables[String(alias)]);
-            expect(input.projectId).toBe('project');
+            expect(input.projectId).toBe("project");
             const card = this.cards.find((card) => card.id === input.itemId);
-            const field = this.fields.find(
-              (field) => field.id === input.fieldId,
-            );
-            if (!card || !field) return this.unknown(payload.query);
+            const field = this.fields.find((field) => field.id === input.fieldId);
+            if (!card || !field) {
+              return this.unknown(payload.query);
+            }
             const value = object(input.value);
             card.values[field.name] =
-              selection.name.value === 'clearProjectV2ItemFieldValue'
+              selection.name.value === "clearProjectV2ItemFieldValue"
                 ? null
-                : field.type === 'single_select'
-                  ? (field.options.find(
-                      (option) => option.id === value.singleSelectOptionId,
-                    )?.name ?? null)
+                : field.type === "single_select"
+                  ? (field.options.find((option) => option.id === value.singleSelectOptionId)
+                      ?.name ?? null)
                   : ((value.text ?? value.number) as string | number);
             data[String(alias)] = { projectV2Item: { id: card.id } };
           }
@@ -266,23 +269,23 @@ export class FakeBoard {
           }
           if (this.stealBeforeBump) {
             const state = readState(this.readme);
-            state.lock = 'other-run rival since 2026-10-16T00:00:00.000Z';
+            state.lock = "other-run rival since 2026-10-16T00:00:00.000Z";
             this.readme = writeState(this.readme, state);
           }
           break;
         }
-        case 'BoardArchive': {
-          expect(arg.projectId).toBe('project');
+        case "BoardArchive": {
+          expect(arg.projectId).toBe("project");
           this.cards = this.cards.filter((card) => card.id !== arg.itemId);
           data = { archiveProjectV2Item: { item: { id: arg.itemId } } };
           break;
         }
-        case 'BoardWorkflows':
+        case "BoardWorkflows":
           data = {
             node: {
               workflows: connection([
-                { name: 'Item closed → Done', enabled: true },
-                { name: 'Disabled', enabled: false },
+                { name: "Item closed → Done", enabled: true },
+                { name: "Disabled", enabled: false },
               ]),
             },
           };
@@ -295,15 +298,15 @@ export class FakeBoard {
         {
           headers: this.low
             ? {
-                'x-ratelimit-remaining': '101',
-                'x-ratelimit-reset': String(this.clock / 1000 + 3600),
+                "x-ratelimit-remaining": "101",
+                "x-ratelimit-reset": String(this.clock / 1000 + 3600),
               }
             : {},
-        },
+        }
       );
     },
     exec: async () => {
-      throw new Error('Unexpected exec');
+      throw new Error("Unexpected exec");
     },
     now: () => this.clock,
     sleep: async (ms) => {
@@ -321,8 +324,9 @@ export class FakeBoard {
   }
   private page(values: unknown[], cursor?: unknown) {
     const offset = cursor === null || cursor === undefined ? 0 : Number(cursor);
-    if (!Number.isSafeInteger(offset) || offset < 0)
+    if (!Number.isSafeInteger(offset) || offset < 0) {
       return this.unknown(`cursor ${String(cursor)}`);
+    }
     const end = offset + this.pageSize;
     return {
       nodes: values.slice(offset, end),
@@ -336,14 +340,13 @@ export class FakeBoard {
     return this.page(
       Object.entries(card.values).map(([name, value]) => ({
         field: { name },
-        ...(this.fields.find((field) => field.name === name)?.type ===
-        'single_select'
+        ...(this.fields.find((field) => field.name === name)?.type === "single_select"
           ? { name: value }
-          : typeof value === 'number'
+          : typeof value === "number"
             ? { number: value }
             : { text: value }),
       })),
-      cursor,
+      cursor
     );
   }
   private error(message: string): Response {
@@ -351,60 +354,53 @@ export class FakeBoard {
   }
   private rest(url: URL, init?: RequestInit): Response {
     this.requests.push(url.pathname + url.search);
-    if (
-      init?.method === 'POST' &&
-      url.pathname === '/repos/example/project/issues/9/comments'
-    ) {
-      this.announcements.push(
-        String(object(JSON.parse(String(init.body))).body),
-      );
+    if (init?.method === "POST" && url.pathname === "/repos/example/project/issues/9/comments") {
+      this.announcements.push(String(object(JSON.parse(String(init.body))).body));
       return Response.json({ id: 1 });
     }
-    if (init?.method !== 'GET') return this.unknown(String(url));
+    if (init?.method !== "GET") {
+      return this.unknown(String(url));
+    }
     const repo = /^\/repos\/(example\/[^/]+)$/.exec(url.pathname);
-    if (repo) return Response.json({ default_branch: 'master' });
-    const file = /^\/repos\/(example\/[^/]+)\/contents\/(.+)$/.exec(
-      url.pathname,
-    );
+    if (repo) {
+      return Response.json({ default_branch: "master" });
+    }
+    const file = /^\/repos\/(example\/[^/]+)\/contents\/(.+)$/.exec(url.pathname);
     if (file) {
-      const key = `${file[1]}@${url.searchParams.get('ref')}:${file[2]}`;
+      const key = `${file[1]}@${url.searchParams.get("ref")}:${file[2]}`;
       const content = this.files.get(key);
-      if (content === undefined) return this.unknown(key);
+      if (content === undefined) {
+        return this.unknown(key);
+      }
       return Response.json({
-        encoding: 'base64',
-        content: Buffer.from(content).toString('base64'),
+        encoding: "base64",
+        content: Buffer.from(content).toString("base64"),
       });
     }
-    const refs =
-      /^\/repos\/(example\/[^/]+)\/git\/matching-refs\/heads\/(.+)$/.exec(
-        url.pathname,
-      );
-    if (refs)
+    const refs = /^\/repos\/(example\/[^/]+)\/git\/matching-refs\/heads\/(.+)$/.exec(url.pathname);
+    if (refs) {
       return Response.json(
-        (this.refs.get(`${refs[1]}:${decodeURIComponent(refs[2])}`) ?? []).map(
-          (ref) => ({ ref: `refs/heads/${ref}` }),
-        ),
+        (this.refs.get(`${refs[1]}:${decodeURIComponent(refs[2])}`) ?? []).map((ref) => ({
+          ref: `refs/heads/${ref}`,
+        }))
       );
+    }
     return this.unknown(String(url));
   }
   stamp(version: number, minCompatible = 0): void {
-    this.readme = writeState(
-      'Human notes\n',
-      { version, minCompatible, aliases: {} },
-      true,
-    );
+    this.readme = writeState("Human notes\n", { version, minCompatible, aliases: {} }, true);
   }
-  card(id = 'card', repo = 'example/project'): Card {
+  card(id = "card", repo = "example/project"): Card {
     const card = {
       id,
       repo,
-      kind: 'Issue',
-      assignees: ['owner'],
+      kind: "Issue",
+      assignees: ["owner"],
       values: {
-        Status: 'Backlog',
+        Status: "Backlog",
         Estimate: 13,
-        Model: 'sol',
-        Progress: '🤖👍  🔁1️⃣2️⃣ 🔴 ',
+        Model: "sol",
+        Progress: "🤖👍  🔁1️⃣2️⃣ 🔴 ",
       },
     };
     this.cards.push(card);
@@ -413,10 +409,10 @@ export class FakeBoard {
   service(migrations: Migration[] = [baseline]): BoardService {
     return new BoardService(
       this.config,
-      new GitHubClient(this.config, { FAKE_TOKEN: 'offline' }, this.deps),
+      new GitHubClient(this.config, { FAKE_TOKEN: "offline" }, this.deps),
       this.deps,
       migrations,
-      migrations.length,
+      migrations.length
     );
   }
   done(): void {
@@ -427,14 +423,14 @@ export class FakeBoard {
       `${repo}@${branch}:package-lock.json`,
       JSON.stringify({
         packages: {
-          '': { devDependencies: { '@vworlds/vmethod': version } },
-          'node_modules/@vworlds/vmethod': { version },
+          "": { devDependencies: { "@vworlds/vmethod": version } },
+          "node_modules/@vworlds/vmethod": { version },
         },
-      }),
+      })
     );
     this.files.set(
       `${repo}@master:vmethod.yaml`,
-      'baseBranch: dev\nbranches:\n  trackPrefix: track/\n  packPrefix: pack/\n',
+      "baseBranch: dev\nbranches:\n  trackPrefix: track/\n  packPrefix: pack/\n"
     );
   }
 }
