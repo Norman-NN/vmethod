@@ -94,13 +94,20 @@ export class MigrationRunner {
     const lock = snapshot.fields.find((field) => field.name === lockName);
     if (lock) {
       const since = holderTime(state.lock);
-      const age = this.io.now() - since;
-      const orphan = !Number.isFinite(since);
-      if (!steal || (!orphan && age <= 60 * minute)) {
+      if (Number.isFinite(since) && this.io.now() - since <= 60 * minute) {
+        throw new Error("Migration lock held; stale locks require --steal");
+      }
+      // No holder line (or a stale one): only the field's own age can tell a
+      // live acquirer, whose holder write is still in flight, from an orphan.
+      // A fresh field is never stealable, whatever --steal says.
+      if (this.io.now() - lock.createdAt < minute) {
+        throw new Error("Migration lock being acquired");
+      }
+      if (!steal) {
         throw new Error(
-          orphan
-            ? "LOCK ORPHANED (no holder); use --steal"
-            : "Migration lock held; stale locks require --steal"
+          Number.isFinite(since)
+            ? "Migration lock held; stale locks require --steal"
+            : "LOCK ORPHANED (no holder); use --steal"
         );
       }
       await this.io.deleteField(lock.id);
@@ -112,11 +119,14 @@ export class MigrationRunner {
     } catch {
       snapshot = await this.io.snapshot();
       const current = readState(snapshot.readme);
-      const age = this.io.now() - holderTime(current.lock);
-      if (
-        snapshot.fields.some((field) => field.name === lockName) &&
-        (!Number.isFinite(age) || age > minute)
-      ) {
+      const field = snapshot.fields.find((entry) => entry.name === lockName);
+      if (field && !Number.isFinite(holderTime(current.lock))) {
+        // The same age rule as the pre-check: a fresh field without a holder
+        // may be another run (or this one, if the response was lost) still
+        // acquiring it; an old one is a genuine orphan.
+        if (this.io.now() - field.createdAt < minute) {
+          throw new Error("Migration lock being acquired");
+        }
         throw new Error("LOCK ORPHANED (no holder); use --steal");
       }
       throw new Error("Migration lock not acquired");

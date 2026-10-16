@@ -17,7 +17,7 @@ import { object, type ObjectData } from "./people.js";
 import packageInfo from "../../package.json" with { type: "json" };
 
 const fieldSelection =
-  "... on ProjectV2Field { id name dataType } ... on ProjectV2IterationField { id name dataType } ... on ProjectV2SingleSelectField { id name dataType options { id name color description } }";
+  "... on ProjectV2Field { id name dataType createdAt } ... on ProjectV2IterationField { id name dataType createdAt } ... on ProjectV2SingleSelectField { id name dataType createdAt options { id name color description } }";
 const pageInfo = "pageInfo { hasNextPage endCursor }";
 const contentSelection =
   "content { __typename ... on Issue { repository { nameWithOwner } assignees(first: 100) { nodes { login } } } ... on PullRequest { repository { nameWithOwner } assignees(first: 100) { nodes { login } } } }";
@@ -45,6 +45,14 @@ function fieldType(value: unknown): Field["type"] {
       : value === "SINGLE_SELECT"
         ? "single_select"
         : "other";
+}
+function created(value: unknown): number {
+  // The lock's own age decides orphan status, so a missing creation time
+  // must fail closed rather than guess.
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error("Missing board field creation time");
+  }
+  return value;
 }
 
 export class BoardService implements BoardIO {
@@ -127,6 +135,7 @@ export class BoardService implements BoardIO {
       fields: fields.map((field) => ({
         id: text(field.id),
         name: text(field.name),
+        createdAt: created(field.createdAt),
         type: fieldType(field.dataType),
         options: Array.isArray(field.options)
           ? field.options.map((value) => {

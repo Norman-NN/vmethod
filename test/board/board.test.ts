@@ -167,12 +167,47 @@ test("concurrent acquirers have exactly one winner", async () => {
   expect(readState(board.readme).version).toBe(1);
 });
 
-test("lost create response is not retried or owned; orphan can be stolen immediately", async () => {
+test("a lock still being acquired is refused, never stealable, and orphans after a minute", async () => {
   const board = setup();
-  board.dropCreate = true;
+  // Run A created the field moments ago; its holder write is still in flight.
+  board.fields.push({
+    id: "lock",
+    name: "vmethod-migration-lock",
+    createdAt: board.clock,
+    type: "text",
+    options: [],
+  });
+  await expect(board.service().migrate({})).rejects.toThrow("being acquired");
+  await expect(board.service().migrate({ steal: true })).rejects.toThrow("being acquired");
+  expect(board.mutations).toEqual([]);
+  board.clock += 61000;
   await expect(board.service().migrate({})).rejects.toThrow("LOCK ORPHANED (no holder)");
+  await board.service().migrate({ steal: true });
+  expect(readState(board.readme).version).toBe(1);
+  expect(board.fields.some((field) => field.name === "vmethod-migration-lock")).toBe(false);
+});
+
+test("a concurrent winner between snapshot and create is refused, then orphans after a minute", async () => {
+  const board = setup();
+  board.raceCreate = true;
+  // The pre-check sees no field; the fake injects the winner before the create.
+  await expect(board.service().migrate({})).rejects.toThrow("being acquired");
   expect(board.requests.filter((name) => name === "BoardCreateField")).toHaveLength(1);
   expect(board.mutations).not.toContain("BoardReadme");
+  board.clock += 61000;
+  await expect(board.service().migrate({})).rejects.toThrow("LOCK ORPHANED (no holder)");
+  await board.service().migrate({ steal: true });
+  expect(readState(board.readme).version).toBe(1);
+});
+
+test("lost create response is not retried or owned; the orphan steals after a minute", async () => {
+  const board = setup();
+  board.dropCreate = true;
+  await expect(board.service().migrate({})).rejects.toThrow("being acquired");
+  expect(board.requests.filter((name) => name === "BoardCreateField")).toHaveLength(1);
+  expect(board.mutations).not.toContain("BoardReadme");
+  board.clock += 61000;
+  await expect(board.service().migrate({})).rejects.toThrow("LOCK ORPHANED (no holder)");
   await board.service().migrate({ steal: true });
   expect(readState(board.readme).version).toBe(1);
 });
@@ -182,6 +217,7 @@ test("fresh lock cannot be stolen, stale lock requires explicit steal", async ()
   board.fields.push({
     id: "lock",
     name: "vmethod-migration-lock",
+    createdAt: board.clock,
     type: "text",
     options: [],
   });
@@ -483,6 +519,7 @@ test("all field/option operations replay idempotently and ignore unrelated field
   board.fields.push({
     id: "unowned",
     name: "Unrelated",
+    createdAt: board.clock,
     type: "other",
     options: [],
   });

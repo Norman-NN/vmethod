@@ -21,6 +21,7 @@ export class FakeBoard {
   fields: Field[] = Object.entries(baseline.expect.fields).map(([name, shape], index) => ({
     id: `field-${index}`,
     name,
+    createdAt: Date.UTC(2026, 0, 1),
     type: shape.type,
     options: (shape.options ?? []).map((name, option) => ({
       id: `option-${index}-${option}`,
@@ -39,6 +40,7 @@ export class FakeBoard {
   files = new Map<string, string>();
   refs = new Map<string, string[]>();
   dropCreate = false;
+  raceCreate = false;
   failMove = false;
   failExpect = false;
   budgetAfterBatch = false;
@@ -123,6 +125,18 @@ export class FakeBoard {
           break;
         case "BoardCreateField": {
           expect(arg.projectId).toBe("project");
+          // A concurrent winner lands between this run's snapshot and its
+          // create: the create must then fail with the name taken.
+          if (this.raceCreate) {
+            this.raceCreate = false;
+            this.fields.push({
+              id: `raced-${++this.counter}`,
+              name: String(arg.name),
+              createdAt: this.clock,
+              type: "text",
+              options: [],
+            });
+          }
           if (this.fields.some((field) => field.name === arg.name)) {
             return this.error("Name already taken");
           }
@@ -130,6 +144,7 @@ export class FakeBoard {
           this.fields.push({
             id,
             name: String(arg.name),
+            createdAt: this.clock,
             type: String(arg.dataType).toLowerCase() as Field["type"],
             options: Array.isArray(arg.singleSelectOptions)
               ? arg.singleSelectOptions.map(

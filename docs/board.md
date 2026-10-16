@@ -119,8 +119,13 @@ board refuses writes while allowing reads. Upgrade instead of bypassing that gua
 Run `npm exec --no -- vmethod board status` to inspect the current version,
 pending migrations and owned-field drift. Preview with `board migrate --dry-run`;
 apply with `board migrate`. These operations require `VMETHOD_ROLE=orchestrator`.
-`--steal` is only for a stale lock (over one hour) or an orphan with no holder.
-A lost create response reports `LOCK ORPHANED (no holder)` and never assumes ownership.
+`--steal` is only for a stale lock (a holder line over one hour old) or an
+orphan. A lock field younger than a minute with no holder line is still being
+acquired: it is refused (`Migration lock being acquired`) and never stealable,
+so a concurrent run cannot mistake an in-flight acquisition for an orphan. A
+lock field with no holder line for a minute or more is an orphan
+(`LOCK ORPHANED (no holder)`), and `--steal` may take it. A lost create
+response never assumes ownership; it reports through the same age rule.
 
 The README's `migrating: N→M by <login> since <time>` window is the authoritative
 quiet signal for watchers. Migrations do not stamp card Progress. A contract's

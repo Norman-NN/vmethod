@@ -8,6 +8,7 @@ export interface Option {
 export interface Field {
   id: string;
   name: string;
+  createdAt: number;
   type: FieldType | "other";
   options: Option[];
 }
