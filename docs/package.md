@@ -9,8 +9,8 @@ Run `npm ci` in every worktree, then `npm exec --no -- vmethod <verb>`; never us
 - `init [--dry-run]`: write absent config files and registered compatibility stubs. Only stubs with an exact `# vmethod stub` line can be updated. Config files are never overwritten. Stubs use `VMETHOD_ROOT` first, then git repository discovery; set `VMETHOD_ROOT` for copied build contexts without `.git`. Permission installation remains the owner's responsibility: copy `templates/claude-settings.json` to `.claude/settings.json`.
 
 Template identities and model ids are examples, not real credentials or an authoritative allowlist.
-Configure real values before adoption. Mermaid is optional at install time but `check` requires exactly 12.1.0. jsdom is reserved for future diagram checks.
-The permission template denies `Bash(git push*)`; there is no allowed push path until the push verb arrives in #7/#9.
+Configure real values before adoption. Mermaid is optional at install time but `check` requires exactly 12.1.0. Diagram validation also uses the installed jsdom peer.
+The permission template denies raw `git push` and allows the `push` compatibility stub and local CLI. See [worker commands](gateway.md#worker-commands) for the six worker verbs, their arguments and branch policy.
 
 ## Environment mapping
 
