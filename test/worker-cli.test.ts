@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import {
+  chmodSync,
   copyFileSync,
   existsSync,
   mkdirSync,
@@ -7,7 +8,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { build } from "esbuild";
 import { beforeAll, expect, test } from "vitest";
 import { fixture, validProject } from "./helpers.js";
@@ -26,7 +27,7 @@ beforeAll(async () => {
     format: "esm",
     splitting: false,
     banner: {
-      js: 'import { createRequire as __createRequire } from "node:module"; const require = __createRequire(import.meta.url);',
+      js: '#!/usr/bin/env node\nimport { createRequire as __createRequire } from "node:module";\nconst require = __createRequire(import.meta.url);',
     },
     define: { __VERSION__: '"test-old"', __BOARD_VERSION__: "1" },
   });
@@ -39,7 +40,7 @@ function cliFixture() {
   const run = (args: string[], extra: string[] = [], env: NodeJS.ProcessEnv = {}) =>
     spawnSync(process.execPath, [...extra, cli, ...args], {
       cwd: root,
-      env,
+      env: { VMETHOD_ROOT: root, ...env },
       encoding: "utf8",
       timeout: 5000,
     });
@@ -213,4 +214,69 @@ test("start-task child uses PATH fakes, installs once, and continues old bundled
   expect(failedInstall.status).toBe(1);
   expect(failedInstall.stdout).not.toContain("ready.");
   expect(readFileSync(join(target, "node_modules/.package-lock.sha"), "utf8")).toBe(stamp);
+});
+
+test("stubs run from a nested directory resolve the repository root, never the cwd", () => {
+  const f = cliFixture();
+  peers(f.root);
+  // The stub execs the pinned CLI from the resolved root's node_modules.
+  mkdirSync(join(f.root, "node_modules/.bin"), { recursive: true });
+  copyFileSync(bundle, join(f.root, "node_modules/.bin/vmethod"));
+  chmodSync(join(f.root, "node_modules/.bin/vmethod"), 0o755);
+  const bin = join(f.root, "bin");
+  mkdirSync(bin);
+  writeFileSync(
+    join(bin, "git"),
+    `#!${process.execPath}
+const args = process.argv.slice(2).join(" ");
+if (args === "rev-parse --show-toplevel") {
+  process.stdout.write(${JSON.stringify(f.root)} + "\\n");
+} else if (args === "rev-parse --abbrev-ref HEAD") {
+  process.stdout.write("7-worker-verbs\\n");
+} else {
+  process.exit(1);
+}
+`,
+    { mode: 0o755 }
+  );
+  const nested = join(f.root, "packages/lib/deep");
+  mkdirSync(nested, { recursive: true });
+  const stub = (name: string, args: string[], env: NodeJS.ProcessEnv) =>
+    spawnSync("/bin/sh", [join(f.root, "scripts/agent", name), ...args], {
+      cwd: nested,
+      env,
+      encoding: "utf8",
+      timeout: 10000,
+    });
+
+  // Git discovery: both the stub and the CLI resolve the root via git,
+  // with no VMETHOD_ROOT set, from a directory far below the root.
+  const gitEnv = {
+    PATH: `${bin}:${dirname(process.execPath)}`,
+    VMETHOD_TASK_PR: "3",
+  };
+  const push = stub("push.sh", [], gitEnv);
+  expect(push.status, push.stderr).toBe(1);
+  expect(push.stderr).toContain("Missing configured GitHub token environment variable");
+  expect(push.stderr).not.toContain("ENOENT");
+  const config = stub("config.sh", ["get", "repo"], gitEnv);
+  expect(config.status, config.stderr).toBe(0);
+  expect(config.stdout).toBe("example/project\n");
+  writeFileSync(join(nested, "body.md"), "# Ordinary GFM\n");
+  expect(stub("check-markdown.sh", ["body.md"], gitEnv).status).toBe(0);
+  writeFileSync(join(nested, "body.md"), "```\nunclosed");
+  const fence = stub("check-markdown.sh", ["body.md"], gitEnv);
+  expect(fence.status).toBe(1);
+  expect(fence.stderr).toContain("Unclosed code fence opened at line 1");
+
+  // VMETHOD_ROOT when git is unavailable: only Node is on PATH.
+  const nodeOnly = join(f.root, "node-only");
+  mkdirSync(nodeOnly);
+  symlinkSync(process.execPath, join(nodeOnly, "node"));
+  const fallback = stub("config.sh", ["get", "repo"], {
+    PATH: nodeOnly,
+    VMETHOD_ROOT: f.root,
+  });
+  expect(fallback.status, fallback.stderr).toBe(0);
+  expect(fallback.stdout).toBe("example/project\n");
 });

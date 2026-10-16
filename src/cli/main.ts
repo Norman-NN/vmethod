@@ -9,14 +9,33 @@ import { createGateway } from "../gateway/server.js";
 import { gatewayVerb } from "./gateway.js";
 import { workerVerb } from "./worker.js";
 import { MarkdownDependencyError } from "../gateway/markdown.js";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 
 declare const __VERSION__: string;
 declare const __BOARD_VERSION__: number;
 
 const [verb, ...args] = process.argv.slice(2);
-const root = process.cwd();
+
+// Resolved once per run, exactly like the stubs: VMETHOD_ROOT first, then git
+// discovery. The cwd is never the root, so commands work from subdirectories.
+let projectRoot: string | undefined;
+function root(): string {
+  if (projectRoot) {
+    return projectRoot;
+  }
+  if (process.env.VMETHOD_ROOT) {
+    return (projectRoot = resolve(process.env.VMETHOD_ROOT));
+  }
+  try {
+    return (projectRoot = execFileSync("git", ["rev-parse", "--show-toplevel"], {
+      encoding: "utf8",
+      timeout: 5000,
+    }).trim());
+  } catch {
+    throw new Error("vmethod: git could not find a repository; set VMETHOD_ROOT");
+  }
+}
 try {
   switch (verb) {
     case "read":
@@ -28,7 +47,7 @@ try {
     case "pr-comment":
     case "push":
     case "wait-review": {
-      const transport = createGateway(root, process.env, {
+      const transport = createGateway(root(), process.env, {
         fetch,
         exec: async (file, args, options) =>
           (
@@ -42,7 +61,7 @@ try {
         report: (message) => console.error(message),
       });
       const output = ["start-task", "read-pr", "pr-comment", "push", "wait-review"].includes(verb)
-        ? await workerVerb(transport, root, verb, args, process.env, {
+        ? await workerVerb(transport, root(), verb, args, process.env, {
             exec: async (file, args, options) =>
               (
                 await promisify(execFile)(file, [...args], {
@@ -59,7 +78,7 @@ try {
       break;
     }
     case "check-markdown":
-      await workerVerb(undefined, root, verb, args, process.env, {
+      await workerVerb(undefined, root(), verb, args, process.env, {
         exec: async () => {
           throw new Error("Unexpected exec");
         },
@@ -73,7 +92,7 @@ try {
       if (args.length !== 2 || args[0] !== "get") {
         throw new Error("Usage: vmethod config get <key>");
       }
-      const value = configValue(getConfig(root, process.env), args[1]);
+      const value = configValue(getConfig(root(), process.env), args[1]);
       console.log(typeof value === "object" ? stringify(value).trimEnd() : String(value));
       break;
     }
@@ -81,7 +100,7 @@ try {
       if (args.length) {
         throw new Error("Usage: vmethod check (offline)");
       }
-      const result = check(root, process.env);
+      const result = check(root(), process.env);
       console.log(result.messages.length ? result.messages.join("\n") : "vmethod check: ok");
       process.exitCode = result.code;
       break;
@@ -92,7 +111,7 @@ try {
       }
       const templates = resolve(dirname(fileURLToPath(import.meta.url)), "../templates");
       console.log(
-        init(root, templates, args.includes("--dry-run")).join("\n") || "Already initialized"
+        init(root(), templates, args.includes("--dry-run")).join("\n") || "Already initialized"
       );
       console.log(
         "Owner: install templates/claude-settings.json from @vworlds/vmethod as .claude/settings.json."
