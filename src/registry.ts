@@ -1,23 +1,24 @@
 export const verbs = [
-  { name: 'version', stub: 'scripts/agent/version.sh' },
-  { name: 'config', stub: 'scripts/agent/config.sh' },
-  { name: 'check', stub: 'scripts/agent/check.sh' },
-  { name: 'init', stub: 'scripts/agent/init.sh' },
-  { name: 'read', stub: 'scripts/agent/read.sh' },
-  { name: 'post', stub: 'scripts/agent/post.sh' },
-  { name: 'gh-read', stub: 'scripts/agent/gh-read.sh' },
-  { name: 'dropped', stub: 'scripts/agent/dropped.sh' },
-  { name: 'start-task', stub: 'scripts/agent/start-task.sh' },
-  { name: 'read-pr', stub: 'scripts/agent/read-pr.sh' },
-  { name: 'pr-comment', stub: 'scripts/agent/pr-comment.sh' },
-  { name: 'push', stub: 'scripts/agent/push.sh' },
-  { name: 'wait-review', stub: 'scripts/agent/wait-review.sh' },
-  { name: 'check-markdown', stub: 'scripts/agent/check-markdown.sh' },
+  { name: "version", stub: "scripts/agent/version.sh" },
+  { name: "config", stub: "scripts/agent/config.sh" },
+  { name: "check", stub: "scripts/agent/check.sh" },
+  { name: "init", stub: "scripts/agent/init.sh" },
+  { name: "read", stub: "scripts/agent/read.sh" },
+  { name: "post", stub: "scripts/agent/post.sh" },
+  { name: "gh-read", stub: "scripts/agent/gh-read.sh" },
+  { name: "dropped", stub: "scripts/agent/dropped.sh" },
+  { name: "start-task", stub: "scripts/agent/start-task.sh" },
+  { name: "read-pr", stub: "scripts/agent/read-pr.sh" },
+  { name: "pr-comment", stub: "scripts/agent/pr-comment.sh" },
+  { name: "push", stub: "scripts/agent/push.sh" },
+  { name: "wait-review", stub: "scripts/agent/wait-review.sh" },
+  { name: "check-markdown", stub: "scripts/agent/check-markdown.sh" },
 ] as const;
 
 export function stub(verb: string): string {
-  if (!/^[a-z][a-z-]*( [a-z][a-z-]*)*$/.test(verb))
-    throw new Error('Unsafe registered verb');
+  if (!/^[a-z][a-z-]*( [a-z][a-z-]*)*$/.test(verb)) {
+    throw new Error("Unsafe registered verb");
+  }
   return `#!/bin/sh
 # vmethod stub
 root=\${VMETHOD_ROOT:-}
