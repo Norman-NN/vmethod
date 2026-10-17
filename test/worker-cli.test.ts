@@ -15,6 +15,7 @@ import { beforeAll, expect, test } from "vitest";
 import { fixture, validProject } from "./helpers.js";
 import { actor, item, people } from "./gateway/helpers.js";
 import { stringify } from "yaml";
+import { stub } from "../src/registry.js";
 
 const require = createRequire(import.meta.url);
 let bundle: string;
@@ -49,6 +50,54 @@ function cliFixture(timeout = 3000) {
     });
   return { root, cli, run };
 }
+
+test("generated stub uses cached worktree context through the CLI; explicit task PR wins", () => {
+  const f = cliFixture();
+  const bin = join(f.root, "fake-bin");
+  mkdirSync(bin);
+  const git = join(bin, "git");
+  writeFileSync(
+    git,
+    `#!${process.execPath}
+const command = process.argv.slice(2).join(' ');
+const responses = {
+  'rev-parse --git-dir': '.git/worktrees/task',
+  'rev-parse --git-common-dir': '.git',
+  'rev-parse --abbrev-ref HEAD': '64-task',
+  'rev-parse HEAD': '${"a".repeat(40)}',
+};
+if (!(command in responses)) throw new Error('Unexpected git command: ' + command);
+console.log(responses[command]);
+`
+  );
+  chmodSync(git, 0o755);
+  mkdirSync(join(f.root, ".tmp"));
+  writeFileSync(
+    join(f.root, ".tmp", "worker-context.json"),
+    JSON.stringify({ branch: "64-task", head: "a".repeat(40), taskPr: 65 })
+  );
+  mkdirSync(join(f.root, "node_modules", ".bin"), { recursive: true });
+  symlinkSync(f.cli, join(f.root, "node_modules", ".bin", "vmethod"));
+  chmodSync(f.cli, 0o755);
+  // The generated stub delegates inference to the same CLI used by direct invocations.
+  const script = join(f.root, "post.sh");
+  writeFileSync(script, stub("post"));
+  const run = (env: NodeJS.ProcessEnv) =>
+    runChild("/bin/sh", [script, "65", ".tmp/must-not-exist.md"], {
+      cwd: f.root,
+      env: { VMETHOD_ROOT: f.root, PATH: `${bin}:${dirname(process.execPath)}`, ...env },
+      encoding: "utf8",
+      timeout: 3000,
+    });
+  const inferred = run({});
+  expect(inferred.status, inferred.stderr).toBe(1);
+  expect(inferred.stderr).toContain("ENOENT");
+  expect(inferred.stderr).not.toContain("own taskPr");
+  const explicit = run({ VMETHOD_TASK_PR: "90" });
+  expect(explicit.status, explicit.stderr).toBe(1);
+  expect(explicit.stderr).toContain("own taskPr");
+  expect(explicit.stderr).not.toContain("ENOENT");
+}, 10000);
 
 test.each([0, 1, 2, 3])(
   "wait-checks CLI preserves verdict exit %s and prints it last without real networking",

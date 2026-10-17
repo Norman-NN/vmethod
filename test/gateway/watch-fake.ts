@@ -358,6 +358,11 @@ export class WatchFake {
             }
             const content = object(card.content);
             const suffix = match[3];
+            if (!suffix && match[1] === "pulls" && init?.method === "PATCH") {
+              expect(typeof body.body).toBe("string");
+              content.body = body.body;
+              return new Response(JSON.stringify({ number, node_id: content.id, body: body.body }));
+            }
             if (suffix === "comments" && init?.method === "POST") {
               const comment = {
                 user: this.writeActor,
