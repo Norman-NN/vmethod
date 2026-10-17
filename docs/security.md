@@ -76,6 +76,10 @@ the base-code checkout and base-pinned registry rules; label writes happen only
 after submission validation. Setting the environment flag never substitutes for
 the pinned credential identity.
 
+Unpinned-token errors report the viewer's login, numeric database ID and account
+type, using `<missing>` for absent fields. These identity diagnostics contain no
+credential values; use them to investigate pin mismatches without guessing.
+
 Run `check --online` to report each configured GitHub credential's pinned login
 and role. It fails unless `credentials.githubToken` belongs to an orchestrator
 and, when configured, `credentials.workerGithubToken` belongs to a worker.

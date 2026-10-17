@@ -17,11 +17,14 @@ export function claudeCredentialFindings(root: string, env: NodeJS.ProcessEnv): 
 /** Authenticate the configured credential against all three owner-approved identity pins. */
 export async function tokenIdentity(client: GitHubClient, filter: PeopleFilter): Promise<Person> {
   const viewer = object(
-    await client.graphql("query GatewayIdentity { viewer { databaseId login __typename } }")
-  ).viewer;
+    object(await client.graphql("query GatewayIdentity { viewer { databaseId login __typename } }"))
+      .viewer
+  );
   const person = filter.identity(viewer);
   if (!person) {
-    throw new Error("Gateway token refused: identity is not pinned in people.yaml");
+    throw new Error(
+      `Gateway token refused: identity is not pinned in people.yaml: login=${String(viewer.login ?? "<missing>")} databaseId=${String(viewer.databaseId ?? "<missing>")} type=${String(viewer.__typename ?? "<missing>")}`
+    );
   }
   return person;
 }

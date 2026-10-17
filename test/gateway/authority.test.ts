@@ -76,6 +76,34 @@ test.each([
   15000
 );
 
+test.each([
+  [
+    { login: "unknown", databaseId: 999, __typename: "User" },
+    "login=unknown databaseId=999 type=User",
+  ],
+  [
+    { login: "github-actions", __typename: "Bot" },
+    "login=github-actions databaseId=<missing> type=Bot",
+  ],
+  [
+    { login: "github-actions", databaseId: null, __typename: "Bot" },
+    "login=github-actions databaseId=<missing> type=Bot",
+  ],
+  [{ databaseId: 999 }, "login=<missing> databaseId=999 type=<missing>"],
+  [null, "login=<missing> databaseId=<missing> type=<missing>"],
+  [{}, "login=<missing> databaseId=<missing> type=<missing>"],
+] as const)(
+  "unpinned viewer refusal reports only identity fields: %j",
+  async (viewer, fields) => {
+    const f = fixture(viewer);
+    await expect(f.gateway.call("watchMutes", {}, { role: "orchestrator" })).rejects.toThrow(
+      `Gateway token refused: identity is not pinned in people.yaml: ${fields}`
+    );
+    f.done();
+  },
+  15000
+);
+
 test("orchestrator may narrow to worker without a task; viewer is cached across concurrent calls", async () => {
   const f = fixture(actor(2));
   const ctx = { role: "worker" } as const;
