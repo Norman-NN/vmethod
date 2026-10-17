@@ -730,3 +730,8 @@ them. Their test suites are ported as vitest cases.
 7. **No bash stage:** the existing tooling is ported straight to TypeScript (#7).
 8. **No footer** on posts made by vmethod (#4).
 9. **Estimates belong to issues**, set in Backlog and revisable; never on PRs (#15).
+10. **`watch.preview` defaults to off**: wake lines carry metadata only; a project may opt in (chat, 2026-10-17).
+11. **`.claude/settings.json` is installed in vmethod after 1.0 adoption** by vecs and SpaceRocks;
+    direct `gh` stays available until then as an escape hatch for vmethod bugs (#13).
+12. **vmethod 1.0.0 is the first stable interface** (decided by approving the release-prep PR): its fragment is `kind: breaking`
+    so the first rc is `1.0.0-rc.1` rather than `0.1.0-rc.1` (#13).

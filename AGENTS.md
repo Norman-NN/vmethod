@@ -5,8 +5,8 @@ project orchestrators and worker agents use. Projects (e.g. `vworlds/spacerocks`
 `vworlds/vecs`) add a pinned `@vworlds/vmethod` npm devDependency and keep only their project-specific settings
 locally.
 
-> Status: pre-1.0, bootstrapping. The methodology is being gathered in
-> [issue #1](https://github.com/vworlds/vmethod/issues/1). This file grows as it is decided.
+> Status: releasing 1.0 (see [#13](https://github.com/vworlds/vmethod/issues/13)): vecs pilots
+> `1.0.0-rc.N`, then SpaceRocks adopts. The design lives in `docs/architecture.md`.
 
 ## Roles
 
@@ -43,6 +43,10 @@ tools it ships.
 ## Layout
 
 - `docs/architecture.md`: the vmethod design (distribution, config, toolchain, roadmap).
-- `people.tsv`: who the agents may hear from: login, numeric id and role.
-- `src/gateway/events.ts`: the orchestrator's event watcher (`vmethod watch`), filtered
-  through `people.yaml`; replaces the bootstrap watcher.
+- `docs/`: the methodology guides (roles, lifecycle, protocol, gateway, board, learnings).
+- `vmethod.yaml`, `people.yaml`, `models.yaml`: this repo's own configuration (dogfooding).
+  `people.yaml` lists who the agents may hear from (login, numeric id, role); vmethod's copy is
+  also the central registry of orchestrator-to-project bindings for learning submissions.
+- `src/`: the `vmethod` CLI and its gateway, the only code that touches GitHub or credentials.
+- `learnings/`: shared model logs and lessons, updated through `learning` PRs.
+- `templates/`: files consumers copy, including the owner-installed `.claude/settings.json`.

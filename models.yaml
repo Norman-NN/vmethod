@@ -4,38 +4,46 @@
   model: codexbal/gpt-6.1-sol
   kind: opencode
   gate: none
+  fallback: [luna, glm]
 - family: luna
   tier: standard
   model: codexbal/gpt-6-luna
   kind: opencode
   gate: none
+  fallback: [sol, glm]
 - family: astra
   tier: expensive
   model: codexbal/gpt-6-astra
   kind: opencode
   gate: owner
+  fallback: [sol]
 - family: glm
   tier: standard
   model: ollama-cloud/glm-5.3
   kind: opencode
   gate: none
+  fallback: [glm-flash, sol]
 - family: glm-flash
   tier: standard
   model: ollama-cloud/glm-5.3-flash
   kind: opencode
   gate: none
+  fallback: [glm, sol]
 - family: big-pickle
   tier: standard
   model: opencode/big-pickle
   kind: opencode
   gate: none
+  fallback: [sol]
 - family: sonnet
   tier: standard
   model: claude-sonnet-5-5
   kind: claude
   gate: none
+  fallback: [opus]
 - family: opus
   tier: standard
   model: claude-opus-5-5
   kind: claude
   gate: none
+  fallback: [sonnet]
