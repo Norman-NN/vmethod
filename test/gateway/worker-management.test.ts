@@ -11,20 +11,24 @@ import { validProject } from "../helpers.js";
 import { actor, item, people } from "./helpers.js";
 import { WatchFake } from "./watch-fake.js";
 import { gatewayVerb } from "../../src/cli/gateway.js";
+import { getConfig } from "../../src/config.js";
+import { WorkerService, type WorkerHooks } from "../../src/gateway/workers.js";
 
-function fixture() {
+function fixture(prefix?: string, legacy = false) {
   const root = validProject();
-  const directory = join(root, ".worktrees/9-task");
+  const directory = join(root, ".worktrees", `${legacy ? "" : (prefix ?? "")}9-task`);
   mkdirSync(join(directory, "node_modules/.bin"), { recursive: true });
   mkdirSync(join(directory, ".tmp"));
   writeFileSync(join(directory, "node_modules/.bin/vmethod"), "fake", { mode: 0o755 });
   writeFileSync(join(root, "people.yaml"), stringify(people));
   writeFileSync(
     join(root, "vmethod.yaml"),
-    readFileSync(join(root, "vmethod.yaml"), "utf8").replace(
-      "/replace/with/consumer/checkout",
-      root
-    ) + "\ngateway: {maxRetries: 0}\n"
+    readFileSync(join(root, "vmethod.yaml"), "utf8")
+      .replace("/replace/with/consumer/checkout", root)
+      .replace(
+        "branches:",
+        `branches:${prefix === undefined ? "" : `\n  worktreePrefix: ${JSON.stringify(prefix)}`}`
+      ) + "\ngateway: {maxRetries: 0}\n"
   );
   writeFileSync(
     join(root, "models.yaml"),
@@ -80,6 +84,7 @@ function fixture() {
   let viewer = actor(1),
     active = false,
     turnError: unknown;
+  let permissions: unknown[] = [];
   const deps: Dependencies = {
     fetch: async (input, init) => {
       const url = new URL(String(input));
@@ -87,7 +92,7 @@ function fixture() {
       if (url.origin === "https://opencode.invalid") {
         expect(JSON.stringify(init?.headers)).not.toContain("orchestrator-token");
         if (url.pathname === "/api/session" && init?.method === "POST") {
-          return Response.json({ data: { id: "ses_test" } });
+          return Response.json({ data: { id: "ses_test", directory, model: "fake/glm" } });
         }
         if (url.pathname === "/api/session/ses_test/prompt") {
           return Response.json({ data: {} });
@@ -96,10 +101,10 @@ function fixture() {
           return Response.json({ data: active ? { ses_test: {} } : {} });
         }
         if (url.pathname === "/api/session/ses_test") {
-          return Response.json({ data: { id: "ses_test" } });
+          return Response.json({ data: { id: "ses_test", directory, model: "fake/glm" } });
         }
         if (url.pathname === "/api/session/ses_test/permission") {
-          return Response.json({ data: [] });
+          return Response.json({ data: permissions });
         }
         if (url.pathname === "/api/session/ses_test/message") {
           return Response.json({
@@ -253,6 +258,7 @@ function fixture() {
   const ctx = { role: "orchestrator" as const };
   return {
     root,
+    directory,
     pr,
     issue,
     comments,
@@ -269,9 +275,114 @@ function fixture() {
       active = busy;
       turnError = error;
     },
+    setPermission: () => {
+      permissions = [{ id: "permission", type: "shell" }];
+    },
     done: () => expect(unexpected).toEqual([]),
   };
 }
+
+test.each(["auto-", "", "legacy"])(
+  "started workers report each stop once via watch (prefix=%s)",
+  async (prefix) => {
+    for (const state of ["failed", "permission", "idle"] as const) {
+      const f = fixture(prefix === "legacy" ? "auto-" : prefix, prefix === "legacy");
+      const w = new WatchFake();
+      try {
+        w.attachWriter(f);
+        w.config.branches = getConfig(f.root, {}).branches;
+        w.fields.push({
+          id: "F_MODEL",
+          name: "Model",
+          dataType: "SINGLE_SELECT",
+          options: [{ id: "O_glm", name: "glm" }],
+        });
+        w.task();
+        w.pulls[0].number = 31;
+        object(w.pulls[0].head).ref = "9-task";
+        w.issues[1].number = 31;
+        w.cards = [w.card(31, "In progress", "PullRequest")];
+        w.cards[0].id = "CARD31";
+        w.history = [
+          {
+            body: "[orchestrator] ANSWER continue",
+            user: { login: "me", id: 999, type: "User" },
+            created_at: w.iso(),
+            html_url: "https://github.com/example/project/pull/31#issuecomment-1",
+          },
+        ];
+        const unexpected = () => {
+          throw new Error("Unexpected worker hook while reading a recorded session");
+        };
+        const hooks: WorkerHooks = {
+          metadata: unexpected,
+          prepare: unexpected,
+          setModel: unexpected,
+          setEstimate: unexpected,
+          workerIdentity: unexpected,
+          issue: unexpected,
+        };
+        const service = new WorkerService(f.root, getConfig(f.root, {}), f.env, f.deps, hooks);
+        w.workerStatus = (pr) => {
+          expect(pr).toBe(31);
+          return service.watchStatus(pr);
+        };
+        await f.transport.call("worker", { args: ["start", "31"] }, f.ctx);
+        f.setStatus(true);
+        const loop = w.loop();
+        expect(await w.once(loop)).toEqual([]);
+        if (state === "permission") {
+          f.setPermission();
+        } else {
+          f.setStatus(false, state === "failed" ? { message: "scripted failure" } : undefined);
+        }
+        const events = [];
+        for (let i = 0; i < 12; i++) {
+          events.push(...(await w.once(loop)));
+        }
+        expect(events.map((event) => event.kind)).toEqual(["worker"]);
+        expect(events[0].line).toContain(
+          state === "failed"
+            ? "its turn failed"
+            : state === "permission"
+              ? "waits for a permission"
+              : "stopped without reply; send it a nudge"
+        );
+        expect(w.reports).toEqual([]);
+        f.done();
+      } finally {
+        w.done();
+      }
+    }
+  },
+  15000
+);
+
+test.each([
+  ["auto-", false],
+  ["", false],
+  ["auto-", true],
+] as const)(
+  "worker start/adopt/status share directory resolution (prefix=%j legacy=%s)",
+  async (prefix, legacy) => {
+    for (const verb of ["start", "adopt"]) {
+      const f = fixture(prefix, legacy);
+      await f.transport.call(
+        "worker",
+        { args: [verb, "31", ...(verb === "adopt" ? ["ses_test"] : [])] },
+        f.ctx
+      );
+      const record = JSON.parse(
+        readFileSync(join(f.env.XDG_STATE_HOME, "vmethod/example-state/workers/31.json"), "utf8")
+      );
+      expect(record.directory).toBe(f.directory);
+      expect(await f.transport.call("worker", { args: ["status", "31"] }, f.ctx)).toContain(
+        JSON.stringify(f.directory)
+      );
+      f.done();
+    }
+  }
+);
 
 test.each([false, true])(
   "worker start then watch --once (owner=%s)",

@@ -66,10 +66,12 @@
     },
     "branches": {
       "type": "object",
+      "default": {},
       "additionalProperties": false,
       "properties": {
         "taskPattern": { "type": "string" },
         "worktreeRoot": { "type": "string" },
+        "worktreePrefix": { "type": "string", "pattern": "^[^/\\\\\\r\\n]*$", "default": "auto-" },
         "mainCheckout": { "type": "string" },
         "packPrefix": { "type": "string" },
         "trackPrefix": { "type": "string" }

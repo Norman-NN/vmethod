@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { getConfig, loadYaml, type Config } from "../config.js";
+import { workerWorktree } from "./worker-path.js";
 import { GitHubClient, type Dependencies } from "./client.js";
 import { Digest } from "./digest.js";
 import {
@@ -60,12 +61,7 @@ class GatewayServer {
       metadata: (pr) => this.workerMetadata(pr),
       prepare: async (pr) => {
         const task = await this.task({ ref: String(pr) }, { role: "orchestrator" });
-        const branches = object(this.config.branches);
-        const directory = resolve(
-          String(branches.mainCheckout ?? this.root),
-          String(branches.worktreeRoot ?? ".worktrees"),
-          task.branch
-        );
+        const directory = workerWorktree(this.root, this.config, task.branch);
         // Keep dependency installation/dirty-tree guards in the existing preparation path.
         if (!existsSync(directory)) {
           await startTask(
@@ -153,15 +149,7 @@ class GatewayServer {
   workerAccess: Handlers["workerAccess"] = async ({ directory }, ctx) => {
     if (ctx.role === "worker") {
       const task = await this.task({ ref: String(ctx.taskPr) }, ctx);
-      const branches = object(this.config.branches);
-      if (
-        resolve(directory) !==
-        resolve(
-          String(branches.mainCheckout ?? this.root),
-          String(branches.worktreeRoot ?? ".worktrees"),
-          task.branch
-        )
-      ) {
+      if (resolve(directory) !== workerWorktree(this.root, this.config, task.branch)) {
         throw new Error("Worker access requires its own worktree");
       }
     }

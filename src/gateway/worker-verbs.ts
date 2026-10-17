@@ -13,6 +13,7 @@ import { configValue, getConfig } from "../config.js";
 import { checkMarkdown, MarkdownDependencyError } from "../gateway/markdown.js";
 import type { CallContext, Transport } from "../gateway/transport.js";
 import { context } from "./transport.js";
+import { workerWorktree } from "./worker-path.js";
 
 export interface WorkerDependencies {
   exec: (
@@ -131,7 +132,7 @@ export async function startTask(
     branches.mainCheckout ?? root,
     String(configValue(config, "branches.worktreeRoot"))
   );
-  const target = resolve(worktreeRoot, branch);
+  const target = workerWorktree(root, config, branch);
   if (!relative(worktreeRoot, target) || relative(worktreeRoot, target).startsWith(`..${sep}`)) {
     throw new Error("Worktree escapes branches.worktreeRoot");
   }

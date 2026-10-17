@@ -242,113 +242,120 @@ test.each(
   30000
 );
 
-test("start-task child uses PATH fakes, installs once, and continues old bundled code after package replacement", () => {
-  const f = cliFixture(6000);
-  writeFileSync(join(f.root, "people.yaml"), stringify(people));
-  const config = readFileSync(join(f.root, "vmethod.yaml"), "utf8").replace(
-    "mainCheckout: /replace/with/consumer/checkout",
-    `mainCheckout: ${f.root}`
-  );
-  writeFileSync(join(f.root, "vmethod.yaml"), config);
-  const target = join(f.root, ".worktrees/7-task");
-  const bin = join(f.root, "bin");
-  mkdirSync(bin);
-  symlinkSync(process.execPath, join(bin, "node"));
-  const steps = join(f.root, "git-steps.json");
-  const git = [
-    {
-      args: [
-        "-c",
-        "credential.helper=",
-        "-c",
-        'credential.helper=!f() { printf "%s\\n" "username=x-access-token" "password=$VMETHOD_GIT_TOKEN"; }; f',
-        "fetch",
-        "-q",
-        "https://github.com/example/project.git",
-        "+refs/heads/pack/x:refs/remotes/origin/pack/x",
-        "+refs/heads/7-task:refs/remotes/origin/7-task",
-      ],
-    },
-    { args: ["for-each-ref", "--format=%(refname)", "refs/heads/7-task"] },
-    {
-      args: ["worktree", "add", "-b", "7-task", target, "refs/remotes/origin/7-task"],
-      create: true,
-    },
-    { args: ["rev-parse", "--show-toplevel"], output: target },
-    { args: ["rev-parse", "--git-common-dir"], output: join(f.root, ".git") },
-    {
-      args: ["rev-parse", "--git-dir"],
-      output: join(f.root, ".git/worktrees/7-task"),
-    },
-    { args: ["rev-parse", "--abbrev-ref", "HEAD"], output: "7-task\n" },
-    { args: ["status", "--porcelain"] },
-    { args: ["branch", "-q", "--set-upstream-to=origin/7-task"] },
-    { args: ["rev-list", "--count", "origin/pack/x..HEAD"], output: "1" },
-    { args: ["rev-list", "--count", "HEAD..origin/pack/x"], output: "2" },
-  ];
-  writeFileSync(steps, JSON.stringify(git));
-  writeFileSync(
-    join(bin, "git"),
-    `#!${process.execPath}\nimport fs from 'node:fs'; import assert from 'node:assert/strict'; const file=${JSON.stringify(steps)}; const steps=JSON.parse(fs.readFileSync(file)); const step=steps.shift(); assert.ok(step, 'Unexpected git call'); assert.deepEqual(process.argv.slice(2), step.args); fs.writeFileSync(file, JSON.stringify(steps)); if(step.create) { fs.mkdirSync(${JSON.stringify(target)}, {recursive:true}); fs.writeFileSync(${JSON.stringify(join(target, "package-lock.json"))}, 'lock-v1'); } process.stdout.write(step.output ?? '');`,
-    { mode: 0o755 }
-  );
-  const installs = join(f.root, "installs");
-  writeFileSync(
-    join(bin, "npm"),
-    `#!${process.execPath}\nimport fs from 'node:fs'; import assert from 'node:assert/strict'; assert.deepEqual(process.argv.slice(2), ['ci']); assert.equal(process.cwd(), ${JSON.stringify(target)}); assert.equal(process.env.HUSKY,'0'); assert.equal(process.env.EXAMPLE_GITHUB_TOKEN, undefined); fs.appendFileSync(${JSON.stringify(installs)}, 'ci\\n'); fs.writeFileSync(${JSON.stringify(f.cli)}, 'throw new Error("NEW VERSION WAS LOADED");');`,
-    { mode: 0o755 }
-  );
-  const preload = join(f.root, "offline.mjs");
-  const response = {
-    data: {
-      repository: {
-        pullRequest: item({
-          author: actor(1),
-          headRefName: "7-task",
-          baseRefName: "pack/x",
-          state: "OPEN",
-          headRepository: { nameWithOwner: "example/project" },
-        }),
+test.each(["auto-", ""])(
+  "start-task prefix %j uses PATH fakes, installs once, and continues old bundled code after package replacement",
+  (prefix) => {
+    const f = cliFixture(6000);
+    writeFileSync(join(f.root, "people.yaml"), stringify(people));
+    const config = readFileSync(join(f.root, "vmethod.yaml"), "utf8").replace(
+      "mainCheckout: /replace/with/consumer/checkout",
+      `mainCheckout: ${f.root}`
+    );
+    writeFileSync(
+      join(f.root, "vmethod.yaml"),
+      config.replace("branches:", `branches:\n  worktreePrefix: ${JSON.stringify(prefix)}`)
+    );
+    const target = join(f.root, ".worktrees", `${prefix}7-task`);
+    const bin = join(f.root, "bin");
+    mkdirSync(bin);
+    symlinkSync(process.execPath, join(bin, "node"));
+    const steps = join(f.root, "git-steps.json");
+    const git = [
+      {
+        args: [
+          "-c",
+          "credential.helper=",
+          "-c",
+          'credential.helper=!f() { printf "%s\\n" "username=x-access-token" "password=$VMETHOD_GIT_TOKEN"; }; f',
+          "fetch",
+          "-q",
+          "https://github.com/example/project.git",
+          "+refs/heads/pack/x:refs/remotes/origin/pack/x",
+          "+refs/heads/7-task:refs/remotes/origin/7-task",
+        ],
       },
-    },
-  };
-  writeFileSync(
-    preload,
-    `import assert from 'node:assert/strict'; let calls=0; globalThis.fetch=async (url, init) => { assert.equal(String(url),'https://api.github.com/graphql'); assert.equal(++calls,1); const payload=JSON.parse(init.body); assert.equal(payload.variables.number,3); assert.ok(payload.query.includes('headRefName')); return new Response(${JSON.stringify(JSON.stringify(response))}); }; process.on('exit',()=>assert.equal(calls,1));`
-  );
-  const env = {
-    PATH: bin,
-    EXAMPLE_GITHUB_TOKEN: "fake-token",
-    VMETHOD_TASK_PR: "3",
-  };
-  const run = () => f.run(["start-task", "3"], ["--import", preload], env);
-  const first = run();
-  expect(first.status, first.stderr).toBe(0);
-  expect(first.stdout).toContain("ready. Next: scripts/agent/read-pr.sh 3");
-  expect(first.stderr).toContain("branch 7-task keeps its 1 commit(s); 2 behind origin/pack/x");
-  expect(readFileSync(f.cli, "utf8")).toContain("NEW VERSION WAS LOADED");
-  expect(existsSync(join(target, "node_modules/.package-lock.sha"))).toBe(true);
-  expect(readFileSync(steps, "utf8")).toBe("[]");
-  expect(readFileSync(installs, "utf8")).toBe("ci\n");
-  // A subsequent run loads the new version, while the first run completed entirely on the old one.
-  expect(f.run(["version"]).stderr).toContain("NEW VERSION WAS LOADED");
-  copyFileSync(bundle, f.cli);
-  writeFileSync(steps, JSON.stringify([git[0], ...git.slice(3)]));
-  const second = run();
-  expect(second.status, second.stderr).toBe(0);
-  expect(second.stderr).toContain("dependencies already match package-lock.json");
-  expect(readFileSync(installs, "utf8")).toBe("ci\n");
-  const stamp = readFileSync(join(target, "node_modules/.package-lock.sha"), "utf8");
-  writeFileSync(join(target, "package-lock.json"), "lock-v2");
-  writeFileSync(join(bin, "npm"), `#!${process.execPath}\nprocess.exit(7);`, {
-    mode: 0o755,
-  });
-  writeFileSync(steps, JSON.stringify([git[0], ...git.slice(3)]));
-  const failedInstall = run();
-  expect(failedInstall.status).toBe(1);
-  expect(failedInstall.stdout).not.toContain("ready.");
-  expect(readFileSync(join(target, "node_modules/.package-lock.sha"), "utf8")).toBe(stamp);
-}, 15000);
+      { args: ["for-each-ref", "--format=%(refname)", "refs/heads/7-task"] },
+      {
+        args: ["worktree", "add", "-b", "7-task", target, "refs/remotes/origin/7-task"],
+        create: true,
+      },
+      { args: ["rev-parse", "--show-toplevel"], output: target },
+      { args: ["rev-parse", "--git-common-dir"], output: join(f.root, ".git") },
+      {
+        args: ["rev-parse", "--git-dir"],
+        output: join(f.root, ".git/worktrees/7-task"),
+      },
+      { args: ["rev-parse", "--abbrev-ref", "HEAD"], output: "7-task\n" },
+      { args: ["status", "--porcelain"] },
+      { args: ["branch", "-q", "--set-upstream-to=origin/7-task"] },
+      { args: ["rev-list", "--count", "origin/pack/x..HEAD"], output: "1" },
+      { args: ["rev-list", "--count", "HEAD..origin/pack/x"], output: "2" },
+    ];
+    writeFileSync(steps, JSON.stringify(git));
+    writeFileSync(
+      join(bin, "git"),
+      `#!${process.execPath}\nimport fs from 'node:fs'; import assert from 'node:assert/strict'; const file=${JSON.stringify(steps)}; const steps=JSON.parse(fs.readFileSync(file)); const step=steps.shift(); assert.ok(step, 'Unexpected git call'); assert.deepEqual(process.argv.slice(2), step.args); fs.writeFileSync(file, JSON.stringify(steps)); if(step.create) { fs.mkdirSync(${JSON.stringify(target)}, {recursive:true}); fs.writeFileSync(${JSON.stringify(join(target, "package-lock.json"))}, 'lock-v1'); } process.stdout.write(step.output ?? '');`,
+      { mode: 0o755 }
+    );
+    const installs = join(f.root, "installs");
+    writeFileSync(
+      join(bin, "npm"),
+      `#!${process.execPath}\nimport fs from 'node:fs'; import assert from 'node:assert/strict'; assert.deepEqual(process.argv.slice(2), ['ci']); assert.equal(process.cwd(), ${JSON.stringify(target)}); assert.equal(process.env.HUSKY,'0'); assert.equal(process.env.EXAMPLE_GITHUB_TOKEN, undefined); fs.appendFileSync(${JSON.stringify(installs)}, 'ci\\n'); fs.writeFileSync(${JSON.stringify(f.cli)}, 'throw new Error("NEW VERSION WAS LOADED");');`,
+      { mode: 0o755 }
+    );
+    const preload = join(f.root, "offline.mjs");
+    const response = {
+      data: {
+        repository: {
+          pullRequest: item({
+            author: actor(1),
+            headRefName: "7-task",
+            baseRefName: "pack/x",
+            state: "OPEN",
+            headRepository: { nameWithOwner: "example/project" },
+          }),
+        },
+      },
+    };
+    writeFileSync(
+      preload,
+      `import assert from 'node:assert/strict'; let calls=0; globalThis.fetch=async (url, init) => { assert.equal(String(url),'https://api.github.com/graphql'); assert.equal(++calls,1); const payload=JSON.parse(init.body); assert.equal(payload.variables.number,3); assert.ok(payload.query.includes('headRefName')); return new Response(${JSON.stringify(JSON.stringify(response))}); }; process.on('exit',()=>assert.equal(calls,1));`
+    );
+    const env = {
+      PATH: bin,
+      EXAMPLE_GITHUB_TOKEN: "fake-token",
+      VMETHOD_TASK_PR: "3",
+    };
+    const run = () => f.run(["start-task", "3"], ["--import", preload], env);
+    const first = run();
+    expect(first.status, first.stderr).toBe(0);
+    expect(first.stdout).toContain("ready. Next: scripts/agent/read-pr.sh 3");
+    expect(first.stderr).toContain("branch 7-task keeps its 1 commit(s); 2 behind origin/pack/x");
+    expect(readFileSync(f.cli, "utf8")).toContain("NEW VERSION WAS LOADED");
+    expect(existsSync(join(target, "node_modules/.package-lock.sha"))).toBe(true);
+    expect(readFileSync(steps, "utf8")).toBe("[]");
+    expect(readFileSync(installs, "utf8")).toBe("ci\n");
+    // A subsequent run loads the new version, while the first run completed entirely on the old one.
+    expect(f.run(["version"]).stderr).toContain("NEW VERSION WAS LOADED");
+    copyFileSync(bundle, f.cli);
+    writeFileSync(steps, JSON.stringify([git[0], ...git.slice(3)]));
+    const second = run();
+    expect(second.status, second.stderr).toBe(0);
+    expect(second.stderr).toContain("dependencies already match package-lock.json");
+    expect(readFileSync(installs, "utf8")).toBe("ci\n");
+    const stamp = readFileSync(join(target, "node_modules/.package-lock.sha"), "utf8");
+    writeFileSync(join(target, "package-lock.json"), "lock-v2");
+    writeFileSync(join(bin, "npm"), `#!${process.execPath}\nprocess.exit(7);`, {
+      mode: 0o755,
+    });
+    writeFileSync(steps, JSON.stringify([git[0], ...git.slice(3)]));
+    const failedInstall = run();
+    expect(failedInstall.status).toBe(1);
+    expect(failedInstall.stdout).not.toContain("ready.");
+    expect(readFileSync(join(target, "node_modules/.package-lock.sha"), "utf8")).toBe(stamp);
+  },
+  15000
+);
 
 function stubFixture() {
   const f = cliFixture();

@@ -24,6 +24,7 @@ import {
 } from "./client.js";
 import { processes, type ProcessIdentity } from "./claude.js";
 import { object, untrusted } from "./people.js";
+import { workerWorktree } from "./worker-path.js";
 
 interface Model {
   family: string;
@@ -203,6 +204,10 @@ export class WorkerService {
     comments = true,
     deadline?: number
   ): Promise<WorkerSessionStatus> {
+    const directory = workerWorktree(this.root, this.config, { directory: record.directory });
+    if (resolve(directory) !== resolve(record.directory)) {
+      return { reason: "session unknown", active: false };
+    }
     let status: WorkerSessionStatus;
     if (record.model.kind === "claude") {
       if (record.process && this.runtime.alive(record.process)) {
@@ -235,7 +240,7 @@ export class WorkerService {
               : { reason: "session unknown", active: false };
       }
     } else {
-      status = await this.client().status(record.directory, record.id, deadline);
+      status = await this.client().status(directory, record.id, deadline);
     }
     if (status.reason === "idle" && comments) {
       const meta = await this.hooks.metadata(record.pr);

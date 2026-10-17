@@ -347,7 +347,7 @@ export class GitHubClient {
 }
 
 export interface WorkerStatus {
-  state: "permission" | "failed" | "other";
+  state: "permission" | "failed" | "idle" | "other";
   /** What distinguishes this stop (the permission or error); keys the once-per-stop report. */
   detail?: string;
 }
