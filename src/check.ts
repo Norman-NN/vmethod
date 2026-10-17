@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { getConfig, loadYaml } from "./config.js";
 import permissionTemplate from "../templates/claude-settings.json" with { type: "json" };
 import packageMetadata from "../package.json" with { type: "json" };
+import { gitIdentityVariables } from "./gateway/git.js";
 
 const mermaidPin = packageMetadata.peerDependencies.mermaid;
 const secretPattern =
@@ -26,6 +27,15 @@ export function check(
   env: NodeJS.ProcessEnv = {}
 ): { code: number; messages: string[] } {
   const messages: string[] = [];
+  if (env.VMETHOD_ROLE === "orchestrator") {
+    for (const key of gitIdentityVariables) {
+      if (!env[key]?.trim()) {
+        messages.push(
+          `Missing ${key}: set in the orchestrator environment; git config identity is not used`
+        );
+      }
+    }
+  }
   let missing = false;
   for (const kind of ["vmethod", "people", "models"] as const) {
     try {

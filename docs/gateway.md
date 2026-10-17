@@ -126,6 +126,8 @@ live in `scripts/orchestrator/`. Commands are:
 
 ```text
 worker start <pr> [--model family|provider/id] [--owner-approved] [--replace]
+worker adopt <pr> <session-id>
+worker adopt --from-legacy
 worker send <pr> <file> [--queue|--now]
 worker status [pr]
 worker log <pr> [n]
@@ -149,6 +151,22 @@ Missing worktrees use `start-task`; existing worktrees retain uncommitted work,
 but their repository and branch are checked. Task PRs link their issue through
 GitHub's linked issues or an explicit `# Task: … (issue #N)` header. Multiple or
 foreign-repository issue links are refused rather than guessed.
+For the self-hosting `@vworlds/vmethod` package, start runs `npm ci` then
+`npm run build` in the worktree and requires readable `dist/vmethod.mjs` instead
+of a self-installed binary. Consumer projects still require the executable bin.
+
+Adopt records an existing opencode session without creating, prompting, interrupting
+or changing its model. It requires an open task PR, a linked issue, an opening
+Estimate, and a session whose directory matches the verified task worktree. The
+actual session model must match a configured opencode model (or the `other` policy).
+Existing records are never overwritten, including their grading history. Adoption
+does not apply launch gates because it does not start or change the existing model.
+`worker adopt --from-legacy` reads `<pr>.json` files containing
+`{"sessionId":"ses_…"}` (or `{"id":"ses_…"}`) under each `legacyWorkers`
+directory in `$XDG_STATE_HOME` (default `~/.local/state`), with the same `-<track>`
+suffix convention as `legacyState`. Optional `repo` and `pr` fields must match.
+Only successfully verified records are adopted; every adopted or skipped PR is
+reported. Unconfigured directories are never scanned and source files are unchanged.
 
 Capture `<!-- points_open: 8 -->` **when creating the task PR**, using the issue's
 Estimate then; do not revise this snapshot. Legacy prompts can retain their original
@@ -384,7 +402,7 @@ These commands require `VMETHOD_ROLE=orchestrator`:
   posts the protocol header and sets the next actor. Owner review always names the
   full current SHA and marks the draft ready. `approve` posts an orchestrator
   acceptance, **not** owner authority.
-- `merge-task <pr> [--merge-commit]` refuses live/unknown worker sessions, stale
+- `merge-task <pr> [--merge-commit]` refuses live/unknown worker sessions before merging, stale
   approval, untrusted/red/missing CI, unknown/conflicting mergeability and a stale
   tested base. `merge.requireCurrentBase` defaults to true; false allows a
   conflict-free green-head squash onto a moved base. Pack heads require merge
@@ -395,13 +413,19 @@ These commands require `VMETHOD_ROLE=orchestrator`:
 
 The transport operations are `openTask`, `reviewTask`, `mergeTask`, `releaseHold`
 and `workerStatus`; `src/gateway/task-flow-types.ts` and `transport.ts` own their
-signatures. Worker management (#9) must supply `Dependencies.workers.status/resume`
-for opencode and Claude. Until wired, status is unknown and merge/release refuse;
-absence is never interpreted as a stopped worker.
+signatures. The gateway wires worker status, stop and resume to the recorded opencode
+or Claude session. Missing records remain unknown, never interpreted as stopped.
 
 Merge follow-up journals live in the per-user state directory. A partial failure
 resumes board, issue, branch and checkout work without merging again. Already-merged
 owner button merges receive the same follow-up; bad historical titles only warn.
+After a merge, worker shutdown is best-effort and its outcome is reported; live or
+unknown sessions do not block recovery. The remote branch head is then re-read.
+Any commits beyond the merged PR head are reported as
+`post-merge commits on <branch>: <shas>` and the branch is kept for a follow-up PR.
+Otherwise cleanup continues with issue closure, board Done, branch deletion and
+checkout fast-forward. Installation remains last. Unmarked watcher merge events
+name `merged_by` and only suggest follow-up, regardless of who merged.
 Legacy links fall back to GitHub closing references, then Closes/Part-of headers,
 with a `legacy link` notice. Done capping ranks all board repositories but archives
 only this repository's cards after the newest six. Keep the main checkout clean on

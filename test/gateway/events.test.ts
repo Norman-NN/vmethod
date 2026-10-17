@@ -279,9 +279,10 @@ test("CLOSED clears Progress; owner button merges are pending-safe and paced unt
   await f.tick(loop);
   f.advance();
   f.pulls = [];
-  f.gone = { merged: true, user: user(0) };
+  f.gone = { merged: true, user: user(0), merged_by: { login: "vimescmd" } };
   let events = await f.tick(loop);
   expect(events.map((e) => e.kind)).toEqual(["button-merge"]);
+  expect(JSON.stringify(events)).toContain("MERGED by vimescmd: consider merge-task");
   await f.ack(loop, events);
   expect(await f.tick(loop)).toEqual([]);
   f.advance(600_000);

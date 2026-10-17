@@ -561,7 +561,7 @@ export class TaskFlow {
     if (!["OPEN", "MERGED"].includes(String(item.state))) {
       throw new Error("PR is closed without merging");
     }
-    if ((await this.status(ref)) !== "stopped") {
+    if (item.state === "OPEN" && (await this.status(ref)) !== "stopped") {
       throw new Error("Stop the worker before merging (live or unknown session)");
     }
     const head = sha(item.headRefOid),
@@ -646,6 +646,56 @@ export class TaskFlow {
         throw new Error("Merge was refused; re-run to reconcile state");
       }
     }
+    // The merge guard above protects an action, not recovery after a button/API merge.
+    // Stop first, then inspect the remote branch before any destructive cleanup.
+    try {
+      if (!this.deps.workers?.stop) {
+        this.deps.report(`#${ref} worker stop unavailable (session unknown); continuing follow-up`);
+      } else {
+        const outcome = await this.deps.workers.stop(this.number(ref));
+        this.deps.report(`#${ref} worker stop: ${outcome ?? "requested"}`);
+        this.deps.report(`#${ref} worker status after stop: ${await this.status(ref)}`);
+      }
+    } catch {
+      this.deps.report(`#${ref} worker stop failed; continuing follow-up`);
+    }
+    const branchHead = async () => {
+      const data = await this.host.github.rest(
+        `/repos/${this.repo}/git/matching-refs/heads/${encodeURIComponent(branch)}`
+      );
+      if (!Array.isArray(data)) {
+        throw new Error("Missing branch refs");
+      }
+      const ref = data.map(object).find((value) => value.ref === `refs/heads/${branch}`);
+      return ref ? sha(object(ref.object).sha) : undefined;
+    };
+    const preserveBranch = async () => {
+      const current = await branchHead();
+      if (!current || current === head) {
+        return { exists: Boolean(current), preserve: false };
+      }
+      const commits: string[] = [];
+      for (let page = 1; ; page++) {
+        const comparison = object(
+          await this.host.github.rest(
+            `/repos/${this.repo}/compare/${head}...${current}?per_page=100&page=${page}`
+          )
+        );
+        if (!Array.isArray(comparison.commits)) {
+          throw new Error("Missing post-merge commit comparison; branch retained");
+        }
+        commits.push(...comparison.commits.map((commit) => sha(object(commit).sha)));
+        if (comparison.commits.length < 100) {
+          break;
+        }
+      }
+      // Even divergent/force-pushed history must never be deleted.
+      this.deps.report(
+        `post-merge commits on ${branch}: ${[...new Set([...commits, current])].join(" ")}`
+      );
+      return { exists: true, preserve: true };
+    };
+    let keepBranch = (await preserveBranch()).preserve;
     const file = this.stateFile(ref);
     const journal: Journal = existsSync(file)
       ? (JSON.parse(readFileSync(file, "utf8")) as Journal)
@@ -721,14 +771,10 @@ export class TaskFlow {
     });
     if (!pack) {
       await step("branch", async () => {
-        // Read refs first so a replay never mistakes a genuine delete error for success.
-        const data = await this.host.github.rest(
-          `/repos/${this.repo}/git/matching-refs/heads/${encodeURIComponent(branch)}`
-        );
-        if (!Array.isArray(data)) {
-          throw new Error("Missing branch refs");
-        }
-        if (data.some((value) => object(value).ref === `refs/heads/${branch}`)) {
+        // Recheck immediately before delete too: a late push must be preserved.
+        const latest = await preserveBranch();
+        keepBranch = latest.preserve || keepBranch;
+        if (!keepBranch && latest.exists) {
           await this.host.github.rest(
             `/repos/${this.repo}/git/refs/heads/${encodeURIComponent(branch)}`,
             "DELETE"

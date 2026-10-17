@@ -447,7 +447,15 @@ class GatewayServer {
   boardArchive: Handlers["boardArchive"] = async ({ itemId }) => this.board.archive(itemId);
 
   private get flow(): TaskFlow {
-    return new TaskFlow(this.root, this.env, this.config, this.deps, {
+    const deps: Dependencies = {
+      ...this.deps,
+      workers: this.deps.workers ?? {
+        status: (pr) => this.workers.mergeStatus(pr),
+        stop: (pr) => this.workers.command(["stop", String(pr)]),
+        resume: (pr, prompt) => this.workers.resume(pr, prompt),
+      },
+    };
+    return new TaskFlow(this.root, this.env, this.config, deps, {
       github: this.github,
       board: () => this.board,
       people: loadYaml(this.root, "people") as Person[],

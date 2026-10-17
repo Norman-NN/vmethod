@@ -1408,16 +1408,17 @@ export class EventLoop {
       return;
     }
     if (data.merged === true) {
-      // Owner button merge: the watcher stays read-only; the orchestrator runs the follow-up.
+      // Unmarked merge: report the actual merger; never run follow-up from the watcher.
       const attempted = Number(this.readMarker(`merge-attempt-${number}`)) * 1000;
       if (this.host.deps.now() - attempted < BUTTON_RETRY_MS) {
         return;
       }
       const at = Math.floor(this.host.deps.now() / 1000);
+      const merger = str(object(data.merged_by).login);
       this.emit(
         `button-${number}@${at}`,
         "button-merge",
-        `PR #${number} MERGED by owner: run merge-task${this.previewText(person, str(data.title))} ${url}`
+        `PR #${number} MERGED by ${/^[\w-]+$/.test(merger) ? merger : "unknown"}: consider merge-task${this.previewText(person, str(data.title))} ${url}`
       );
       atomicWrite(join(this.dir, `merge-attempt-${number}`), `${at}\n`);
       this.queueProgress(number, { state: null, round: null, ci: "ok" });

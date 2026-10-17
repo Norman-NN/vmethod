@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test, vi } from "vitest";
 import { stringify } from "yaml";
@@ -143,6 +143,101 @@ const start: Request[] = [
     body: { text: "PR description `data`", delivery: "steer" },
   },
 ];
+test("adopt records an existing session without creating or prompting it", async () => {
+  const f = fixture();
+  // The session must belong to the prepared task worktree.
+  f.deps.fetch = vi.fn(async () =>
+    Response.json({
+      data: {
+        id: "ses_existing",
+        directory: f.directory,
+        model: { providerID: "fake", id: "glm" },
+      },
+    })
+  );
+  expect(await f.service.command(["adopt", "31", "ses_existing"])).toContain("Adopted");
+  expect(f.record()).toMatchObject({
+    id: "ses_existing",
+    directory: f.directory,
+    points_open: 8,
+    segments: [{ why: "adopt", model: "fake/glm" }],
+  });
+  expect(f.deps.fetch).toHaveBeenCalledTimes(1);
+  expect(f.hooks.setModel).toHaveBeenCalledWith(31, "glm");
+  await expect(f.service.command(["adopt", "31", "ses_other"])).rejects.toThrow("already recorded");
+});
+
+test.each(["directory", "id", "model"])(
+  "adopt refuses an unverified session %s without persisting",
+  async (field) => {
+    const f = fixture();
+    const session = {
+      id: "ses_existing",
+      directory: f.directory,
+      model: { providerID: "fake", id: "glm" },
+    };
+    const invalid = { ...session, [field]: field === "model" ? {} : "wrong" };
+    f.deps.fetch = vi.fn(async () => Response.json({ data: invalid }));
+    await expect(f.service.command(["adopt", "31", "ses_existing"])).rejects.toThrow();
+    expect(() => f.record()).toThrow();
+    expect(f.hooks.setModel).not.toHaveBeenCalled();
+  }
+);
+
+test("consumer worker start accepts its installed bin without self-build", async () => {
+  const f = fixture([...start]);
+  writeFileSync(join(f.directory, "package.json"), JSON.stringify({ name: "consumer" }));
+  f.deps.exec = vi.fn(async () => {
+    throw new Error("unexpected consumer build");
+  });
+  await expect(f.service.command(["start", "31"])).resolves.toContain("Started");
+  expect(f.deps.exec).not.toHaveBeenCalled();
+  f.done();
+});
+
+test("self-hosted worker start installs and builds before accepting dist binary", async () => {
+  const f = fixture([...start]);
+  rmSync(join(f.directory, "node_modules/.bin/vmethod"));
+  writeFileSync(join(f.directory, "package.json"), JSON.stringify({ name: "@vworlds/vmethod" }));
+  f.deps.exec = vi.fn(async (file, args, options) => {
+    expect(file).toBe("npm");
+    expect(options?.cwd).toBe(f.directory);
+    expect(options?.env).not.toHaveProperty("OPENCODE_SERVER_PASSWORD");
+    if (args.join(" ") === "run build") {
+      mkdirSync(join(f.directory, "dist"));
+      writeFileSync(join(f.directory, "dist/vmethod.mjs"), "built");
+    }
+    return "";
+  });
+  await expect(f.service.command(["start", "31"])).resolves.toContain("Started");
+  expect(vi.mocked(f.deps.exec).mock.calls.map(([file, args]) => [file, args])).toEqual([
+    ["npm", ["ci"]],
+    ["npm", ["run", "build"]],
+  ]);
+  f.done();
+});
+
+test("bulk adoption reads only configured legacy records and reports verified PRs", async () => {
+  const f = fixture();
+  f.config.legacyWorkers = ["old-workers"];
+  const legacy = join(f.env.XDG_STATE_HOME, "old-workers");
+  mkdirSync(legacy, { recursive: true });
+  writeFileSync(join(legacy, "31.json"), JSON.stringify({ sessionId: "ses_existing" }));
+  writeFileSync(join(legacy, "32.json"), JSON.stringify({ sessionId: "ses_wrong" }));
+  f.deps.fetch = vi.fn(async (input) =>
+    Response.json({
+      data: {
+        id: String(input).endsWith("ses_existing") ? "ses_existing" : "ses_wrong",
+        directory: String(input).endsWith("ses_existing") ? f.directory : "/another/repo",
+        model: { providerID: "fake", id: "glm" },
+      },
+    })
+  );
+  const output = await f.service.command(["adopt", "--from-legacy"]);
+  expect(output).toContain("Adopted ses_existing for #31");
+  expect(output).toContain("Skipped #32");
+  expect(f.record().id).toBe("ses_existing");
+});
 function status(active = false, messages: unknown[] = [], permissions: unknown[] = []): Request[] {
   return [
     { path: "/api/session/active", data: active ? { ses_fake: {} } : {} },

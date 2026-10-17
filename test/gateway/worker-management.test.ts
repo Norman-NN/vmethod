@@ -292,6 +292,27 @@ test("gateway dispatches a draft PR and grades its delivery, writing Estimate on
   f.done();
 });
 
+test.each([
+  ["adopt", "31", "ses_test"],
+  ["adopt", "--from-legacy"],
+])("worker role cannot adopt sessions: %j", async (...args) => {
+  const f = fixture();
+  await expect(f.transport.call("worker", { args }, { role: "worker" })).rejects.toThrow();
+  expect(f.requests).toEqual([]);
+});
+
+test("recorded worker status is wired into merge guards without an injected worker backend", async () => {
+  const f = fixture();
+  await f.transport.call("worker", { args: ["start", "31"] }, f.ctx);
+  // workerStatus uses the standard accepted task read path as well as the session record.
+  f.pr.labels = { nodes: [], pageInfo: { hasNextPage: false } };
+  f.setStatus(true);
+  await expect(f.transport.call("workerStatus", { ref: "31" }, f.ctx)).resolves.toBe("live");
+  f.setStatus(false);
+  await expect(f.transport.call("workerStatus", { ref: "31" }, f.ctx)).resolves.toBe("stopped");
+  f.done();
+});
+
 test("gateway filters forged and edited protocol comments before idle-without-reply classification", async () => {
   const f = fixture();
   f.comments.push(

@@ -25,6 +25,14 @@ Adopt the pinned package in one reviewed change without copying shared methodolo
 - [ ] Rename old environment prefixes to `VMETHOD_*`. Use the
       [documented mapping](package.md#environment-mapping); do not assume old names
       remain aliases. Set `board.enabled: false` for intentional offline/fork work.
+- [ ] Set the configured GitHub token variables and `GIT_AUTHOR_NAME`,
+      `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME`, `GIT_COMMITTER_EMAIL` in the
+      orchestrator wrapper environment. Identity kept only in git config is not
+      used. `VMETHOD_ROLE=orchestrator vmethod check` reports missing identities.
+- [ ] Migrate in-flight opencode sessions with `worker adopt <pr> <session-id>`,
+      or configure `legacyWorkers` directory names and run `worker adopt --from-legacy`
+      (see [worker management](gateway.md#worker-management-orchestrator-only)). Review every skipped record;
+      adoption verifies the PR worktree and existing session model, never starts a turn.
 - [ ] Route the consumer's agent entry point with the [routing template](../templates/AGENTS.md).
       Link generic rules from the pinned package, local engineering/domain docs
       from the consumer. Keep any alternate agent entry point linked to the same routing.
