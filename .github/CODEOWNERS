@@ -9,3 +9,9 @@
 /package.json @jpeletier
 /package-lock.json @jpeletier
 /.github/ @jpeletier
+
+# Owner-only configuration and permissions
+/vmethod.yaml @jpeletier
+/people.yaml @jpeletier
+/models.yaml @jpeletier
+/.claude/ @jpeletier
