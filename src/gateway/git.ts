@@ -2,6 +2,13 @@ import { accessSync, constants } from "node:fs";
 import type { Config } from "../config.js";
 import type { Dependencies } from "./client.js";
 
+export const gitIdentityVariables = [
+  "GIT_AUTHOR_NAME",
+  "GIT_AUTHOR_EMAIL",
+  "GIT_COMMITTER_NAME",
+  "GIT_COMMITTER_EMAIL",
+] as const;
+
 /** Server-only git transport. No credentials or subprocess diagnostics cross the seam. */
 export class GitTransport {
   constructor(
@@ -12,6 +19,11 @@ export class GitTransport {
   ) {}
 
   async run(...args: string[]): Promise<string> {
+    if (args[0] === "commit-tree" && gitIdentityVariables.some((key) => !this.env[key]?.trim())) {
+      throw new Error(
+        "set GIT_AUTHOR_NAME/EMAIL in the orchestrator environment (and GIT_COMMITTER_NAME/EMAIL)"
+      );
+    }
     return this.deps.exec("git", args, {
       cwd: this.worktree,
       env: this.localEnvironment(),
@@ -92,7 +104,7 @@ export class GitTransport {
 
   private localEnvironment(): NodeJS.ProcessEnv {
     const env: NodeJS.ProcessEnv = {};
-    for (const key of ["PATH", "HOME", "TMPDIR", "SYSTEMROOT"]) {
+    for (const key of ["PATH", "HOME", "TMPDIR", "SYSTEMROOT", ...gitIdentityVariables]) {
       if (this.env[key]) {
         env[key] = this.env[key];
       }

@@ -118,7 +118,7 @@ function fixture() {
         method === "GET" &&
         path.startsWith("/repos/example/project/git/matching-refs/heads/")
       ) {
-        data = branchExists ? [{ ref: `refs/heads/${branch}` }] : [];
+        data = branchExists ? [{ ref: `refs/heads/${branch}`, object: { sha: currentHead } }] : [];
       } else if (method === "DELETE" && path.startsWith("/repos/example/project/git/refs/heads/")) {
         branchExists = false;
         data = {};
@@ -194,7 +194,14 @@ function fixture() {
       },
     },
   };
-  const env = { EXAMPLE_GITHUB_TOKEN: "secret", XDG_STATE_HOME: join(root, "state") };
+  const env = {
+    EXAMPLE_GITHUB_TOKEN: "secret",
+    XDG_STATE_HOME: join(root, "state"),
+    GIT_AUTHOR_NAME: "A",
+    GIT_AUTHOR_EMAIL: "a@b",
+    GIT_COMMITTER_NAME: "C",
+    GIT_COMMITTER_EMAIL: "c@b",
+  };
   const host: ConstructorParameters<typeof TaskFlow>[4] = {
     people,
     github: new GitHubClient({ ...config, gateway: { maxRetries: 0 } }, env, deps),
@@ -455,6 +462,50 @@ test("squash merges frozen head; board and archive precede fast-forward and inst
   );
   expect(f.events).toContain("report revise estimates: #9");
   expect(f.touched.some((write) => write.id === "issue" && write.value === "Done")).toBe(true);
+  f.done();
+});
+
+test.each(["live", "unknown"] as const)(
+  "already merged follows up with %s worker after best-effort stop",
+  async (worker) => {
+    const f = fixture();
+    f.set({ state: "MERGED", worker });
+    f.deps.workers!.stop = async () => {
+      f.events.push("worker-stop");
+      throw new Error("unreachable");
+    };
+    await expect(f.flow().merge("27")).resolves.toBe("Merged #27");
+    expect(f.events).toContain("worker-stop");
+    expect(f.events.some((e) => e.includes("worker stop failed"))).toBe(true);
+    expect(f.events).toContain("sh -c npm ci");
+    f.done();
+  }
+);
+
+test("post-merge worker push is reported and branch kept before cleanup", async () => {
+  const f = fixture();
+  f.set({ state: "MERGED", worker: "live" });
+  let remoteHead = sha;
+  f.deps.workers!.stop = async () => {
+    f.events.push("worker-stop");
+    remoteHead = mergedSha;
+  };
+  const fetch = f.deps.fetch;
+  f.deps.fetch = async (input, init) => {
+    if (String(input).includes("/git/matching-refs/heads/")) {
+      f.events.push("read-branch");
+      return Response.json([{ ref: "refs/heads/8-task", object: { sha: remoteHead } }]);
+    }
+    if (String(input).includes(`/compare/${sha}...${mergedSha}`)) {
+      return Response.json({ commits: [{ sha: mergedSha }], total_commits: 1 });
+    }
+    return fetch(input, init);
+  };
+  await f.flow().merge("27");
+  expect(f.events.indexOf("worker-stop")).toBeLessThan(f.events.indexOf("read-branch"));
+  expect(f.events).toContain(`report post-merge commits on 8-task: ${mergedSha}`);
+  expect(f.events.some((e) => e.startsWith("DELETE"))).toBe(false);
+  expect(f.events).toContain("sh -c npm ci");
   f.done();
 });
 

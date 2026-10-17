@@ -15,7 +15,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { loadYaml, type Config } from "../config.js";
 import {
   classifyTurn,
@@ -375,11 +375,19 @@ export class WorkerService {
       }
       return lines.join("\n");
     }
+    if (verb === "adopt" && ref === "--from-legacy") {
+      if (rest.length) {
+        throw new Error("Usage: worker adopt --from-legacy");
+      }
+      return this.adoptLegacy();
+    }
     if (!/^[1-9]\d*$/.test(ref ?? "") || !Number.isSafeInteger(Number(ref))) {
       throw new Error("Worker requires a positive PR number");
     }
     const pr = Number(ref);
-    if (!["start", "send", "status", "log", "stop", "wait", "permit", "model"].includes(verb)) {
+    if (
+      !["start", "adopt", "send", "status", "log", "stop", "wait", "permit", "model"].includes(verb)
+    ) {
       throw new Error("Unknown worker command");
     }
     if (verb === "status") {
@@ -392,6 +400,12 @@ export class WorkerService {
     return this.locked(pr, async () => {
       if (verb === "start") {
         return this.start(pr, rest);
+      }
+      if (verb === "adopt") {
+        if (rest.length !== 1 || !/^[\w-]+$/.test(rest[0])) {
+          throw new Error("Usage: worker adopt <pr> <session-id>");
+        }
+        return this.adopt(pr, rest[0]);
       }
       const record = this.read(pr);
       if (!record) {
@@ -534,6 +548,123 @@ export class WorkerService {
     const [providerID, ...id] = model.model.split("/");
     return { providerID, id: id.join("/") };
   }
+  async mergeStatus(pr: number): Promise<"live" | "stopped" | "unknown"> {
+    const record = this.read(pr);
+    if (!record) {
+      return "unknown";
+    }
+    const status = await this.status(record, false);
+    return status.reason === "session unknown"
+      ? "unknown"
+      : status.active || status.reason === "permission-wait"
+        ? "live"
+        : "stopped";
+  }
+  async resume(pr: number, text: string): Promise<void> {
+    await this.locked(pr, async () => {
+      const record = this.read(pr);
+      if (!record) {
+        throw new Error(`No session recorded for PR #${pr}`);
+      }
+      await this.prompt(record, text);
+    });
+  }
+  private async adopt(pr: number, id: string): Promise<string> {
+    if (this.read(pr)) {
+      throw new Error(`Session already recorded for PR #${pr}; refusing to overwrite history`);
+    }
+    const meta = await this.hooks.metadata(pr);
+    if (meta.pr !== pr || meta.state !== "OPEN" || !meta.issue || meta.pointsOpen === undefined) {
+      throw new Error("Adopt requires an open task PR with linked issue and opening Estimate");
+    }
+    const directory = await this.hooks.prepare(pr);
+    const session = object(
+      object(await this.client().request("GET", `/api/session/${encodeURIComponent(id)}`)).data
+    );
+    const sessionDirectory = session.directory ?? object(session.location).directory;
+    if (
+      session.id !== id ||
+      typeof sessionDirectory !== "string" ||
+      resolve(sessionDirectory) !== resolve(directory)
+    ) {
+      throw new Error("Session does not belong to the PR worktree");
+    }
+    const apiModel = object(session.model);
+    const modelId =
+      typeof session.model === "string"
+        ? session.model
+        : `${String(apiModel.providerID)}/${String(apiModel.id ?? apiModel.modelID)}`;
+    const configured = this.models.find((m) => m.kind === "opencode" && m.model === modelId);
+    const other = this.models.find((m) => m.kind === "opencode" && m.family === "other");
+    const model =
+      configured ??
+      (other && /^[^/\s]+\/[^\s]+$/.test(modelId) && !modelId.includes("undefined")
+        ? { ...other, model: modelId }
+        : undefined);
+    if (!model) {
+      throw new Error("Cannot verify existing session model against models.yaml");
+    }
+    this.save({
+      version: 1,
+      repo: String(this.config.repo),
+      pr,
+      issue: meta.issue,
+      directory,
+      id,
+      model,
+      points_open: meta.pointsOpen,
+      segments: [
+        {
+          family: model.family,
+          model: model.model,
+          rounds: [this.round(meta)],
+          why: "adopt",
+          at: new Date(this.deps.now()).toISOString(),
+        },
+      ],
+    });
+    await this.hooks.setModel(pr, model.family);
+    return `Adopted ${id} for #${pr} on ${model.family}`;
+  }
+  private async adoptLegacy(): Promise<string> {
+    const lines: string[] = [];
+    const stateRoot = this.env.XDG_STATE_HOME ?? join(this.env.HOME ?? homedir(), ".local/state");
+    for (const name of (this.config.legacyWorkers ?? []) as string[]) {
+      if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) {
+        throw new Error("Invalid legacyWorkers directory name");
+      }
+      const directory = join(
+        stateRoot,
+        `${name}${this.config.track ? `-${String(this.config.track)}` : ""}`
+      );
+      if (!existsSync(directory)) {
+        continue;
+      }
+      for (const file of readdirSync(directory).sort()) {
+        const match = /^([1-9]\d*)\.json$/.exec(file);
+        if (!match || !Number.isSafeInteger(Number(match[1]))) {
+          continue;
+        }
+        const pr = Number(match[1]);
+        try {
+          const legacy = object(JSON.parse(readFileSync(join(directory, file), "utf8")));
+          const id = legacy.sessionId ?? legacy.id;
+          if (
+            typeof id !== "string" ||
+            !/^[\w-]+$/.test(id) ||
+            (legacy.pr !== undefined && legacy.pr !== pr) ||
+            (legacy.repo !== undefined && legacy.repo !== this.config.repo)
+          ) {
+            throw new Error("Invalid legacy record");
+          }
+          lines.push(await this.command(["adopt", String(pr), id]));
+        } catch {
+          lines.push(`Skipped #${pr}: unverified legacy record or session already recorded`);
+        }
+      }
+    }
+    return lines.join("\n") || "No legacy worker records";
+  }
   private async start(pr: number, flags: string[]): Promise<string> {
     let selected: string | undefined,
       approved = false,
@@ -584,10 +715,31 @@ export class WorkerService {
       );
     }
     const directory = await this.hooks.prepare(pr);
+    const packagePath = join(directory, "package.json");
+    const selfHosting =
+      existsSync(packagePath) &&
+      object(JSON.parse(readFileSync(packagePath, "utf8"))).name === "@vworlds/vmethod";
+    if (selfHosting) {
+      const env: NodeJS.ProcessEnv = { HUSKY: "0" };
+      for (const key of ["PATH", "HOME", "TMPDIR", "SYSTEMROOT"]) {
+        if (this.env[key]) {
+          env[key] = this.env[key];
+        }
+      }
+      await this.deps.exec("npm", ["ci"], { cwd: directory, env });
+      await this.deps.exec("npm", ["run", "build"], { cwd: directory, env });
+    }
     try {
-      accessSync(join(directory, "node_modules/.bin/vmethod"), constants.X_OK);
+      accessSync(
+        join(directory, selfHosting ? "dist/vmethod.mjs" : "node_modules/.bin/vmethod"),
+        selfHosting ? constants.R_OK : constants.X_OK
+      );
     } catch {
-      throw new Error("Missing node_modules/.bin/vmethod; run npm ci in the task worktree");
+      throw new Error(
+        selfHosting
+          ? "Missing built dist/vmethod.mjs in task worktree"
+          : "Missing node_modules/.bin/vmethod; run npm ci in the task worktree"
+      );
     }
     const response =
       model.kind === "opencode"

@@ -9,6 +9,7 @@ export interface Dependencies {
   workers?: {
     status(pr: number): Promise<"stopped" | "live" | "unknown">;
     resume(pr: number, prompt: string): Promise<void>;
+    stop?(pr: number): Promise<string | void>;
   };
   fetch: typeof fetch;
   exec: (

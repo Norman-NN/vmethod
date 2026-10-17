@@ -4,6 +4,30 @@ import { expect, test } from "vitest";
 import { check } from "../src/check.js";
 import { peer, validProject } from "./helpers.js";
 
+test("orchestrator check reports each missing git identity up front, workers do not need it", () => {
+  const root = validProject();
+  const missing = check(root, { VMETHOD_ROLE: "orchestrator" });
+  expect(missing.code).toBe(1);
+  for (const key of [
+    "GIT_AUTHOR_NAME",
+    "GIT_AUTHOR_EMAIL",
+    "GIT_COMMITTER_NAME",
+    "GIT_COMMITTER_EMAIL",
+  ]) {
+    expect(missing.messages.join("\n")).toContain(key);
+  }
+  expect(check(root, { VMETHOD_ROLE: "worker" }).code).toBe(0);
+  expect(
+    check(root, {
+      VMETHOD_ROLE: "orchestrator",
+      GIT_AUTHOR_NAME: "A",
+      GIT_AUTHOR_EMAIL: "a@b",
+      GIT_COMMITTER_NAME: "C",
+      GIT_COMMITTER_EMAIL: "c@b",
+    }).code
+  ).toBe(0);
+});
+
 test("check returns 0 for a valid project, 1 for findings, 2 for a missing dependency", () => {
   const root = validProject();
   expect(check(root)).toEqual({ code: 0, messages: [] });
