@@ -1,5 +1,8 @@
 # GitHub board field regression
 
+For learning endpoint recordings and explicitly documented derivations, see
+[learning fixture provenance](learnings-PROVENANCE.md).
+
 `board-fields.json` is a minimal projection of the field shape reported by the
 orchestrator's live vworlds/vmethod run in PR #24 review round 2. The creation-time
 value (`2026-10-16T11:12:25Z`) and ISO string wire type come from that report.

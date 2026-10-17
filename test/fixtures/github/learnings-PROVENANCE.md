@@ -1,0 +1,47 @@
+# Learning REST fixtures
+
+`learnings-recorded.json` contains minimal projections of the captures supplied by
+the authenticated orchestrator answer on PR 41. Vimescmd captured these read-only
+through `vmethod gh-read` at dev `2ec1f53`, 2026-10-17T12:20:17Z. Original captures
+remain ignored scratch inputs, not committed logs. Only fields needed to exercise
+decoding are retained. Tokens, permissions, prose PR bodies, patches, links and
+unrelated identity fields are omitted; the gateway-added `attribution` is removed.
+Numeric IDs, ISO timestamps, nulls, arrays and newline-wrapped base64 retain their
+recorded wire types.
+
+## Recorded projections
+
+- `repository`: GET `/repos/vworlds/vmethod`.
+- `ref`: GET `/repos/vworlds/vmethod/git/ref/heads/dev`.
+- `tree`: GET `/repos/vworlds/vmethod/git/trees/67f323cd904e6bcbc3698009ff3d9f818a1d8617`;
+  only one entry is retained from the root listing.
+- `viewer`: GraphQL `viewer { id databaseId login __typename }`; REST `/user`
+  identity is derived by mapping `databaseId` to `id` and `__typename` to `type`.
+- `pull`: GET `/repos/vworlds/vmethod/pulls/40`. The supplied filtered recording
+  **does not contain head/base**, despite the capture manifest listing them.
+  Tests add those documented fields explicitly as derived data, never a recording.
+- `files`: GET `/repos/vworlds/vmethod/pulls/40/files?per_page=3`. This is a
+  three-file sample, not the complete 22-file list. Scenario tests retarget filenames,
+  statuses and counts, and deliberately generate pagination/missing-file cases.
+- `people` and `lessons`: GET `/repos/vworlds/vmethod/contents/<path>?ref=dev`.
+  Both original base64 bodies and their embedded newlines are retained. The captured
+  registry predates `repos` bindings; tests explicitly add owner-approved bindings
+  when constructing successful submission scenarios.
+
+## Derived from recorded GET shape or documented wire shape
+
+As authorized in the orchestrator answer, tests derive fork GET/create (202) objects
+from `repository`, retarget owner/full_name, set `fork: true`, and add `parent`.
+Git ref-create (201) derives from `ref`; tree-create (201) derives from `tree`.
+Git commit GET/create and compare are documented shapes, **not recordings**; only
+the needed SHA/tree/parents and file metadata are generated. PR create (201) and
+list derive from `pull`, retarget author, open/merged state, URL, and documented
+head/base metadata. List items explicitly omit `changed_files`; only PR detail
+checks depend on that field. Error 404 responses, asynchronous fork readiness,
+label-write replies, hostile content and dropped-response errors are simulated.
+
+`test/gateway/learnings.test.ts` exercises these envelopes through the real
+`GitHubClient`, submission/show decoders, cursor persistence and central metadata
+policy. Its loud fetch wrapper retains unexpected-request/assertion failures even
+when the real HTTP client catches a transport error. Fork/PR writes remain offline;
+the orchestrator owns live submission smoke before OWNER REVIEW.

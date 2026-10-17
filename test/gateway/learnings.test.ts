@@ -14,13 +14,14 @@ import { checkLearningPr } from "../../src/gateway/learning-check.js";
 import { createGateway } from "../../src/gateway/server.js";
 import { learningsVerb } from "../../src/cli/learnings.js";
 import { fixture, validProject } from "../helpers.js";
+import recorded from "../fixtures/github/learnings-recorded.json" with { type: "json" };
 
 const repo = "vworlds/vecs";
 const login = "VecsMaster";
-const identity = { id: 238095565, login, type: "User" };
+const identity = { ...recorded.pull.user, id: 238095565, login };
 const registry = [{ ...identity, role: "orchestrator", repos: [repo] }];
-const parent = "a".repeat(40);
-const tree = "b".repeat(40);
+const parent = recorded.ref.object.sha;
+const tree = recorded.tree.sha;
 const head = "c".repeat(40);
 const modelPath = "learnings/models/vworlds-vecs.jsonl";
 const central = "/repos/vworlds/vmethod";
@@ -69,10 +70,20 @@ function record(changes: Partial<ModelRecord> = {}): ModelRecord {
   });
 }
 
-// Synthetic REST projections for iteration. These must be backed by captured real
-// endpoint responses before claiming the task's recorded-response acceptance case.
+// Retarget recorded envelopes for scenario data; derivations are documented in the
+// fixture README, including the captured pull's missing head/base fields.
 function contents(path: string, text: string) {
-  return { type: "file", path, encoding: "base64", content: Buffer.from(text).toString("base64") };
+  const envelope = path === "people.yaml" ? recorded.people : recorded.lessons;
+  return {
+    ...envelope,
+    path,
+    content:
+      (
+        Buffer.from(text)
+          .toString("base64")
+          .match(/.{1,60}/g) ?? []
+      ).join("\n") + "\n",
+  };
 }
 
 function setup(
@@ -96,6 +107,7 @@ function setup(
     gateway: { maxRetries: 0 },
   };
   let forkCreated = !options.createFork;
+  let forkPending = false;
   let branch: string | undefined;
   let prCreated = false;
   let failPr = options.failPr ?? false;
@@ -125,18 +137,20 @@ function setup(
       } else if (path === "/user" && method === "GET") {
         data = options.viewer ?? identity;
       } else if (path === `${central}/git/ref/heads/dev` && method === "GET") {
-        data = { object: { sha: parent, type: "commit" } };
+        data = structuredClone(recorded.ref);
       } else if (path === `${central}/contents/${modelPath}` && method === "GET") {
         data = contents(modelPath, shared);
       } else if (path === `${central}/contents/learnings/notes/vecs.md` && method === "GET") {
         data = {};
         status = 404;
       } else if (path === fork && method === "GET") {
-        if (!forkCreated) {
+        if (!forkCreated || forkPending) {
           data = {};
           status = 404;
+          forkPending = false;
         } else {
           data = {
+            ...recorded.repository,
             full_name: `${login}/vmethod`,
             fork: true,
             owner: identity,
@@ -146,11 +160,23 @@ function setup(
       } else if (path === `${central}/forks` && method === "POST") {
         expect(body).toEqual({});
         forkCreated = true;
-        data = { full_name: `${login}/vmethod`, fork: true, owner: identity };
+        forkPending = true;
+        data = {
+          ...recorded.repository,
+          full_name: `${login}/vmethod`,
+          fork: true,
+          owner: identity,
+          parent: recorded.repository,
+        };
+        status = 202;
       } else if (path.startsWith(`${fork}/git/ref/heads/learnings/`) && method === "GET") {
         if (branch) {
           expect(path).toBe(`${fork}/git/ref/heads/${branch}`);
-          data = { object: { sha: head, type: "commit" } };
+          data = {
+            ...recorded.ref,
+            ref: `refs/heads/${branch}`,
+            object: { ...recorded.ref.object, sha: head },
+          };
         } else {
           data = {};
           status = 404;
@@ -169,14 +195,17 @@ function setup(
           expect(entry.type).toBe("blob");
           files.set(entry.path, entry.content);
         }
-        data = { sha: tree };
+        data = { ...recorded.tree, tree: [] };
+        status = 201;
       } else if (path === `${fork}/git/commits` && method === "POST") {
         expect(body.parents).toEqual([parent]);
-        data = { sha: head };
+        data = { sha: head, tree: { sha: tree }, parents: [{ sha: parent }] };
+        status = 201;
       } else if (path === `${fork}/git/refs` && method === "POST") {
         expect(body.sha).toBe(head);
         branch = String(body.ref).replace("refs/heads/", "");
-        data = { ref: body.ref, object: { sha: head, type: "commit" } };
+        data = { ...recorded.ref, ref: body.ref, object: { ...recorded.ref.object, sha: head } };
+        status = 201;
       } else if (path.startsWith(`${fork}/contents/`) && method === "GET") {
         expect(url.searchParams.get("ref")).toBe(head);
         const name = path.slice(`${fork}/contents/`.length);
@@ -189,7 +218,13 @@ function setup(
       } else if (path === `${central}/pulls` && method === "GET") {
         expect(url.searchParams.get("head")).toBe(`${login}:${branch}`);
         expect(url.searchParams.get("base")).toBe("dev");
-        data = prCreated ? [pr()] : [];
+        if (prCreated) {
+          const { changed_files: _changed, ...listed } = pr();
+          expect(_changed).toBe(22);
+          data = [listed];
+        } else {
+          data = [];
+        }
       } else if (path === `${central}/pulls` && method === "POST") {
         expect(body.head).toBe(`${login}:${branch}`);
         expect(body.base).toBe("dev");
@@ -199,6 +234,7 @@ function setup(
           throw new SimulatedNetworkError("Lost response after successful PR write");
         }
         data = pr();
+        status = 201;
       } else if (path === `${central}/pulls/900` && method === "GET") {
         data = pr();
       } else {
@@ -216,6 +252,7 @@ function setup(
   };
   function pr() {
     return {
+      ...recorded.pull,
       html_url: "https://github.com/vworlds/vmethod/pull/900",
       user: identity,
       head: { sha: head, ref: branch, repo: { full_name: `${login}/vmethod` } },
@@ -254,6 +291,61 @@ function setup(
     },
   };
 }
+
+test("unmodified captured contents decode through show and the pre-binding registry fails closed", async () => {
+  const root = fixture();
+  mkdirSync(join(root, ".vmethod"));
+  writeFileSync(join(root, ".vmethod/model-log.jsonl"), JSON.stringify(record()) + "\n");
+  const config = {
+    repo,
+    learningsPrivacy: "private",
+    stateName: "capture",
+    credentials: { githubToken: "TOKEN" },
+    gateway: { maxRetries: 0 },
+  };
+  const env = { TOKEN: "secret", XDG_STATE_HOME: join(root, "state") };
+  const calls: string[] = [];
+  const deps: Dependencies = {
+    fetch: loudFetch(async (input, init) => {
+      const url = new URL(String(input));
+      calls.push(url.pathname);
+      expect(init?.method).toBe("GET");
+      let data: unknown;
+      if (url.pathname === `${central}/contents/learnings/lessons.md`) {
+        data = recorded.lessons;
+      } else if (url.pathname === `${central}/contents/people.yaml`) {
+        data = recorded.people;
+      } else if (url.pathname === "/user") {
+        data = {
+          id: recorded.viewer.databaseId,
+          login: recorded.viewer.login,
+          type: recorded.viewer.__typename,
+        };
+      } else {
+        throw new Error(`Unexpected recorded request ${url}`);
+      }
+      return new Response(JSON.stringify(data));
+    }),
+    exec: async () => {
+      throw new Error("Unexpected subprocess");
+    },
+    now: () => 0,
+    sleep: async () => {},
+    report: () => {},
+  };
+  const service = new LearningsService(
+    root,
+    config,
+    env,
+    deps,
+    () => new GitHubClient(config, env, deps)
+  );
+  const shown = await service.command({ action: "show" });
+  expect(shown).toContain(Buffer.from(recorded.lessons.content, "base64").toString("utf8"));
+  expect(shown).toContain("from vworlds/vmethod:dev");
+  await expect(service.command({ action: "submit" })).rejects.toThrow("binding");
+  expect(calls).toHaveLength(3);
+}, 15000);
 
 test.each([true, false])(
   "submission creates/reuses the fork, reduces private data and advances only after PR (create=%s)",
@@ -578,6 +670,7 @@ test.each([
     const writes: unknown[] = [];
     const calls: string[] = [];
     const metadata = {
+      ...recorded.pull,
       state: "open",
       user: scenario === "unknown" ? { ...identity, id: 1 } : identity,
       labels: scenario === "labelled-extra" ? [{ name: "learning" }] : [],
@@ -610,7 +703,9 @@ test.each([
         } else if (path === `${central}/pulls/900/files`) {
           expect(scenario).not.toBe("unknown");
           const page = Number(url.searchParams.get("page"));
-          data = files.slice((page - 1) * 100, page * 100);
+          data = files
+            .slice((page - 1) * 100, page * 100)
+            .map((file, index) => ({ ...recorded.files[index % recorded.files.length], ...file }));
         } else if (path === `${central}/issues/900/labels` && init?.method === "POST") {
           writes.push(JSON.parse(String(init.body)));
           data = [{ name: "learning" }];
