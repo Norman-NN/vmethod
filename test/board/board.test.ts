@@ -13,6 +13,40 @@ import { baseline, FakeBoard } from "./fake.js";
 import recordedFields from "../fixtures/github/board-fields.json" with { type: "json" };
 
 let fake: FakeBoard;
+test("task-flow board adds are scoped, compatibility-guarded and replay-safe", async () => {
+  const board = setup();
+  board.stamp(1);
+  const own = board.card("own");
+  own.contentId = "node-own";
+  const foreign = board.card("foreign", "example/other");
+  foreign.contentId = "node-foreign";
+  const draft = board.card("draft");
+  draft.kind = "DraftIssue";
+  draft.contentId = "node-draft";
+  expect(await board.service().ensure("node-own")).toBe("own");
+  expect(await board.service().ensure("node-own")).toBe("own");
+  await expect(board.service().ensure("node-foreign")).rejects.toThrow("foreign or draft");
+  await expect(board.service().ensure("node-draft")).rejects.toThrow("foreign or draft");
+  expect(board.mutations.filter((name) => name === "BoardAdd")).toHaveLength(2);
+  board.stamp(2, 2);
+  await expect(board.service().ensure("node-own")).rejects.toThrow("INCOMPATIBLE");
+});
+test("Done cap ranks all repositories but archives only own cards outside the newest six", async () => {
+  const board = setup();
+  board.stamp(1);
+  board.pageSize = 3;
+  for (let i = 0; i < 10; i++) {
+    const card = board.card(`done-${i}`, i % 2 ? "example/foreign" : "example/project");
+    card.closedAt = `2026-10-${String(20 - i).padStart(2, "0")}T00:00:00Z`;
+    card.values.Status = "Done";
+  }
+  await board.service().capDone();
+  expect(board.cards.map((card) => card.id)).not.toContain("done-6");
+  expect(board.cards.map((card) => card.id)).not.toContain("done-8");
+  expect(board.cards.map((card) => card.id)).toContain("done-7");
+  expect(board.cards.map((card) => card.id)).toContain("done-9");
+  expect(board.cards.map((card) => card.id)).toContain("done-4");
+});
 afterEach(() => fake?.done());
 function setup() {
   fake = new FakeBoard();
@@ -50,13 +84,18 @@ test("live-reported ISO field creation time decodes through snapshot and permits
     },
   ];
   const card = board.card();
+  card.contentId = "recorded-progress-content";
   const service = board.service();
   expect((await service.snapshot()).fields[0].createdAt).toBe(Date.parse("2026-10-16T11:12:25Z"));
+  // Task-flow adds the card before writing Progress: exercise both paths with the
+  // recorded ISO-string wire value, rather than a decoded numeric timestamp.
+  await expect(service.ensure(card.contentId)).resolves.toBe(card.id);
   await expect(
     service.set({ itemId: card.id, field: "Progress", value: "🤖🤝 🔁2️⃣" })
   ).resolves.toBe("Board field updated");
   expect(card.values.Progress).toBe("🤖🤝 🔁2️⃣");
   expect(board.mutations).toContain("BoardSetCards");
+  expect(board.mutations).toContain("BoardAdd");
 });
 
 test.each([undefined, null, "", "invalid-date", 1792149145000])(

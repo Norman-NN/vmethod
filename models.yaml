@@ -1,33 +1,41 @@
 # Worker model families for vmethod. Family names must match the board's Model options.
 - family: sol
+  tier: standard
   model: codexbal/gpt-6.1-sol
   kind: opencode
   gate: none
 - family: luna
+  tier: standard
   model: codexbal/gpt-6-luna
   kind: opencode
   gate: none
 - family: astra
+  tier: expensive
   model: codexbal/gpt-6-astra
   kind: opencode
   gate: owner
 - family: glm
+  tier: standard
   model: ollama-cloud/glm-5.3
   kind: opencode
   gate: none
 - family: glm-flash
+  tier: standard
   model: ollama-cloud/glm-5.3-flash
   kind: opencode
   gate: none
 - family: big-pickle
+  tier: standard
   model: opencode/big-pickle
   kind: opencode
   gate: none
 - family: sonnet
+  tier: standard
   model: claude-sonnet-5-5
   kind: claude
   gate: none
 - family: opus
+  tier: standard
   model: claude-opus-5-5
   kind: claude
   gate: none

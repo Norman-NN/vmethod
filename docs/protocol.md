@@ -4,19 +4,20 @@ Use a machine-readable first line and keep the delivery conversation on its card
 
 ## Tags
 
-| Author       | First line                            | Purpose                                |
-| ------------ | ------------------------------------- | -------------------------------------- |
-| Worker       | `[worker] ACK`                        | Acknowledge and give a short plan      |
-| Worker       | `[worker] DESIGN`                     | Explain a design choice within scope   |
-| Worker       | `[worker] QUESTION`                   | Ask a blocking question, then stop     |
-| Worker       | `[worker] BLOCKED`                    | State an external blocker and evidence |
-| Worker       | `[worker] READY FOR REVIEW (round n)` | Green CI, evidence and handover        |
-| Orchestrator | `[orchestrator] REVIEW round n`       | Numbered review and requested changes  |
-| Orchestrator | `[orchestrator] OWNER REVIEW`         | Hand over try-out and decisions        |
-| Orchestrator | `[orchestrator] ANSWER`               | Answer a worker question               |
-| Orchestrator | `[orchestrator] AMENDMENT`            | Explicitly change the task prompt      |
-| Orchestrator | `[orchestrator] GO`                   | Release a hold                         |
-| Orchestrator | `[orchestrator] APPROVED`             | Accept the delivery; worker stops      |
+| Author       | First line                            | Purpose                                       |
+| ------------ | ------------------------------------- | --------------------------------------------- |
+| Worker       | `[worker] ACK`                        | Acknowledge and give a short plan             |
+| Worker       | `[worker] DESIGN`                     | Explain a design choice within scope          |
+| Worker       | `[worker] QUESTION`                   | Ask a blocking question, then stop            |
+| Worker       | `[worker] BLOCKED`                    | State an external blocker and evidence        |
+| Worker       | `[worker] HANDOFF`                    | Defined breakpoint; report state and end turn |
+| Worker       | `[worker] READY FOR REVIEW (round n)` | Green CI, evidence and handover               |
+| Orchestrator | `[orchestrator] REVIEW round n`       | Numbered review and requested changes         |
+| Orchestrator | `[orchestrator] OWNER REVIEW`         | Hand over try-out and decisions               |
+| Orchestrator | `[orchestrator] ANSWER`               | Answer a worker question                      |
+| Orchestrator | `[orchestrator] AMENDMENT`            | Explicitly change the task prompt             |
+| Orchestrator | `[orchestrator] GO`                   | Release a hold                                |
+| Orchestrator | `[orchestrator] APPROVED`             | Accept the delivery; worker stops             |
 
 APPROVED from an orchestrator accepts worker work, but is not a forged
 owner approval. Only [verified identity and role](security.md) confer authority.

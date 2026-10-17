@@ -22,7 +22,8 @@ import {
 } from "./queries.js";
 import { checkMarkdown, guardClosingKeywords } from "./markdown.js";
 import { inProcess, type Handlers, type Operations, type Transport } from "./transport.js";
-import { isOwnerApproved } from "./approval.js";
+import { isOwnerApproved, isIssueOwnerApproved } from "./approval.js";
+import { TaskFlow } from "./task-flow.js";
 import { GitTransport, taskBranch, validateBranch } from "./git.js";
 import { realpathSync } from "node:fs";
 import { matchesGlob, resolve } from "node:path";
@@ -126,6 +127,149 @@ class GatewayServer {
   boardItem: Handlers["boardItem"] = async ({ itemId }) => this.board.item(itemId);
   boardSet: Handlers["boardSet"] = async (input) => this.board.set(input);
   boardArchive: Handlers["boardArchive"] = async ({ itemId }) => this.board.archive(itemId);
+
+  private get flow(): TaskFlow {
+    return new TaskFlow(this.root, this.env, this.config, this.deps, {
+      github: this.github,
+      board: () => this.board,
+      people: loadYaml(this.root, "people") as Person[],
+      thread: (ref, kind) => this.flowThread(ref, kind),
+      comments: (id) => this.flowComments(id),
+      approved: (ref, historical) => this.approvalFor(ref, historical),
+      candidates: async (ref) => {
+        const { item, person } = await this.thread(ref, "pr");
+        if (!person) {
+          return [];
+        }
+        const candidates = new Set<string>();
+        for (const review of await this.collection(String(item.id), "PullRequest", "reviews")) {
+          if (
+            this.filter.identity(review.author)?.role === "owner" &&
+            (review.lastEditedAt == null ||
+              this.filter.identity(review.editor)?.role === "owner") &&
+            review.state === "APPROVED"
+          ) {
+            const head = object(review.commit).oid;
+            if (typeof head === "string" && /^[a-f\d]{40}$/i.test(head)) {
+              candidates.add(head);
+            }
+          }
+        }
+        for (const comment of await this.flowComments(String(item.id))) {
+          if (/^\[orchestrator\] OWNER REVIEW(?:\s|$)/.test(String(comment.body))) {
+            for (const head of String(comment.body).match(/\b[a-f\d]{40}\b/gi) ?? []) {
+              candidates.add(head);
+            }
+          }
+        }
+        return [...candidates];
+      },
+      issueApproved: async (item) =>
+        isIssueOwnerApproved(
+          await this.issueTimeline(item),
+          Number(object(this.config.board).number),
+          this.filter
+        ),
+    });
+  }
+  openTask: Handlers["openTask"] = async (input) => this.flow.open(input);
+  reviewTask: Handlers["reviewTask"] = async (input) => this.flow.review(input);
+  mergeTask: Handlers["mergeTask"] = async (input) => this.flow.merge(input.ref, input.mergeCommit);
+  releaseHold: Handlers["releaseHold"] = async (input) => this.flow.release(input.ref);
+  workerStatus: Handlers["workerStatus"] = async (input) => {
+    await this.flowThread(input.ref, "pr");
+    return this.flow.status(input.ref);
+  };
+
+  private async flowThread(ref: string, kind: "pr" | "issue"): Promise<ObjectData> {
+    const { item, person, link } = await this.thread(ref, kind);
+    if (!person) {
+      throw new Error("No accepted task thread");
+    }
+    const data = await this.node(
+      String(item.id),
+      `title body state labels(first: 100) { nodes { name } pageInfo { hasNextPage } } ${kind === "pr" ? "headRefOid headRefName baseRefName baseRefOid isDraft mergeable headRepository { nameWithOwner } closingIssuesReferences(first: 100) { nodes { number repository { nameWithOwner } } pageInfo { hasNextPage } }" : ""}`,
+      kind === "pr" ? "PullRequest" : "Issue"
+    );
+    if (!this.filter.accept(data, repoOf(data).owner, link)) {
+      throw new Error("Task identity changed");
+    }
+    if (object(object(data.labels).pageInfo).hasNextPage !== false) {
+      throw new Error("Too many task labels");
+    }
+    return data;
+  }
+  private async flowComments(id: string): Promise<ObjectData[]> {
+    const output: ObjectData[] = [];
+    for (const meta of await this.collection(id, "PullRequest", "comments")) {
+      if (this.filter.identity(meta.author)?.role !== "orchestrator") {
+        continue;
+      }
+      const comment = await this.node(String(meta.id), "body createdAt", "IssueComment");
+      if (
+        this.filter.identity(comment.author)?.role === "orchestrator" &&
+        this.filter.accept(
+          comment,
+          repoOf(comment).owner,
+          `https://github.com/${String(this.config.repo)}`
+        )?.role === "orchestrator"
+      ) {
+        output.push(comment);
+      }
+    }
+    return output;
+  }
+  private async issueTimeline(item: ObjectData): Promise<ObjectData[]> {
+    const output: ObjectData[] = [];
+    let cursor: string | null = null;
+    const seen = new Set<string>();
+    for (;;) {
+      const result = await this.node(String(item.id), "", "Issue");
+      if (
+        !this.filter.accept(
+          result,
+          repoOf(result).owner,
+          `https://github.com/${String(this.config.repo)}`
+        )
+      ) {
+        throw new Error("Unaccepted issue");
+      }
+      const data = object(
+        await this.github.graphql(
+          `query TaskIssueApproval($id: ID!, $cursor: String) { node(id: $id) { ... on Issue { ${identityFields} timelineItems(first: 100, after: $cursor, itemTypes: [PROJECT_V2_ITEM_STATUS_CHANGED_EVENT]) { nodes { __typename ... on ProjectV2ItemStatusChangedEvent { actor { ${actorFields} } status previousStatus createdAt project { number } } } pageInfo { hasNextPage endCursor } } } } }`,
+          { id: item.id, cursor }
+        )
+      );
+      const parent = object(data.node);
+      if (
+        !this.filter.accept(
+          parent,
+          repoOf(parent).owner,
+          `https://github.com/${String(this.config.repo)}`
+        )
+      ) {
+        throw new Error("Unaccepted issue");
+      }
+      const connection = object(parent.timelineItems);
+      if (!Array.isArray(connection.nodes)) {
+        throw new Error("Missing issue approval timeline");
+      }
+      output.push(...connection.nodes.map(object));
+      const page = object(connection.pageInfo);
+      if (page.hasNextPage === false) {
+        return output;
+      }
+      if (
+        page.hasNextPage !== true ||
+        typeof page.endCursor !== "string" ||
+        seen.has(page.endCursor)
+      ) {
+        throw new Error("Invalid timeline cursor");
+      }
+      cursor = page.endCursor;
+      seen.add(cursor);
+    }
+  }
 
   constructor(
     private root: string,
@@ -639,7 +783,9 @@ class GatewayServer {
 
   dropped: Handlers["dropped"] = async ({ since }) => this.digest.read(since);
 
-  ownerApproved: Handlers["ownerApproved"] = async ({ ref }) => {
+  ownerApproved: Handlers["ownerApproved"] = async ({ ref }) => this.approvalFor(ref);
+
+  private async approvalFor(ref: string, historical?: string): Promise<boolean | "unknown"> {
     const { item, person } = await this.thread(ref, "pr");
     if (!person) {
       return false;
@@ -649,7 +795,7 @@ class GatewayServer {
     if (
       isOwnerApproved(
         {
-          headRefOid: String(item.headRefOid),
+          headRefOid: historical ?? String(item.headRefOid),
           reviews,
           timeline: [],
           comments: [],
@@ -719,7 +865,7 @@ class GatewayServer {
     }
     return isOwnerApproved(
       {
-        headRefOid: String(item.headRefOid),
+        headRefOid: historical ?? String(item.headRefOid),
         reviews,
         timeline,
         comments,
@@ -727,13 +873,18 @@ class GatewayServer {
       },
       this.filter
     );
-  };
+  }
 }
 
 export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Dependencies): Transport {
   const server = new GatewayServer(root, env, deps);
   const config = getConfig(root, env);
   const handlers: Handlers = {
+    openTask: server.openTask,
+    reviewTask: server.reviewTask,
+    mergeTask: server.mergeTask,
+    releaseHold: server.releaseHold,
+    workerStatus: server.workerStatus,
     nextEvents: server.nextEvents,
     watchMute: server.watchMute,
     watchUnmute: server.watchUnmute,
@@ -757,6 +908,11 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     ownerApproved: server.ownerApproved,
   };
   const policy = {
+    openTask: ["orchestrator"],
+    reviewTask: ["orchestrator"],
+    mergeTask: ["orchestrator"],
+    releaseHold: ["orchestrator"],
+    workerStatus: ["orchestrator"],
     nextEvents: ["orchestrator"],
     watchMute: ["orchestrator"],
     watchUnmute: ["orchestrator"],

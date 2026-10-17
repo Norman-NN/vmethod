@@ -12,6 +12,13 @@ test("workers cannot call orchestrator-only operations, even with a taskPr", asy
       fixture.gateway.call("ghRead", { source: "/repos/example/project" }, ctx)
     ).rejects.toThrow("denied");
     await expect(fixture.gateway.call("dropped", {}, ctx)).rejects.toThrow("denied");
+    await expect(fixture.gateway.call("openTask", { issue: "3" }, ctx)).rejects.toThrow("denied");
+    await expect(
+      fixture.gateway.call("reviewTask", { ref: "3", outcome: "owner", file: "unread" }, ctx)
+    ).rejects.toThrow("denied");
+    await expect(fixture.gateway.call("mergeTask", { ref: "3" }, ctx)).rejects.toThrow("denied");
+    await expect(fixture.gateway.call("releaseHold", { ref: "3" }, ctx)).rejects.toThrow("denied");
+    await expect(fixture.gateway.call("workerStatus", { ref: "3" }, ctx)).rejects.toThrow("denied");
     await expect(fixture.gateway.call("ownerApproved", { ref: "3" }, ctx)).rejects.toThrow(
       "denied"
     );

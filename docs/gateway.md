@@ -265,6 +265,46 @@ Dropped records live in
 prints links and counts, never bodies, titles or author names. Repeated reads can
 produce repeated drops; the counts are observations, not unique contributions.
 
+## Task-flow commands
+
+These commands require `VMETHOD_ROLE=orchestrator`:
+
+- `open-task <issue> [--direct "<title>"] [--unapproved "<reason>"] [--hold] [--model <family>] [--owner-approved]`
+  creates a conforming-title draft from the task template and issue specification.
+  The header is `# Task: <title> (issue #N)` and `<!-- points_open: N -->`
+  freezes the issue's opening Estimate for grading; it is never copied onto the PR card.
+  `open-task --direct "<title>"` also works without an issue. It records a structured
+  issue relation without closing prose, sets Model/Progress and never estimates a PR.
+  Gates and expensive-only Handoff breakpoints are enforced server-side.
+- `review <pr> changes|owner|answer|ask|approve <file> [--in-reply-to <comment-url>]`
+  posts the protocol header and sets the next actor. Owner review always names the
+  full current SHA and marks the draft ready. `approve` posts an orchestrator
+  acceptance, **not** owner authority.
+- `merge-task <pr> [--merge-commit]` refuses live/unknown worker sessions, stale
+  approval, untrusted/red/missing CI, unknown/conflicting mergeability and a stale
+  tested base. `merge.requireCurrentBase` defaults to true; false allows a
+  conflict-free green-head squash onto a moved base. Pack heads require merge
+  commits and are retained. Track/pack-base deliveries leave linked issues and the
+  main checkout alone. A final-base delivery closes linked issues and reports
+  `revise estimates: …` for own-repository dependents.
+- `release-hold <pr>` posts GO, updates Progress and resumes the worker.
+
+The transport operations are `openTask`, `reviewTask`, `mergeTask`, `releaseHold`
+and `workerStatus`; `src/gateway/task-flow-types.ts` and `transport.ts` own their
+signatures. Worker management (#9) must supply `Dependencies.workers.status/resume`
+for opencode and Claude. Until wired, status is unknown and merge/release refuse;
+absence is never interpreted as a stopped worker.
+
+Merge follow-up journals live in the per-user state directory. A partial failure
+resumes board, issue, branch and checkout work without merging again. Already-merged
+owner button merges receive the same follow-up; bad historical titles only warn.
+Legacy links fall back to GitHub closing references, then Closes/Part-of headers,
+with a `legacy link` notice. Done capping ranks all board repositories but archives
+only this repository's cards after the newest six. Keep the main checkout clean on
+the configured base branch before retrying its fast-forward. Install is the final
+effect, after all follow-up is checkpointed, with no token environment or second
+CLI process. Pending installs may safely repeat after an interrupted run.
+
 ## Approval and testing
 
 `isOwnerApproved` returns `true`, `false` or `'unknown'`. A verified owner review
@@ -278,6 +318,13 @@ backdated creation time. Missing actors on the latest Approved event yield unkno
 not approval.
 Current card Status and peer-session relays never approve. Chat approvals remain
 the harness's responsibility and are never synthesized into GitHub records.
+
+For merge-task only, an approval can survive clean merges of the PR's base:
+the gateway verifies the first-parent chain, recomputes every two-parent merge tree
+without conflicts and compares the full binary task patch on the union of task
+paths against old/new merge-bases. Ordinary commits, edited merge trees or changed
+patches void approval. The client cannot assert this exception. Issue launch
+approval likewise checks the latest configured-board event's owner id, not Status.
 
 Tests inject strict fake fetch/exec, clock and sleep implementations. No test
 needs a real GitHub token, opencode server or git process. Mermaid tests use
