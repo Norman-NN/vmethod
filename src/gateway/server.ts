@@ -30,6 +30,16 @@ import { BoardService } from "./board.js";
 import { WorkerService, type TaskMetadata } from "./workers.js";
 import { workerAccess } from "./access.js";
 import { startTask } from "./worker-verbs.js";
+import {
+  EventLoop,
+  eventDeps,
+  resolveSession,
+  muteThread,
+  unmuteThread,
+  listMutes,
+  rememberBoardMove,
+} from "./events.js";
+
 import { ChecksService } from "./checks.js";
 import { VerificationService } from "./verify.js";
 import { reference } from "./refs.js";
@@ -356,6 +366,39 @@ class GatewayServer {
     // Credentials for the gateway/opencode/orchestrator are deliberately not inherited.
     return env;
   }
+  private readonly loops = new Map<string, EventLoop>();
+
+  nextEvents: Handlers["nextEvents"] = async (input) => {
+    const name = resolveSession(this.config, input).stateName;
+    let loop = this.loops.get(name);
+    if (!loop) {
+      const methodology = String(object(this.config.vmethod).repo ?? "vworlds/vmethod");
+      loop = new EventLoop(
+        {
+          root: this.root,
+          config: this.config,
+          env: this.env,
+          deps: eventDeps(this.deps),
+          filter: new PeopleFilter(
+            this.filter.people,
+            this.filter.org,
+            this.digest,
+            methodology === "off" ? [] : [methodology]
+          ),
+          github: this.github,
+          board: { set: (input) => this.board.set(input) },
+          digest: this.digest,
+        },
+        input
+      );
+      this.loops.set(name, loop);
+    }
+    return loop.nextEvents(input);
+  };
+  watchMute: Handlers["watchMute"] = async ({ ref }) => muteThread(this.config, this.env, ref);
+  watchUnmute: Handlers["watchUnmute"] = async ({ ref }) =>
+    unmuteThread(this.config, this.env, ref);
+  watchMutes: Handlers["watchMutes"] = async () => listMutes(this.config, this.env);
 
   private get ci(): ChecksService {
     return new ChecksService(this.config, this.github, this.filter, this.deps);
@@ -378,7 +421,14 @@ class GatewayServer {
   verify: Handlers["verify"] = async (input) => this.verification.verify(input);
 
   private get board(): BoardService {
-    return (this.boardClient ??= new BoardService(this.config, this.github, this.deps));
+    return (this.boardClient ??= new BoardService(
+      this.config,
+      this.github,
+      this.deps,
+      undefined,
+      undefined,
+      (itemId, column) => rememberBoardMove(this.config, this.env, itemId, column)
+    ));
   }
 
   boardStatus: Handlers["boardStatus"] = async () => this.board.status();
@@ -1006,6 +1056,10 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     grade: server.grade,
     suggestModel: server.suggestModel,
     workerAccess: server.workerAccess,
+    nextEvents: server.nextEvents,
+    watchMute: server.watchMute,
+    watchUnmute: server.watchUnmute,
+    watchMutes: server.watchMutes,
     waitChecks: server.waitChecks,
     checkTaskCi: server.checkTaskCi,
     refreshChecks: server.refreshChecks,
@@ -1029,6 +1083,10 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     grade: ["orchestrator"],
     suggestModel: ["orchestrator"],
     workerAccess: ["worker", "orchestrator"],
+    nextEvents: ["orchestrator"],
+    watchMute: ["orchestrator"],
+    watchUnmute: ["orchestrator"],
+    watchMutes: ["orchestrator"],
     waitChecks: ["worker", "orchestrator"],
     checkTaskCi: ["orchestrator"],
     refreshChecks: ["orchestrator"],
@@ -1046,7 +1104,7 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     ghRead: ["orchestrator"],
     dropped: ["orchestrator"],
     ownerApproved: ["orchestrator"],
-  } as const;
+  } as const satisfies Record<keyof Operations, readonly ("worker" | "orchestrator")[]>;
   return inProcess(handlers, (operation, input, ctx) => {
     if (
       !ctx ||

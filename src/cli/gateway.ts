@@ -1,4 +1,4 @@
-import { context, type Transport } from "../gateway/transport.js";
+import { context, type Transport, type CallContext } from "../gateway/transport.js";
 import type { ReadInput } from "../gateway/server.js";
 
 export async function gatewayVerb(
@@ -29,6 +29,29 @@ export async function gatewayVerb(
         { ref: args[0], points: args[1] === undefined ? undefined : Number(args[1]) },
         ctx
       );
+    case "mute":
+    case "unmute":
+      if (args.length !== 1) {
+        throw new Error(`Usage: vmethod ${verb} <repo#number>`);
+      }
+      return transport.call(verb === "mute" ? "watchMute" : "watchUnmute", { ref: args[0] }, ctx);
+    case "mutes":
+      if (args.length) {
+        throw new Error("Usage: vmethod mutes");
+      }
+      return transport.call("watchMutes", {}, ctx);
+    default:
+      return existingVerb(transport, verb, args, ctx);
+  }
+}
+
+async function existingVerb(
+  transport: Transport,
+  verb: string,
+  args: string[],
+  ctx: CallContext
+): Promise<string> {
+  switch (verb) {
     case "board": {
       const [action, ...flags] = args;
       if (

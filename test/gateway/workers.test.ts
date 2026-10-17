@@ -540,7 +540,7 @@ test("two-user access uses unprivileged shared-group modes with optional ACL fal
   f.done();
 });
 
-test("OpencodeClient status(directory) supports active session lookup", async () => {
+test("OpencodeClient status(directory, id) preserves explicit worker session status", async () => {
   const f = fixture([
     { path: "/api/session/active", data: { ses_fake: { location: { directory: "/task" } } } },
     ...status(false, [{ type: "idle", outcome: "failed", error: { message: "502 outage" } }]).slice(
@@ -548,7 +548,7 @@ test("OpencodeClient status(directory) supports active session lookup", async ()
     ),
   ]);
   const client = new OpencodeClient(f.env, f.deps.fetch);
-  expect(await client.status("/task")).toMatchObject({
+  expect(await client.status("/task", "ses_fake")).toMatchObject({
     reason: "running",
     active: true,
   });

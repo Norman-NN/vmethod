@@ -7,6 +7,10 @@ releaseBranch: master
 # workerUser: example-worker
 # workerGroup: example-workers
 stateName: example-state
+vmethod:
+  repo: vworlds/vmethod # off disables methodology subscriptions
+watch:
+  preview: false # opt in to short, labelled untrusted title/comment previews
 branches:
   taskPattern: "<number>-<slug>"
   worktreeRoot: .worktrees

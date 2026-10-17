@@ -17,7 +17,12 @@ import {
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { loadYaml, type Config } from "../config.js";
-import { classifyTurn, OpencodeClient, type Dependencies, type WorkerStatus } from "./client.js";
+import {
+  classifyTurn,
+  OpencodeClient,
+  type Dependencies,
+  type WorkerSessionStatus,
+} from "./client.js";
 import { processes, type ProcessIdentity } from "./claude.js";
 import { object, untrusted } from "./people.js";
 
@@ -195,8 +200,12 @@ export class WorkerService {
     }
     return text;
   }
-  private async status(record: Session, comments = true, deadline?: number): Promise<WorkerStatus> {
-    let status: WorkerStatus;
+  private async status(
+    record: Session,
+    comments = true,
+    deadline?: number
+  ): Promise<WorkerSessionStatus> {
+    let status: WorkerSessionStatus;
     if (record.model.kind === "claude") {
       if (record.process && this.runtime.alive(record.process)) {
         status = { reason: "running", active: true };
@@ -247,7 +256,7 @@ export class WorkerService {
     }
     return status;
   }
-  private render(record: Session, status: WorkerStatus): string {
+  private render(record: Session, status: WorkerSessionStatus): string {
     const fallback =
       this.models.find((model) => model.family === record.model.family)?.fallback ?? [];
     const advice = ["quota", "provider-error"].includes(status.reason)

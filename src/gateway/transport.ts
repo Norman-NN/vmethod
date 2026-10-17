@@ -1,10 +1,18 @@
 import type { BoardStatus, Card, MigrationResult } from "../board/types.js";
+import type { SessionInput, WatchEvent } from "./events.js";
 
 export interface Operations {
   worker: { input: { args: string[] }; output: string };
   suggestModel: { input: { ref: string }; output: string };
   grade: { input: { ref: string; points?: number }; output: string };
   workerAccess: { input: { directory: string }; output: string };
+  nextEvents: {
+    input: SessionInput & { timeoutSeconds: number; ack?: string[]; pollOnce?: boolean };
+    output: { events: WatchEvent[] };
+  };
+  watchMute: { input: { ref: string }; output: string };
+  watchUnmute: { input: { ref: string }; output: string };
+  watchMutes: { input: Record<string, never>; output: string };
   waitChecks: {
     input: { ref: string; maxMinutes?: number; graceSeconds?: number };
     output: Verdict;

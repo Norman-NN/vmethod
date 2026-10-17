@@ -4,6 +4,7 @@ import { parse } from "graphql";
 import { stringify } from "yaml";
 import { expect, test, vi } from "vitest";
 import { createGateway } from "../../src/gateway/server.js";
+import recordedFields from "../fixtures/github/board-fields.json" with { type: "json" };
 import type { Dependencies } from "../../src/gateway/client.js";
 import { object } from "../../src/gateway/people.js";
 import { validProject } from "../helpers.js";
@@ -134,7 +135,7 @@ function fixture() {
                       id: "F_MODEL",
                       name: "Model",
                       dataType: "SINGLE_SELECT",
-                      createdAt: 1,
+                      createdAt: recordedFields.node.fields.nodes[0].createdAt,
                       options: ["glm", "sonnet"].map((name) => ({
                         id: `O_${name}`,
                         name,
@@ -142,7 +143,12 @@ function fixture() {
                         description: "",
                       })),
                     },
-                    { id: "F_ESTIMATE", name: "Estimate", dataType: "NUMBER", createdAt: 1 },
+                    {
+                      id: "F_ESTIMATE",
+                      name: "Estimate",
+                      dataType: "NUMBER",
+                      createdAt: recordedFields.node.fields.nodes[0].createdAt,
+                    },
                   ],
                   pageInfo: { hasNextPage: false },
                 },
