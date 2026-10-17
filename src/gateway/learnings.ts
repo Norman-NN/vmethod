@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { validateYaml, type Config } from "../config.js";
 import { learningReport, modelRecord, modelRecords, type ModelRecord } from "../learnings.js";
-import { GitHubClient, type Dependencies } from "./client.js";
+import { GitHubClient, GitHubHttpError, type Dependencies } from "./client.js";
 import { stateRoot } from "./digest.js";
 import { learningAuthor, learningPaths } from "./learning-policy.js";
 import { object, untrusted, type Person } from "./people.js";
@@ -340,7 +340,7 @@ export class LearningsService {
     try {
       fork = object(await github.rest(`/repos/${forkName}`));
     } catch (error) {
-      if ((error as Error).message !== "GitHub HTTP 404") {
+      if (!(error instanceof GitHubHttpError) || error.status !== 404) {
         throw error;
       }
       await github.rest(`/repos/${central}/forks`, "POST", {}, false);
@@ -350,7 +350,7 @@ export class LearningsService {
           fork = object(await github.rest(`/repos/${forkName}`));
           break;
         } catch (error) {
-          if ((error as Error).message !== "GitHub HTTP 404" || attempt === 4) {
+          if (!(error instanceof GitHubHttpError) || error.status !== 404 || attempt === 4) {
             throw error;
           }
           await this.deps.sleep(1000 * (attempt + 1));
@@ -371,7 +371,7 @@ export class LearningsService {
     try {
       head = sha(object(object(await github.rest(refPath)).object).sha);
     } catch (error) {
-      if ((error as Error).message !== "GitHub HTTP 404") {
+      if (!(error instanceof GitHubHttpError) || error.status !== 404) {
         throw error;
       }
     }
@@ -503,7 +503,7 @@ export class LearningsService {
         await this.github().rest(`/repos/${repo}/contents/${path}?ref=${encodeURIComponent(ref)}`)
       );
     } catch (error) {
-      if ((error as Error).message === "GitHub HTTP 404") {
+      if (error instanceof GitHubHttpError && error.status === 404) {
         return undefined;
       }
       throw error;

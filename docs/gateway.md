@@ -344,7 +344,10 @@ State, pending events and cursors survive restart; do not delete them to reconne
 | `refresh-checks <pr>`                         | Orchestrator                         | If a green run used an old/unknown base, create a two-parent merge commit bringing in the current base and push through the task branch/artefact policy. An already-current base or no green run causes no push.      |
 | `verify <pr>… [--packages "<ws>…"] [--bench]` | Orchestrator                         | Test-merge the pinned heads together onto their shared base in a detached review worktree, clean outputs and run the project hook once.                                                                               |
 
-CI operations require an accepted, open, same-repository task PR. Trust follows
+CI operations require an accepted, open, same-repository task PR. Only `wait-checks`
+also accepts a fork head targeting central `vworlds/vmethod` when the pinned-base
+registry and complete changed-file list authorize it as a learning submission.
+This read-only exception does not permit fork pushes, refreshes or merges. Trust follows
 `people.yaml` system `appIds`, never check names; reruns are deduplicated within
 each application/name pair. Failure digests are fenced untrusted data. Signed log
 downloads never receive the GitHub API credential. Missing logs are reported with
@@ -415,7 +418,9 @@ the next request, reporting `BUDGET`. Only `x-ratelimit-*` headers drive pacing,
 never a GraphQL `rateLimit` field. Secondary 403/429 limits honor `retry-after`
 and report `BUDGET (secondary)` even when the primary budget looks healthy.
 Network errors and 5xx responses retry with reported exponential backoff. Terminal
-errors propagate; nonempty GraphQL errors reject even HTTP 200 with partial data.
+errors propagate with their HTTP method and endpoint; status-based recovery uses
+`GitHubHttpError.status`, not diagnostic-text matching. Nonempty GraphQL errors
+reject even HTTP 200 with partial data.
 
 Dropped records live in
 `$XDG_STATE_HOME/vmethod/<stateName>/dropped.jsonl`, defaulting to

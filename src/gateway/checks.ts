@@ -5,6 +5,7 @@ import { object, untrusted, type ObjectData, type PeopleFilter } from "./people.
 import { reference, type ThreadRef } from "./refs.js";
 import { taskBranch, validateBranch } from "./git.js";
 import type { Operations, Verdict } from "./transport.js";
+import { validateLearningPr } from "./learning-check.js";
 
 export interface CiSnapshot {
   target: ThreadRef;
@@ -47,7 +48,7 @@ export class ChecksService {
     });
     for (;;) {
       try {
-        const pr = await this.pull(input.ref);
+        const pr = await this.pull(input.ref, true);
         if (head && head !== pr.head) {
           return noVerdict("the PR head changed while waiting");
         }
@@ -62,7 +63,7 @@ export class ChecksService {
             return noVerdict(reason);
           }
         } else if (runs.every(completed) && (await this.suitesComplete(pr.target, runs))) {
-          const current = await this.pull(input.ref);
+          const current = await this.pull(input.ref, true);
           if (head !== current.head) {
             return noVerdict("the PR head changed while waiting");
           }
@@ -153,7 +154,11 @@ export class ChecksService {
     return { ...pr, runs, green, stale };
   }
 
-  async pull(ref: string): Promise<Omit<CiSnapshot, "runs" | "green" | "stale">> {
+  /** Only read-only waiting may authorize a central learning submission's fork head. */
+  async pull(
+    ref: string,
+    learningFork = false
+  ): Promise<Omit<CiSnapshot, "runs" | "green" | "stale">> {
     const target = reference(ref, this.config);
     if (target.repo.toLowerCase() !== String(this.config.repo).toLowerCase()) {
       throw new Error("CI operations require the configured repository");
@@ -168,13 +173,22 @@ export class ChecksService {
     }
     const head = object(pr.head);
     const base = object(pr.base);
-    if (
-      object(head.repo).full_name !== target.repo ||
-      object(base.repo).full_name !== target.repo
-    ) {
+    if (object(base.repo).full_name !== target.repo) {
       throw new Error("Task branch must belong to the configured repository");
     }
-    taskBranch(String(head.ref), this.config);
+    if (object(head.repo).full_name !== target.repo) {
+      if (
+        !learningFork ||
+        target.repo !== "vworlds/vmethod" ||
+        (await validateLearningPr(this.github, pr, target.number, false, false)) !==
+          `Learning PR #${target.number}: authorized`
+      ) {
+        throw new Error("Task branch must belong to the configured repository");
+      }
+      validateBranch(String(head.ref));
+    } else {
+      taskBranch(String(head.ref), this.config);
+    }
     validateBranch(String(base.ref));
     if (
       ![head.sha, base.sha].every((sha) => typeof sha === "string" && /^[a-f\d]{40}$/i.test(sha))

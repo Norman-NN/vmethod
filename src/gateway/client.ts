@@ -48,6 +48,17 @@ export interface BudgetStatus {
 /** Watch polls yield instead of sleeping inside HTTP, so budget events can be delivered now. */
 export class BudgetPause extends Error {}
 
+/** Preserve HTTP status for callers independently of contextual diagnostic text. */
+export class GitHubHttpError extends Error {
+  constructor(
+    readonly status: number,
+    method: string,
+    path: string
+  ) {
+    super(`GitHub HTTP ${status} on ${method} ${path}`);
+  }
+}
+
 /** Credentials and unfiltered responses must never cross the operation seam. */
 export class GitHubClient {
   private readonly token: string;
@@ -185,13 +196,13 @@ export class GitHubClient {
         continue;
       }
       if (retry && response.status >= 500 && attempt < this.retries) {
-        this.deps.report(`GitHub HTTP ${response.status}; retrying`);
+        this.deps.report(`GitHub HTTP ${response.status} on ${method} ${path}; retrying`);
         await response.body?.cancel();
         await this.deps.sleep(1000 * 2 ** attempt);
         continue;
       }
       if (!response.ok && !(redirect === "manual" && response.status === 302)) {
-        throw new Error(`GitHub HTTP ${response.status}`);
+        throw new GitHubHttpError(response.status, method, path);
       }
       return response;
     }
@@ -232,7 +243,7 @@ export class GitHubClient {
       return this.redact(await response.text());
     }
     if (response.status !== 302) {
-      throw new Error(`GitHub HTTP ${response.status}`);
+      throw new GitHubHttpError(response.status, "GET", path);
     }
     const destination = new URL(response.headers.get("location") ?? "");
     if (destination.protocol !== "https:" || destination.username || destination.password) {

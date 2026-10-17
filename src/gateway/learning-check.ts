@@ -25,7 +25,8 @@ export async function checkLearningPr(
   }
 }
 
-async function validateLearningPr(
+/** Validate pinned PR metadata and recheck its refs before granting learning-only access. */
+export async function validateLearningPr(
   github: GitHubClient,
   metadata: Record<string, unknown>,
   pr: number,

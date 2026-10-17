@@ -80,6 +80,14 @@ family advice; do not automate methodology changes or defaults from these metric
 
 ## Central automation
 
+Authorized learning submissions do not require a release changelog fragment.
+CI builds the gateway before the fragment gate and skips that gate only on the
+exact authorized verdict for the current PR; ordinary PRs still require a fragment,
+and failed authorization reads fail CI. The privileged label workflow grants only
+`contents: read` and `pull-requests: write` and runs protected base code, never fork code.
+The orchestrator can use `wait-checks` on an authorized learning fork without
+granting any fork write or merge permissions.
+
 `learnings check-pr <pr> [--label]` is the central CI entry point, backed by typed
 gateway operation `learningCheck`. Without the flag it performs read-only policy
 validation. Label writes require orchestrator call context and workflow issue-label
