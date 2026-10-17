@@ -1,4 +1,8 @@
 export const verbs = [
+  { name: "watch", stub: "scripts/agent/watch.sh" },
+  { name: "mute", stub: "scripts/agent/mute.sh" },
+  { name: "unmute", stub: "scripts/agent/unmute.sh" },
+  { name: "mutes", stub: "scripts/agent/mutes.sh" },
   { name: "wait-checks", stub: "scripts/agent/wait-checks.sh" },
   { name: "verify", stub: "scripts/orchestrator/verify.sh" },
   { name: "refresh-checks", stub: "scripts/orchestrator/refresh-checks.sh" },
