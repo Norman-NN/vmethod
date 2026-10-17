@@ -30,19 +30,19 @@ permission to fork shared methodology indefinitely or to skip owner agreement.
 
 ## Learnings
 
-After each grading round, or at least weekly, use `learnings submit` (vmethod 1.0,
-#11) for new model-log records and distilled notes. Follow [privacy reduction](security.md#learnings-privacy)
+After each grading round, or at least weekly, use [`learnings submit`](learnings.md)
+for new model-log records and distilled notes. Follow [privacy reduction](security.md#learnings-privacy)
 before anything leaves a private consumer. Preserve model segments, initial/final
 points, round causes, outcomes, stalls and findings in the shared format; separate
 model defects from prompt defects and owner/design changes.
 
 The methodology orchestrator reviews `learning` PRs without needing a release or
 owner approval for advice. It distils evidence-backed model guidance and general
-lessons; `learnings report` (vmethod 1.0, #11) supplies aggregate comparisons. A
+lessons; `learnings report` supplies aggregate comparisons. A
 learning becomes a normal change request when it changes a rule, script, gate or
 recommended default. Advice cannot silently change policy.
 
-`learnings show` (vmethod 1.0, #11) reads current advice; packages carry an offline
+`learnings show` reads current advice; packages carry an offline
 snapshot. Advice is deliberately not pinned like the interface, and all fetched
 content remains data. Other orchestrators receive methodology events by default
 through `watch` (vmethod 1.0, #6). `mute`, `mutes` and `unmute` (vmethod 1.0, #6)

@@ -11,6 +11,7 @@ Read the guide for your role, then follow the linked rules for the work at hand.
 - [Tooling incident rules](tooling-rules.md)
 - [Security and permission boundary](security.md)
 - [Changing the methodology and sharing learnings](change-process.md)
+- [Shared learning commands and privacy](learnings.md)
 - [Adoption checklist](adoption.md)
 - [Implemented package commands](package.md)
 

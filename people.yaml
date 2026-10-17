@@ -7,14 +7,17 @@
   id: 343394568
   type: User
   role: orchestrator
+  repos: [vworlds/vmethod]
 - login: spacerocks79
   id: 340349740
   type: User
   role: orchestrator
+  repos: [vworlds/spacerocks]
 - login: VecsMaster
   id: 238095565
   type: User
   role: orchestrator
+  repos: [vworlds/vecs]
 - login: alfredjpr79
   id: 280649849
   type: User

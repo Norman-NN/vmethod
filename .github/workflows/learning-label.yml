@@ -1,0 +1,29 @@
+name: Learning label
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+    branches: [dev]
+permissions:
+  contents: read
+  pull-requests: read
+  issues: write
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - name: Validate metadata and label authorized submissions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VMETHOD_ROLE: orchestrator
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: node dist/vmethod.mjs learnings check-pr "$PR_NUMBER" --label
