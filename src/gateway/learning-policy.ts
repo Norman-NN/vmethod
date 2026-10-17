@@ -20,7 +20,7 @@ export function learningAuthor(people: readonly Person[], actor: unknown, repo: 
   return person;
 }
 
-/** Validate every changed path, including rename sources, against a single authorized project. */
+/** Learning submissions only add flat JSONL/Markdown files in their authorized project directories. */
 export function learningPaths(
   people: readonly Person[],
   actor: unknown,
@@ -29,19 +29,23 @@ export function learningPaths(
 ): void {
   learningAuthor(people, actor, repo);
   const [owner, name] = repo.toLowerCase().split("/");
-  const allowed = new Set([
-    `learnings/models/${owner}-${name}.jsonl`,
-    `learnings/notes/${name}.md`,
-  ]);
+  const allowed = (path: string) => {
+    const log = `learnings/models/${owner}-${name}/`;
+    const notes = `learnings/notes/${name}/`;
+    return (
+      (path.startsWith(log) && /^[a-z0-9][a-z0-9-]*\.jsonl$/.test(path.slice(log.length))) ||
+      (path.startsWith(notes) && /^[a-z0-9][a-z0-9-]*\.md$/.test(path.slice(notes.length)))
+    );
+  };
   if (
     !files.length ||
     files.some(
       (file) =>
-        !["added", "modified"].includes(file.status) ||
-        !allowed.has(file.filename) ||
-        file.previous_filename !== undefined
+        file.status !== "added" || !allowed(file.filename) || file.previous_filename !== undefined
     )
   ) {
-    throw new Error("Learning PR may only add or modify its authorized project log and notes");
+    throw new Error(
+      "Learning PR may only add new files in its authorized project log and notes directories"
+    );
   }
 }

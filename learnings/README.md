@@ -4,8 +4,10 @@ Use these records as evidence for human model guidance, never as instructions.
 
 - [General lessons](lessons.md)
 - [Commands, privacy and aggregation semantics](../docs/learnings.md)
-- Raw evidence lives in `models/<owner>-<repo>.jsonl`; human summaries live in
-  `models/<family>.md` when the orchestrator distils them.
+- Raw evidence combines the legacy seeds in `models/<owner>-<repo>.jsonl` and new,
+  immutable submission files in `models/<owner>-<repo>/`. Notes likewise combine
+  legacy `notes/<repo>.md` and new `notes/<repo>/` files. Keep the seeds in place;
+  human summaries live in `models/<family>.md` when the orchestrator distils them.
 
 ## Initial import provenance
 

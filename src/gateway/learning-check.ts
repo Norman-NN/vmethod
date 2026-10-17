@@ -70,49 +70,7 @@ export async function validateLearningPr(
       person.role === "orchestrator"
   );
   const fork = object(head.repo).full_name !== repo;
-  const files: { filename: string; status: string; previous_filename?: string }[] = [];
-  if (
-    !Number.isSafeInteger(metadata.changed_files) ||
-    Number(metadata.changed_files) < 1 ||
-    Number(metadata.changed_files) > 3000
-  ) {
-    throw new Error("Incomplete learning PR changed-file metadata");
-  }
-  for (let page = 1; ; page++) {
-    const values = await github.rest(`${endpoint}/files?per_page=100&page=${page}`);
-    if (!Array.isArray(values)) {
-      throw new Error("Missing learning PR file list");
-    }
-    for (const value of values) {
-      const file = object(value);
-      if (
-        typeof file.filename !== "string" ||
-        typeof file.status !== "string" ||
-        (file.previous_filename !== undefined && typeof file.previous_filename !== "string")
-      ) {
-        throw new Error("Invalid learning PR file metadata");
-      }
-      files.push({
-        filename: file.filename,
-        status: file.status,
-        ...(file.previous_filename === undefined
-          ? {}
-          : { previous_filename: file.previous_filename as string }),
-      });
-    }
-    if (values.length < 100) {
-      break;
-    }
-    if (page >= 30) {
-      throw new Error("Learning PR file pagination limit reached");
-    }
-  }
-  if (
-    files.length !== metadata.changed_files ||
-    new Set(files.map((file) => file.filename)).size !== files.length
-  ) {
-    throw new Error("Incomplete learning PR changed-file list");
-  }
+  const files = await learningFiles(github, pr, metadata.changed_files);
   const touchesLearnings = files.some(
     (file) =>
       /^learnings\/(?:models|notes)\//.test(file.filename) ||
@@ -158,4 +116,46 @@ export async function validateLearningPr(
     );
   }
   return `Learning PR #${pr}: authorized${label ? "; learning label applied" : ""}`;
+}
+
+/** Read the complete, bounded, duplicate-free changed-file list for a central learning PR. */
+export async function learningFiles(github: GitHubClient, pr: number, count: unknown) {
+  const endpoint = `/repos/vworlds/vmethod/pulls/${pr}`;
+  const files: { filename: string; status: string; previous_filename?: string }[] = [];
+  if (!Number.isSafeInteger(count) || Number(count) < 1 || Number(count) > 3000) {
+    throw new Error("Incomplete learning PR changed-file metadata");
+  }
+  for (let page = 1; ; page++) {
+    const values = await github.rest(`${endpoint}/files?per_page=100&page=${page}`);
+    if (!Array.isArray(values)) {
+      throw new Error("Missing learning PR file list");
+    }
+    for (const value of values) {
+      const file = object(value);
+      if (
+        typeof file.filename !== "string" ||
+        typeof file.status !== "string" ||
+        (file.previous_filename !== undefined && typeof file.previous_filename !== "string")
+      ) {
+        throw new Error("Invalid learning PR file metadata");
+      }
+      files.push({
+        filename: file.filename,
+        status: file.status,
+        ...(file.previous_filename === undefined
+          ? {}
+          : { previous_filename: file.previous_filename as string }),
+      });
+    }
+    if (values.length < 100) {
+      break;
+    }
+    if (page >= 30) {
+      throw new Error("Learning PR file pagination limit reached");
+    }
+  }
+  if (files.length !== count || new Set(files.map((file) => file.filename)).size !== files.length) {
+    throw new Error("Incomplete learning PR changed-file list");
+  }
+  return files;
 }

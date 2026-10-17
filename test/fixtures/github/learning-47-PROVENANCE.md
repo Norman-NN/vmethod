@@ -13,6 +13,11 @@ synthetic SHA, and check id/name/app/head_sha are derived. Check conclusions are
 changed to success for green scenarios. Registry contents derive from the existing
 recorded contents envelope with a synthetic, explicit project binding.
 
+PR 52's authenticated review changes submission policy to add-only project files.
+The original PR 47 file recording remains unchanged and now exercises denial of
+legacy seed modification. Successful label/CI boundary scenarios explicitly derive
+an `added` per-submission JSONL path, retaining all other captured file fields.
+
 The label 403 is derived from run 39033957432's failure as authorized in the answer:
 `POST /repos/vworlds/vmethod/issues/47/labels` is the only write after successful
 reads. Run 39033957431 failed on the missing `changes/unreleased/47.md` fragment.

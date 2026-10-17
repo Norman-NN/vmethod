@@ -30,15 +30,25 @@ test("learning authorization pins numeric identity, login, type, role and projec
 }, 15000);
 
 test("learning paths reject cross-project edits, traversal, deletion and renames", () => {
-  const file = { filename: "learnings/models/vworlds-vmethod.jsonl", status: "modified" };
+  const file = {
+    filename: "learnings/models/vworlds-vmethod/14-16-abcdef012345.jsonl",
+    status: "added",
+  };
   expect(() =>
     learningPaths(people, actor, "vworlds/vmethod", [
       file,
-      { filename: "learnings/notes/vmethod.md", status: "added" },
+      { filename: "learnings/notes/vmethod/2026-10-17-abcdef012345.md", status: "added" },
     ])
   ).not.toThrow();
   for (const files of [
     [],
+    [{ ...file, status: "modified" }],
+    [{ filename: "learnings/models/vworlds-vmethod.jsonl", status: "modified" }],
+    [{ filename: "learnings/models/vworlds-vmethod.jsonl", status: "added" }],
+    [{ ...file, filename: "learnings/models/vworlds-vecs/14-16-abcdef012345.jsonl" }],
+    [{ ...file, filename: "learnings/models/vworlds-vmethod/../other.jsonl" }],
+    [{ ...file, filename: "learnings/notes/vecs/2026-10-17-abcdef012345.md" }],
+    [{ filename: "learnings/notes/vmethod/2026-10-17-abcdef012345.md", status: "modified" }],
     [{ ...file, filename: "learnings/models/vworlds-vecs.jsonl" }],
     [{ ...file, filename: "learnings/models/../vworlds-vmethod.jsonl" }],
     [{ ...file, filename: ".github/workflows/ci.yml" }],

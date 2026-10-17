@@ -15,6 +15,7 @@ import { learningReport, modelRecord, modelRecords, type ModelRecord } from "../
 import { GitHubClient, GitHubHttpError, type Dependencies } from "./client.js";
 import { stateRoot } from "./digest.js";
 import { learningAuthor, learningPaths } from "./learning-policy.js";
+import { learningFiles } from "./learning-check.js";
 import { object, untrusted, type Person } from "./people.js";
 import { checkMarkdown, guardClosingKeywords } from "./markdown.js";
 
@@ -97,8 +98,8 @@ export function privateLearning(record: ModelRecord, includeText = false): Model
 
 /**
  * Server-only learning reads and fork writes; credentials never cross the typed operation seam.
- * Submissions use the fork dev parent/tree without workflow scope and require byte-identical
- * project log and submitted notes on fork/central dev before creating submission objects.
+ * Submissions add immutable files on fork dev without workflow scope. Central and open
+ * submissions, not local receipts, determine which delivery PRs are already shared or pending.
  */
 export class LearningsService {
   constructor(
@@ -128,6 +129,7 @@ export class LearningsService {
     }
   }
 
+  /** Show current advice and legacy/new evidence, fenced as data, with bundled offline fallback. */
   async show(family?: string): Promise<string> {
     if (family !== undefined && !/^[a-z][a-z0-9-]*$/.test(family)) {
       throw new Error("Invalid learning family");
@@ -154,23 +156,25 @@ export class LearningsService {
         `from ${origin} (${path})\n${untrusted(content ?? (unavailable ? "No page in bundled snapshot; central read failed" : "No page on central dev"))}`
       );
     }
+    output.push(...(await this.showData(family)));
     return output.join("\n\n");
   }
 
   private report(input: LearningInput): string {
     const directory = join(this.root, "learnings/models");
     const texts = existsSync(directory)
-      ? readdirSync(directory)
+      ? readdirSync(directory, { recursive: true })
+          .map(String)
           .filter((name) => name.endsWith(".jsonl"))
           .sort()
           .map((name) => readFileSync(join(directory, name), "utf8"))
       : Object.entries(this.snapshot)
-          .filter(([path]) => /^learnings\/models\/[^/]+\.jsonl$/.test(path))
+          .filter(([path]) => /^learnings\/models\/(?:[^/]+\/)?[^/]+\.jsonl$/.test(path))
           .map(([, text]) => text);
     if (!texts.length) {
       throw new Error("No model-log inputs available for report");
     }
-    const report = learningReport(modelRecords(texts.join("\n")), input.family, input.kind);
+    const report = learningReport(unionRecords(texts), input.family, input.kind);
     if (input.json) {
       return JSON.stringify(report, null, 2);
     }
@@ -228,18 +232,6 @@ export class LearningsService {
     included: number[]
   ): Promise<string> {
     const state = join(directory, "learnings.json");
-    const cursor = existsSync(state)
-      ? object(JSON.parse(readFileSync(state, "utf8")))
-      : { count: 0, prefix: digest([]) };
-    const count = Number(cursor.count);
-    if (
-      !Number.isSafeInteger(count) ||
-      count < 0 ||
-      count > records.length ||
-      cursor.prefix !== digest(records.slice(0, count))
-    ) {
-      throw new Error("Submitted model-log prefix changed; reconcile cursor before submitting");
-    }
     const github = this.github();
     const registry = await this.content(central, "people.yaml", base);
     if (registry === undefined) {
@@ -253,94 +245,77 @@ export class LearningsService {
       await checkMarkdown(this.root, rawNotes);
       guardClosingKeywords(rawNotes);
     }
+    const [owner, name] = repo.split("/");
+    const logDirectory = `learnings/models/${owner}-${name}`;
+    const notesDirectory = `learnings/notes/${name}`;
+    const baseRef = object(await github.rest(`/repos/${central}/git/ref/heads/${base}`));
+    const parent = sha(object(baseRef.object).sha);
+    const paths = await this.dataPaths(parent);
+    const shared = await this.readRecords(
+      central,
+      paths.filter(
+        (path) => path === `${logDirectory}.jsonl` || path.startsWith(`${logDirectory}/`)
+      ),
+      parent,
+      repo
+    );
+    const pending = await this.pending(people, viewer, repo);
+    const known = new Set([...shared, ...pending.records].map((record) => record.pr));
+    if (included.some((pr) => known.has(pr))) {
+      throw new Error("--include-text cannot amend previously submitted records");
+    }
     const fresh = records
-      .slice(count)
+      .filter((record) => !known.has(record.pr))
       .map((record) =>
         this.config.learningsPrivacy === "private"
           ? privateLearning(record, included.includes(record.pr))
           : record
-      );
-    if (included.some((pr) => records.slice(0, count).some((record) => record.pr === pr))) {
-      throw new Error("--include-text cannot amend previously submitted records");
-    }
-    if (!fresh.length && (rawNotes === undefined || digest(rawNotes) === cursor.notes)) {
-      return "No new learnings to submit";
-    }
-    if (cursor.url !== undefined) {
-      const priorNumber = /^https:\/\/github\.com\/vworlds\/vmethod\/pull\/([1-9]\d*)$/.exec(
-        String(cursor.url)
-      )?.[1];
-      if (!priorNumber) {
-        throw new Error("Invalid prior submission receipt");
-      }
-      const priorPr = object(await github.rest(`/repos/${central}/pulls/${priorNumber}`));
-      if (priorPr.merged_at == null) {
-        throw new Error(
-          "Previous learning submission is not merged; merge it or reconcile its cursor before submitting more"
-        );
+      )
+      .sort((a, b) => a.pr - b.pr);
+    const log = fresh.map((record) => JSON.stringify(record)).join("\n") + "\n";
+    let notesShared = rawNotes !== undefined && pending.notes.includes(rawNotes);
+    if (rawNotes !== undefined && !notesShared) {
+      for (const path of paths.filter(
+        (path) => path === `${notesDirectory}.md` || path.startsWith(`${notesDirectory}/`)
+      )) {
+        if ((await this.requiredContent(central, path, parent)) === rawNotes) {
+          notesShared = true;
+          break;
+        }
       }
     }
-    const [owner, name] = repo.split("/");
-    const modelPath = `learnings/models/${owner}-${name}.jsonl`;
-    const notesPath = `learnings/notes/${name}.md`;
-    const baseRef = object(await github.rest(`/repos/${central}/git/ref/heads/${base}`));
-    const parent = sha(object(baseRef.object).sha);
-    const centralLog = await this.contentBytes(central, modelPath, parent);
-    const centralNotes =
-      rawNotes === undefined ? undefined : await this.contentBytes(central, notesPath, parent);
-    const previous = centralLog?.toString("utf8") ?? "";
-    const shared = modelRecords(previous);
-    if (shared.some((record) => record.repo.toLowerCase() !== repo)) {
-      throw new Error("Shared model log contains a foreign repository");
-    }
-    for (const record of fresh) {
-      const prior = shared.find(
-        (entry) => entry.repo.toLowerCase() === repo && entry.pr === record.pr
-      );
-      if (prior && !isDeepStrictEqual(prior, record)) {
-        throw new Error("Conflicting shared delivery; reconcile before resubmitting");
-      }
-      if (!prior) {
-        shared.push(record);
-      }
-    }
+    const date = new Date(this.deps.now()).toISOString().slice(0, 10);
     const files = [
       ...(fresh.length
         ? [
             {
-              path: modelPath,
-              content: shared.map((record) => JSON.stringify(record)).join("\n") + "\n",
+              path: `${logDirectory}/${fresh[0].pr}-${fresh.at(-1)!.pr}-${digest(log).slice(0, 12)}.jsonl`,
+              content: log,
             },
           ]
         : []),
-      ...(rawNotes === undefined ? [] : [{ path: notesPath, content: rawNotes }]),
+      ...(rawNotes === undefined || notesShared
+        ? []
+        : [
+            {
+              path: `${notesDirectory}/${date}-${digest(rawNotes).slice(0, 12)}.md`,
+              content: rawNotes,
+            },
+          ]),
     ];
-    if (fresh.length && previous === files.find((file) => file.path === modelPath)?.content) {
-      files.splice(
-        files.findIndex((file) => file.path === modelPath),
-        1
-      );
-    }
-    if (rawNotes !== undefined && centralNotes?.toString("utf8") === rawNotes) {
-      files.splice(
-        files.findIndex((file) => file.path === notesPath),
-        1
-      );
-    }
     const receipt = {
-      count: records.length,
-      prefix: digest(records),
-      notes: rawNotes === undefined ? cursor.notes : digest(rawNotes),
+      submitted: fresh.map((record) => record.pr),
+      sharedAt: parent,
     };
     if (!files.length) {
-      this.saveCursor(state, { ...receipt, sharedAt: parent });
-      return "Records and notes already shared on dev; cursor reconciled";
+      this.saveReceipt(state, receipt);
+      return `No new learnings to submit${pending.urls.length ? `\nPending: ${pending.urls.join(", ")}` : ""}`;
     }
     learningPaths(
       people,
       viewer,
       repo,
-      files.map((file) => ({ filename: file.path, status: "modified" }))
+      files.map((file) => ({ filename: file.path, status: "added" }))
     );
     const forkName = `${person.login}/vmethod`;
     let fork: Record<string, unknown>;
@@ -374,18 +349,15 @@ export class LearningsService {
     }
     const forkRef = object(await github.rest(`/repos/${forkName}/git/ref/heads/${base}`));
     const forkParent = sha(object(forkRef.object).sha);
-    const expectedContents: [string, Buffer | undefined][] = [[modelPath, centralLog]];
-    if (rawNotes !== undefined) {
-      expectedContents.push([notesPath, centralNotes]);
-    }
-    for (const [path, content] of expectedContents) {
-      if (!isDeepStrictEqual(await this.contentBytes(forkName, path, forkParent), content)) {
-        throw new Error(
-          `fork dev is stale for ${path}; sync the fork in the GitHub web UI, then retry`
-        );
+    for (const file of files) {
+      if (
+        paths.includes(file.path) ||
+        (await this.content(forkName, file.path, forkParent)) !== undefined
+      ) {
+        throw new Error(`Submission path already exists; refusing to modify ${file.path}`);
       }
     }
-    const branch = `learnings/${owner}-${name}-${digest({ count, files }).slice(0, 24)}`;
+    const branch = `learnings/${owner}-${name}-${digest(files).slice(0, 24)}`;
     const refPath = `/repos/${forkName}/git/ref/heads/${branch}`;
     let head: string | undefined;
     try {
@@ -458,11 +430,15 @@ export class LearningsService {
     const existing = await github.rest(
       `/repos/${central}/pulls?state=all&head=${encodeURIComponent(`${person.login}:${branch}`)}&base=${base}&per_page=100`
     );
-    if (!Array.isArray(existing) || existing.length > 1) {
+    if (!Array.isArray(existing) || existing.length >= 100) {
       throw new Error("Ambiguous submission PR state");
     }
-    let pr = object(existing[0]);
-    if (!existing.length) {
+    const active = existing.map(object).filter((pr) => pr.state === "open" || pr.merged_at != null);
+    if (active.length > 1) {
+      throw new Error("Ambiguous submission PR state");
+    }
+    let pr = object(active[0]);
+    if (!active.length) {
       pr = object(
         await github.rest(
           `/repos/${central}/pulls`,
@@ -489,24 +465,206 @@ export class LearningsService {
       (pr.state !== "open" && pr.merged_at == null)
     ) {
       throw new Error(
-        "Submission PR is mismatched or closed unmerged; reconcile before advancing cursor"
+        "Submission PR is mismatched or closed unmerged; retry before recording a receipt"
       );
     }
-    this.saveCursor(state, { ...receipt, url });
+    this.saveReceipt(state, { ...receipt, url });
     return `Submitted ${fresh.length} records: ${url}\nLearning label pending central validation`;
   }
 
-  private saveCursor(path: string, value: unknown): void {
+  private async dataPaths(ref: string): Promise<string[]> {
+    const github = this.github();
+    const commit = object(await github.rest(`/repos/${central}/git/commits/${ref}`));
+    const tree = object(
+      await github.rest(`/repos/${central}/git/trees/${sha(object(commit.tree).sha)}?recursive=1`)
+    );
+    if (tree.truncated !== false || !Array.isArray(tree.tree)) {
+      throw new Error("Incomplete central learning tree");
+    }
+    const paths: string[] = [];
+    for (const value of tree.tree) {
+      const entry = object(value);
+      if (
+        typeof entry.path !== "string" ||
+        !["blob", "tree", "commit"].includes(String(entry.type))
+      ) {
+        throw new Error("Invalid central learning tree entry");
+      }
+      if (
+        entry.type === "blob" &&
+        /^learnings\/(?:models|notes)\/(?:[^/]+\/)?[^/]+\.(?:jsonl|md)$/.test(entry.path) &&
+        !entry.path.split("/").some((part) => part === "." || part === "..")
+      ) {
+        paths.push(entry.path);
+      }
+    }
+    if (new Set(paths).size !== paths.length) {
+      throw new Error("Duplicate central learning path");
+    }
+    return paths.sort();
+  }
+
+  private async pending(people: Person[], viewer: Record<string, unknown>, repo: string) {
+    const github = this.github();
+    const author = learningAuthor(people, viewer, repo);
+    const [owner, name] = repo.split("/");
+    const texts: string[] = [];
+    const notes: string[] = [];
+    const urls: string[] = [];
+    for (let page = 1; ; page++) {
+      const listed = await github.rest(
+        `/repos/${central}/pulls?state=open&base=${base}&per_page=100&page=${page}`
+      );
+      if (!Array.isArray(listed)) {
+        throw new Error("Invalid open learning PR list");
+      }
+      for (const value of listed) {
+        const candidate = object(value);
+        const user = object(candidate.user);
+        // Gate identity before any further PR/file reads; unrelated PRs are not inputs.
+        if (
+          user.id !== author.id ||
+          user.type !== author.type ||
+          String(user.login).toLowerCase() !== author.login.toLowerCase()
+        ) {
+          continue;
+        }
+        if (!Number.isSafeInteger(candidate.number) || Number(candidate.number) < 1) {
+          throw new Error("Invalid pending learning PR number");
+        }
+        const number = Number(candidate.number);
+        const endpoint = `/repos/${central}/pulls/${number}`;
+        const pr = object(await github.rest(endpoint));
+        learningAuthor(people, pr.user, repo);
+        if (object(pr.user).id !== author.id) {
+          throw new Error("Pending learning PR author moved; retry");
+        }
+        if (
+          pr.state !== "open" ||
+          object(pr.base).ref !== base ||
+          object(object(pr.base).repo).full_name !== central ||
+          String(object(object(pr.head).repo).full_name).toLowerCase() !==
+            `${author.login}/vmethod`.toLowerCase()
+        ) {
+          continue;
+        }
+        const ref = sha(object(pr.head).sha);
+        const files = await learningFiles(github, number, pr.changed_files);
+        try {
+          learningPaths(people, viewer, repo, files);
+        } catch {
+          // Read-only compatibility for pre-layout submissions such as PR 47. This
+          // does not grant legacy modifications learning-policy/CI authorization.
+          const legacy = new Set([
+            `learnings/models/${owner}-${name}.jsonl`,
+            `learnings/notes/${name}.md`,
+          ]);
+          if (
+            !files.every(
+              (file) =>
+                legacy.has(file.filename) &&
+                ["added", "modified"].includes(file.status) &&
+                file.previous_filename === undefined
+            )
+          ) {
+            continue;
+          }
+        }
+        for (const file of files) {
+          const content = await this.requiredContent(`${author.login}/vmethod`, file.filename, ref);
+          if (file.filename.endsWith(".jsonl")) {
+            texts.push(content);
+          } else {
+            notes.push(content);
+          }
+        }
+        const current = object(await github.rest(endpoint));
+        if (
+          current.state !== "open" ||
+          object(current.head).sha !== ref ||
+          object(current.user).id !== author.id ||
+          current.changed_files !== pr.changed_files
+        ) {
+          throw new Error("Pending learning PR moved; retry");
+        }
+        urls.push(`https://github.com/${central}/pull/${number}`);
+      }
+      if (listed.length < 100) {
+        break;
+      }
+      if (page >= 30) {
+        throw new Error("Open learning PR pagination limit reached");
+      }
+    }
+    const records = unionRecords(texts);
+    if (records.some((record) => record.repo.toLowerCase() !== repo)) {
+      throw new Error("Pending model log contains a foreign repository");
+    }
+    return { records, notes, urls };
+  }
+
+  private async readRecords(repo: string, paths: string[], ref: string, source?: string) {
+    const texts: string[] = [];
+    for (const path of paths.filter((path) => path.endsWith(".jsonl"))) {
+      texts.push(await this.requiredContent(repo, path, ref));
+    }
+    const records = unionRecords(texts);
+    if (source !== undefined && records.some((record) => record.repo.toLowerCase() !== source)) {
+      throw new Error("Shared model log contains a foreign repository");
+    }
+    return records;
+  }
+
+  private async requiredContent(repo: string, path: string, ref: string): Promise<string> {
+    const content = await this.content(repo, path, ref);
+    if (content === undefined) {
+      throw new Error(`Missing listed learning file ${path}`);
+    }
+    return content;
+  }
+
+  private async showData(family?: string): Promise<string[]> {
+    const isData = (path: string) =>
+      /^learnings\/models\/(?:[^/]+\/)?[^/]+\.jsonl$/.test(path) ||
+      /^learnings\/notes\/(?:[^/]+\/)?[^/]+\.md$/.test(path);
+    const texts: [string, string][] = [];
+    let origin = `${central}:${base}`;
+    try {
+      const ref = object(await this.github().rest(`/repos/${central}/git/ref/heads/${base}`));
+      const parent = sha(object(ref.object).sha);
+      for (const path of (await this.dataPaths(parent)).filter(isData)) {
+        texts.push([path, await this.requiredContent(central, path, parent)]);
+      }
+    } catch (error) {
+      this.deps.report(
+        `Learnings remote unavailable: ${(error as Error).message}; using bundled snapshot`
+      );
+      texts.length = 0;
+      texts.push(...Object.entries(this.snapshot).filter(([path]) => isData(path)));
+      origin = "bundled snapshot";
+    }
+    const records = unionRecords(
+      texts.filter(([path]) => path.endsWith(".jsonl")).map(([, text]) => text)
+    ).filter((record) => !family || record.segments.some((segment) => segment.family === family));
+    return [
+      ...(records.length
+        ? [
+            `from ${origin} (model records: legacy seeds and submissions)\n${untrusted(records.map((record) => JSON.stringify(record)).join("\n"))}`,
+          ]
+        : []),
+      ...texts
+        .filter(([path]) => path.startsWith("learnings/notes/"))
+        .map(([path, text]) => `from ${origin} (${path})\n${untrusted(text)}`),
+    ];
+  }
+
+  private saveReceipt(path: string, value: unknown): void {
     const temporary = `${path}.tmp`;
     writeFileSync(temporary, JSON.stringify(value), { mode: 0o600 });
     renameSync(temporary, path);
   }
 
   private async content(repo: string, path: string, ref: string): Promise<string | undefined> {
-    return (await this.contentBytes(repo, path, ref))?.toString("utf8");
-  }
-
-  private async contentBytes(repo: string, path: string, ref: string): Promise<Buffer | undefined> {
     let data;
     try {
       data = object(
@@ -526,8 +684,23 @@ export class LearningsService {
     ) {
       throw new Error("Invalid learning content response");
     }
-    return Buffer.from(data.content, "base64");
+    return Buffer.from(data.content, "base64").toString("utf8");
   }
+}
+
+function unionRecords(texts: string[]): ModelRecord[] {
+  const records = new Map<string, ModelRecord>();
+  for (const text of texts) {
+    for (const record of modelRecords(text)) {
+      const key = `${record.repo.toLowerCase()}#${record.pr}`;
+      const previous = records.get(key);
+      if (previous && !isDeepStrictEqual(previous, record)) {
+        throw new Error(`Conflicting shared delivery ${key}`);
+      }
+      records.set(key, record);
+    }
+  }
+  return [...records.values()];
 }
 
 function plainReport(report: ReturnType<typeof learningReport>): string {

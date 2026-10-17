@@ -20,31 +20,41 @@ Submission never synchronizes or force-updates your fork. It uses the fork's own
 `dev` commit as parent and its tree as the base, so your token needs no `workflow`
 scope, even when central has newer workflows. The PR's merge-base diff contains
 only your learning changes when the fork is behind on other paths.
-Your project's model log (and notes file, when submitted) must be byte-identical
-on fork `dev` and central `dev`, including file presence. A mismatch stops before
-submission writes with `fork dev is stale for <path>; sync the fork in the GitHub web UI, then retry`.
-It opens a PR against
-`vworlds/vmethod:dev`, appending records to
-`learnings/models/<owner>-<repo>.jsonl`. Add public distilled notes with
-`--notes <file>`; they replace `learnings/notes/<repo>.md` in that submission.
+It opens a PR against `vworlds/vmethod:dev`, adding one immutable file containing
+only new records: `learnings/models/<owner>-<repo>/<first-pr>-<last-pr>-<digest12>.jsonl`.
+Records are sorted by delivery PR number; the content digest makes the path deterministic.
+Add public distilled notes with `--notes <file>`; they add
+`learnings/notes/<repo>/<UTC-date>-<digest12>.md`, never replace previous notes.
+Neither central nor fork dev may already contain a proposed new path. There is
+no shared-file freshness precondition: a fork can remain behind through repeated
+submissions without syncing, even after its previous submission merges.
 Notes are checked as Markdown and cannot contain issue-closing syntax.
 
 Central, trusted-base automation applies `learning` **after** validating your numeric
 identity, project binding and complete changed-file list. Submission reports the PR
 URL and that labeling is pending; your token does not need central write access.
 Ordinary CI validates fork submissions independently of their label. Learning PRs
-may only add or modify the authorized log and notes; deletions, renames, extra paths
+may only **add new files** directly under its authorized project log and notes
+directories. Modifications (including legacy seeds), deletions, renames, extra paths
 and cross-project changes fail. Same-repository implementation task PRs still use
 the ordinary task review process, so they can implement this tooling and seed data.
 
-The cursor is under `$XDG_STATE_HOME/vmethod/<stateName>/learnings.json` (default
-`~/.local/state`). It advances only after a verified PR receipt; reruns recover a
-lost PR response without creating another PR. A submitted prefix must not change.
-Records already identical on central `dev` reconcile the cursor without an empty PR.
-Wait for the preceding submission to merge before submitting another increment;
-a closed-unmerged PR or edited prefix requires explicit reconciliation, not deletion
-of state. An exclusive `learnings.lock` prevents concurrent submissions. Remove a
-stale lock only after confirming no submission is running.
+Central `dev` is authoritative for submitted records: union the legacy seed
+`learnings/models/<owner>-<repo>.jsonl` with every JSONL file in its project directory,
+keyed by delivery PR. Records in this author's open learning submissions are pending
+and are not sent again; this includes legacy seed-file submissions during migration.
+Records found only in closed-unmerged submissions are eligible again. You can submit
+another increment while an earlier PR is open. Already shared/pending notes are
+deduplicated by content too. Reports deduplicate identical deliveries and reject
+conflicting records for the same repository/PR.
+
+The local `learnings.json` under `$XDG_STATE_HOME/vmethod/<stateName>/` (default
+`~/.local/state`) is only a receipt, not a cursor deciding what is new. Existing
+receipts do not block resubmission after an unmerged closure or local log edits.
+Reruns discover open submissions after a lost PR response; deterministic branches
+also recover a branch created before a PR write. An exclusive `learnings.lock`
+prevents concurrent submissions. Remove a stale lock only after confirming no
+submission is running.
 
 ## Private reduction
 
@@ -64,11 +74,11 @@ review every owner-cleared text field before sending it.
 
 ## Read and compare
 
-| Command                                             | Result                                                                                                                                                                                                          |
-| --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `learnings show [<family>]`                         | Current family page (when selected) and general lessons from central `dev`, fenced as untrusted data. Failed reads use the bundled snapshot; a successful read with no page explicitly reports central absence. |
-| `learnings report [--family f] [--kind k] [--json]` | Aggregate local `learnings/models/*.jsonl`, or the bundled records if that directory is absent. Missing inputs and malformed records fail visibly.                                                              |
-| `suggest-model <issue>`                             | Existing model/gate recommendation plus the matching current learning page and lessons. Advice cannot override a model gate.                                                                                    |
+| Command                                             | Result                                                                                                                                                                                                                                                                                   |
+| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `learnings show [<family>]`                         | Current family page (when selected), general lessons, model records from both layouts (filtered by family), and legacy/new notes from central `dev`, fenced as untrusted data. Failed reads use the bundled snapshot; a successful read with no page explicitly reports central absence. |
+| `learnings report [--family f] [--kind k] [--json]` | Aggregate local legacy seed JSONL and project-directory JSONL under `learnings/models/`, or the bundled records if that directory is absent. Missing inputs and malformed records fail visibly.                                                                                          |
+| `suggest-model <issue>`                             | Existing model/gate recommendation plus the matching current learning page and lessons. Advice cannot override a model gate.                                                                                                                                                             |
 
 Plain-text reports use readable grouped lists and two-decimal ratios; `--json`
 retains full numeric precision. Reports sum delivery rounds and final points. Rounds per point is `null`/`n/a` when

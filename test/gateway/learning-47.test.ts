@@ -24,14 +24,21 @@ const registry = {
   method: "GET",
   json: { ...envelopes.people, content: Buffer.from(stringify([person])).toString("base64") },
 };
-const files = (values = recorded.files) => ({
+// Keep PR 47's captured legacy modification unchanged; derive the add-only layout
+// for successful policy/CI scenarios under the authenticated review on PR 52.
+const submissionFiles = recorded.files.map((file) => ({
+  ...file,
+  filename: "learnings/models/vworlds-vmethod/14-36-abcdef012345.jsonl",
+  status: "added",
+}));
+const files = (values = submissionFiles) => ({
   path: `${prefix}/pulls/47/files?per_page=100&page=1`,
   method: "GET",
   json: values,
 });
 
 test.each([403, 200])(
-  "recorded learning label response %s preserves authorization and diagnostic context",
+  "recorded label response %s with derived add-only path preserves diagnostic context",
   async (status) => {
     const endpoint = `${prefix}/issues/47/labels`;
     const f = fixtureServer([
@@ -55,6 +62,13 @@ test.each([403, 200])(
   }
 );
 
+test("unmodified PR 47 recording is now denied because it modifies the legacy seed", async () => {
+  const f = fixtureServer([metadata(), registry, files(recorded.files), metadata()]);
+  const github = new GitHubClient(getConfig(f.root, {}), f.env, f.deps);
+  await expect(checkLearningPr(github, 47)).rejects.toThrow("denied");
+  f.done();
+});
+
 test.each([
   "green",
   "red",
@@ -72,7 +86,7 @@ test.each([
   const changed =
     scenario === "ordinary" || scenario === "mixed"
       ? [{ ...recorded.files[0], filename: "src/hostile.ts" }]
-      : recorded.files;
+      : submissionFiles.map((file) => ({ ...file }));
   if (scenario === "mixed") {
     changed.push(recorded.files[0]);
     value = { ...value, changed_files: 2 };
