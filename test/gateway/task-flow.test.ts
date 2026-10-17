@@ -48,7 +48,16 @@ function fixture() {
     branchExists = true,
     checkoutHead = sha;
   const comments: ObjectData[] = [];
-  const cards: Card[] = [];
+  const cards: Card[] = [
+    {
+      id: "issue-card",
+      contentId: "issue",
+      repo: "example/project",
+      kind: "Issue",
+      assignees: [],
+      values: { Estimate: 13 },
+    },
+  ];
   const touched: { id: string; field: string; value: unknown; progress?: unknown }[] = [];
   const unexpected: string[] = [];
   const deps: Dependencies = {
@@ -252,6 +261,7 @@ function fixture() {
     deps,
     env,
     comments,
+    cards,
     flow: () => new TaskFlow(root, env, config, deps, host),
     set: (values: {
       approved?: boolean | "unknown";
@@ -319,6 +329,8 @@ test("open-task creates a draft, links without closing syntax, clears issue Prog
   const create = f.writes.find((w) => w.path.endsWith("/pulls"))!;
   expect(create.body).toMatchObject({ draft: true, base: "dev", title: "feat: task" });
   expect(create.body.body).toContain("https://github.com/example/project/issues/8");
+  expect(create.body.body).toContain("# Task: feat: task (issue #8)");
+  expect(create.body.body).toContain("<!-- points_open: 13 -->");
   expect(create.body.body).not.toMatch(/(?:closes|part of)\s+#8/i);
   expect(create.body.body).not.toContain("<specifics>");
   expect(f.touched).toContainEqual(
@@ -343,6 +355,28 @@ test("expensive breakpoints tell workers to HANDOFF and end turn; unapproved exc
   expect(f.writes.find((w) => w.path.endsWith("/8/comments"))!.body.body).toContain(
     "Reproducer attached"
   );
+  f.done();
+});
+
+test.each([0, 0.5, 13])(
+  "points_open freezes numeric issue estimate %s without estimating the PR",
+  async (estimate) => {
+    const f = fixture();
+    f.cards[0].values.Estimate = estimate;
+    await f.flow().open({ issue: "8", model: "sol" });
+    const body = String(f.writes.find((write) => write.path.endsWith("/pulls"))!.body.body);
+    expect(body.split("\n")[0]).toBe("# Task: feat: task (issue #8)");
+    expect(body).toContain(`<!-- points_open: ${estimate} -->`);
+    expect(f.touched.some((write) => write.field === "Estimate")).toBe(false);
+    f.done();
+  }
+);
+
+test("missing opening issue Estimate is refused before branch or PR writes", async () => {
+  const f = fixture();
+  f.cards[0].values.Estimate = null;
+  await expect(f.flow().open({ issue: "8", model: "sol" })).rejects.toThrow("Estimate at opening");
+  expect(f.writes).toEqual([]);
   f.done();
 });
 

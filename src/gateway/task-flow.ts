@@ -190,11 +190,18 @@ export class TaskFlow {
       }
     }
     let hint: string | undefined;
-    if (issue && object(this.config.board).enabled !== false && !input.model) {
+    let pointsOpen: number | undefined;
+    if (issue && object(this.config.board).enabled !== false) {
       const board = this.host.board();
       const snapshot = await board.snapshot();
       const card = (await board.cards(snapshot.id)).find((card) => card.contentId === issue.id);
       hint = typeof card?.values.Model === "string" ? card.values.Model : undefined;
+      const estimate = card?.values.Estimate;
+      if (typeof estimate === "number" && Number.isFinite(estimate) && estimate >= 0) {
+        pointsOpen = estimate;
+      } else {
+        throw new Error("Issue must have an Estimate at opening");
+      }
     }
     const models = loadYaml(this.root, "models") as {
       family: string;
@@ -249,7 +256,11 @@ export class TaskFlow {
     );
     const body =
       template
-        .replaceAll("<delivery title>", title)
+        .replaceAll("<delivery title>", `${title}${input.issue ? ` (issue #${input.issue})` : ""}`)
+        .replace(
+          "<!-- points_open: <issue estimate> -->",
+          pointsOpen === undefined ? "" : `<!-- points_open: ${pointsOpen} -->`
+        )
         .replaceAll(
           "<link and agreement, or explicit direct go>",
           issue

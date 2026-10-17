@@ -213,6 +213,8 @@ These commands require `VMETHOD_ROLE=orchestrator`:
 
 - `open-task <issue> [--direct "<title>"] [--unapproved "<reason>"] [--hold] [--model <family>] [--owner-approved]`
   creates a conforming-title draft from the task template and issue specification.
+  The header is `# Task: <title> (issue #N)` and `<!-- points_open: N -->`
+  freezes the issue's opening Estimate for grading; it is never copied onto the PR card.
   `open-task --direct "<title>"` also works without an issue. It records a structured
   issue relation without closing prose, sets Model/Progress and never estimates a PR.
   Gates and expensive-only Handoff breakpoints are enforced server-side.
