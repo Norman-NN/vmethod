@@ -8,6 +8,7 @@ import { verbs } from "../registry.js";
 import { createGateway } from "../gateway/server.js";
 import { gatewayVerb } from "./gateway.js";
 import { workerVerb } from "./worker.js";
+import { taskFlowVerb } from "./task-flow.js";
 import { ciVerb } from "./ci.js";
 import { MarkdownDependencyError } from "../gateway/markdown.js";
 import { execFile, execFileSync } from "node:child_process";
@@ -56,11 +57,15 @@ try {
     case "read-pr":
     case "pr-comment":
     case "push":
+    case "wait-review":
+    case "open-task":
+    case "review":
+    case "merge-task":
+    case "release-hold":
     case "wait-checks":
     case "verify":
     case "refresh-checks":
-    case "check-task-ci":
-    case "wait-review": {
+    case "check-task-ci": {
       const transport = createGateway(root(), process.env, {
         fetch,
         exec: async (file, args, options) =>
@@ -95,7 +100,9 @@ try {
               ).stdout,
             report: (message) => console.error(message),
           })
-        : await gatewayVerb(transport, verb, args, process.env);
+        : ["open-task", "review", "merge-task", "release-hold"].includes(verb)
+          ? await taskFlowVerb(transport, verb, args, process.env)
+          : await gatewayVerb(transport, verb, args, process.env);
       if (output) {
         console.log(output);
       }

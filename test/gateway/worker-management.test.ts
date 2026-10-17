@@ -27,8 +27,8 @@ function fixture() {
   writeFileSync(
     join(root, "models.yaml"),
     stringify([
-      { family: "glm", model: "fake/glm", kind: "opencode", gate: "none" },
-      { family: "sonnet", model: "claude-fake", kind: "claude", gate: "none" },
+      { family: "glm", model: "fake/glm", kind: "opencode", gate: "none", tier: "cheap" },
+      { family: "sonnet", model: "claude-fake", kind: "claude", gate: "none", tier: "standard" },
     ])
   );
   const projects = (id: string, field: string, value: unknown) => ({

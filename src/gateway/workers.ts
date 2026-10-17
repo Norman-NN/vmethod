@@ -33,6 +33,7 @@ interface Model {
   model: string;
   kind: "opencode" | "claude";
   gate: "none" | "owner";
+  tier: "expensive" | "standard" | "cheap";
   fallback?: string[];
 }
 interface Segment {

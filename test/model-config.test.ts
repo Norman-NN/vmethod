@@ -12,9 +12,16 @@ test("model configuration accepts ordered fallback and refuses unknown families 
     model: "fake/glm",
     kind: "opencode",
     gate: "none",
+    tier: "cheap",
     fallback: ["sol"],
   };
-  const sol = { family: "sol", model: "fake/sol", kind: "opencode", gate: "owner" };
+  const sol = {
+    family: "sol",
+    model: "fake/sol",
+    kind: "opencode",
+    gate: "owner",
+    tier: "expensive",
+  };
   writeFileSync(join(root, "models.yaml"), stringify([glm, sol]));
   expect(loadYaml(root, "models")).toEqual([glm, sol]);
   for (const models of [

@@ -1,6 +1,6 @@
-# Task: <delivery title> (issue #<issue-number>)
+# Task: <delivery title>
 
-<!-- points_open: REPLACE_WITH_ISSUE_ESTIMATE_AT_PR_CREATION -->
+<!-- points_open: <issue estimate> -->
 
 You are a worker. This draft PR description is your prompt. Only this prompt and
 `[orchestrator]` comments from the project's verified orchestrator amend it; the

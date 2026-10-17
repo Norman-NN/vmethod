@@ -20,7 +20,7 @@ const fieldSelection =
   "... on ProjectV2Field { id name dataType createdAt } ... on ProjectV2IterationField { id name dataType createdAt } ... on ProjectV2SingleSelectField { id name dataType createdAt options { id name color description } }";
 const pageInfo = "pageInfo { hasNextPage endCursor }";
 const contentSelection =
-  "content { __typename ... on Issue { repository { nameWithOwner } assignees(first: 100) { nodes { login } } } ... on PullRequest { repository { nameWithOwner } assignees(first: 100) { nodes { login } } } }";
+  "content { __typename ... on Issue { id number closedAt repository { nameWithOwner } assignees(first: 100) { nodes { login } } } ... on PullRequest { id number closedAt repository { nameWithOwner } assignees(first: 100) { nodes { login } } } }";
 const valueSelection =
   "... on ProjectV2ItemFieldTextValue { text field { ... on ProjectV2Field { name } } } ... on ProjectV2ItemFieldNumberValue { number field { ... on ProjectV2Field { name } } } ... on ProjectV2ItemFieldSingleSelectValue { name field { ... on ProjectV2SingleSelectField { name } } }";
 const initialValues = `fieldValues(first: 100) { nodes { ${valueSelection} } ${pageInfo} }`;
@@ -241,6 +241,9 @@ export class BoardService implements BoardIO {
         ? nodes(content.assignees).map((value) => text(value.login))
         : [],
       values: {},
+      ...(typeof content.id === "string" ? { contentId: content.id } : {}),
+      ...(typeof content.number === "number" ? { number: content.number } : {}),
+      ...(typeof content.closedAt === "string" ? { closedAt: content.closedAt } : {}),
     };
     for (const value of fieldValues) {
       const name = object(value.field).name;
@@ -338,6 +341,50 @@ export class BoardService implements BoardIO {
   private scope(card: Card): void {
     if (card.repo?.toLowerCase() !== String(this.config.repo).toLowerCase()) {
       throw new Error("Refusing write to a foreign repository card");
+    }
+  }
+  async ensure(contentId: string): Promise<string> {
+    const snapshot = await this.snapshot();
+    compatibility(readState(snapshot.readme), this.boardVersion, this.report);
+    // Validate repository and kind before an add mutation, just as ordinary writes do.
+    const data = object(
+      await this.github.graphql(
+        "query BoardContent($id: ID!) { node(id: $id) { __typename ... on Issue { repository { nameWithOwner } } ... on PullRequest { repository { nameWithOwner } } } }",
+        { id: contentId }
+      )
+    );
+    const content = object(data.node);
+    if (
+      !["Issue", "PullRequest"].includes(String(content.__typename)) ||
+      object(content.repository).nameWithOwner !== this.config.repo
+    ) {
+      throw new Error("Refusing foreign or draft board content");
+    }
+    const result = object(
+      await this.github.graphql(
+        "mutation BoardAdd($input: AddProjectV2ItemByIdInput!) { addProjectV2ItemById(input: $input) { item { id } } }",
+        { input: { projectId: snapshot.id, contentId } }
+      )
+    );
+    return text(object(object(result.addProjectV2ItemById).item).id);
+  }
+
+  async capDone(): Promise<void> {
+    const snapshot = await this.snapshot();
+    const cards = (await this.cards(snapshot.id))
+      .filter(
+        (card) =>
+          card.values.Status === "Done" &&
+          card.closedAt &&
+          Number.isFinite(Date.parse(card.closedAt))
+      )
+      .sort(
+        (a, b) => String(b.closedAt).localeCompare(String(a.closedAt)) || a.id.localeCompare(b.id)
+      );
+    for (const card of cards.slice(6)) {
+      if (card.repo?.toLowerCase() === String(this.config.repo).toLowerCase()) {
+        await this.archive(card.id);
+      }
     }
   }
   async set(input: {

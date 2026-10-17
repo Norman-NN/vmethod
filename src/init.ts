@@ -69,14 +69,14 @@ export function init(root: string, templateRoot: string, dryRun = false): string
           if (cells.length !== header.length) {
             throw new Error(`models.tsv:${index + 1}: wrong column count`);
           }
-          return [
-            Object.fromEntries(
-              header.map((column, cell) => [
-                column,
-                column === "gate" && cells[cell] === "-" ? "none" : cells[cell],
-              ])
-            ),
-          ];
+          const row = Object.fromEntries(
+            header.map((column, cell) => [
+              column,
+              column === "gate" && cells[cell] === "-" ? "none" : cells[cell],
+            ])
+          );
+          row.tier ??= row.gate === "owner" ? "expensive" : "standard";
+          return [row];
         })
       );
     }

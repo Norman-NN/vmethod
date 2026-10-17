@@ -74,18 +74,21 @@ test("built CLI initializes and checks the verbatim public vecs TSV registry off
       {
         family: "astra",
         model: "codexbal/gpt-6-astra",
+        tier: "expensive",
         kind: "opencode",
         gate: "owner",
       },
       {
         family: "sonnet",
         model: "claude-sonnet-5-5",
+        tier: "standard",
         kind: "claude",
         gate: "none",
       },
       {
         family: "opus",
         model: "claude-opus-5-5",
+        tier: "standard",
         kind: "claude",
         gate: "none",
       },

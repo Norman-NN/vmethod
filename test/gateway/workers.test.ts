@@ -24,10 +24,24 @@ function fixture(requests: Request[] = []) {
   writeFileSync(
     join(root, "models.yaml"),
     stringify([
-      { family: "glm", model: "fake/glm", kind: "opencode", gate: "none", fallback: ["sol"] },
-      { family: "sol", model: "fake/sol", kind: "opencode", gate: "owner", fallback: ["glm"] },
-      { family: "sonnet", model: "claude-test", kind: "claude", gate: "none" },
-      { family: "other", model: "fake/other", kind: "opencode", gate: "owner" },
+      {
+        family: "glm",
+        model: "fake/glm",
+        kind: "opencode",
+        gate: "none",
+        tier: "cheap",
+        fallback: ["sol"],
+      },
+      {
+        family: "sol",
+        model: "fake/sol",
+        kind: "opencode",
+        gate: "owner",
+        tier: "expensive",
+        fallback: ["glm"],
+      },
+      { family: "sonnet", model: "claude-test", kind: "claude", gate: "none", tier: "standard" },
+      { family: "other", model: "fake/other", kind: "opencode", gate: "owner", tier: "expensive" },
     ])
   );
   const env = {

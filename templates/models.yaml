@@ -4,20 +4,25 @@
   kind: opencode
   gate: none
   fallback: [glm, big-pickle]
+  tier: standard
 - family: astra
   model: example/owner-gated-model
   kind: opencode
   gate: owner
+  tier: expensive
 - family: sonnet
   model: replace-with-installed-model-id
   kind: claude
   gate: none
+  tier: standard
 - family: glm
   model: example/replace-glm
   kind: opencode
   gate: none
   fallback: [big-pickle]
+  tier: cheap
 - family: big-pickle
   model: example/replace-big-pickle
   kind: opencode
   gate: none
+  tier: cheap

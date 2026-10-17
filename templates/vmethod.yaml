@@ -33,6 +33,8 @@ checks:
 postMerge:
   install: npm ci
   trigger: package-lock.json
+merge:
+  requireCurrentBase: true
 changelog:
   directory: changes/unreleased
   kinds: [breaking, feature, fix]

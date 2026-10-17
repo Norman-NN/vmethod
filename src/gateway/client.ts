@@ -5,6 +5,11 @@ import type { WorkerFilesystem } from "./access.js";
 import { object, type ObjectData } from "./people.js";
 
 export interface Dependencies {
+  /** #9 supplies both backends; absent/unknown status must never permit a merge. */
+  workers?: {
+    status(pr: number): Promise<"stopped" | "live" | "unknown">;
+    resume(pr: number, prompt: string): Promise<void>;
+  };
   fetch: typeof fetch;
   exec: (
     file: string,
@@ -83,7 +88,7 @@ export class GitHubClient {
 
   private async request(
     path: string,
-    method: "GET" | "POST",
+    method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE",
     body?: unknown,
     accept?: string,
     retry = true,
@@ -193,11 +198,14 @@ export class GitHubClient {
 
   async rest(
     path: string,
-    method: "GET" | "POST" = "GET",
+    method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE" = "GET",
     body?: unknown,
     retry = true
   ): Promise<unknown> {
     const response = await this.request(path, method, body, undefined, retry);
+    if (response.status === 204) {
+      return null;
+    }
     try {
       return await response.json();
     } catch {

@@ -75,6 +75,13 @@
         "ci": { "type": "array", "items": { "type": "string" } }
       }
     },
+    "merge": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requireCurrentBase": { "type": "boolean", "default": true }
+      }
+    },
     "postMerge": {
       "type": "object",
       "additionalProperties": false,

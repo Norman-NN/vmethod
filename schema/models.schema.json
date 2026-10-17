@@ -5,7 +5,7 @@
   "items": {
     "type": "object",
     "additionalProperties": false,
-    "required": ["family", "model", "kind", "gate"],
+    "required": ["family", "model", "kind", "gate", "tier"],
     "properties": {
       "family": { "type": "string" },
       "model": { "type": "string", "minLength": 1 },
@@ -15,7 +15,8 @@
         "type": "array",
         "items": { "type": "string", "minLength": 1 },
         "uniqueItems": true
-      }
+      },
+      "tier": { "enum": ["expensive", "standard", "cheap"] }
     },
     "if": { "properties": { "kind": { "const": "opencode" } } },
     "then": {
