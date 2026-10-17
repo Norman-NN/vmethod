@@ -527,56 +527,8 @@ export class TaskFlow {
     }
     const match = /<!-- vmethod-task (\{[^\n]*\}) -->/.exec(String(item.body));
     if (!match) {
-      if (/^\s*Part of\s+#([1-9]\d*)\b/im.test(String(item.body))) {
+      if (/^[\t ]*(?:>[\t ]*)?(?:\*\*)?Part of\s+#([1-9]\d*)\b/im.test(String(item.body))) {
         return [];
-      }
-      const prefix = /^([1-9]\d*)-/.exec(String(item.headRefName));
-      if (prefix) {
-        const number = this.number(prefix[1]);
-        for (let page = 1; ; page++) {
-          const prs = await this.host.github.rest(
-            `/repos/${this.repo}/pulls?state=open&per_page=100&page=${page}`
-          );
-          if (!Array.isArray(prs)) {
-            throw new Error("Missing open PRs for branch issue fallback");
-          }
-          for (const value of prs) {
-            const pr = object(value);
-            if (!Number.isSafeInteger(pr.number) || Number(pr.number) < 1) {
-              throw new Error("Invalid open PR number");
-            }
-            if (pr.number === item.number) {
-              continue;
-            }
-            // Conservative safety check: only numeric relations are consumed, never relayed text.
-            const relation = /^# Task: [^\r\n]* \((?:part of )?issue #([1-9]\d*)\)\s*$/m.exec(
-              String(pr.body)
-            );
-            const marker = /<!-- vmethod-task (\{[^\n]*\}) -->/.exec(String(pr.body));
-            const linked = marker ? object(JSON.parse(marker[1])).issues : [];
-            const closing = [
-              ...String(pr.body).matchAll(
-                /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#([1-9]\d*)\b/gi
-              ),
-            ];
-            if (
-              String(object(pr.head).ref).startsWith(`${number}-`) ||
-              Number(relation?.[1]) === number ||
-              (Array.isArray(linked) && linked.includes(number)) ||
-              closing.some((match) => Number(match[1]) === number)
-            ) {
-              this.deps.report(
-                `legacy link: #${number} has another open PR; leaving issue unchanged`
-              );
-              return [];
-            }
-          }
-          if (prs.length < 100) {
-            break;
-          }
-        }
-        this.deps.report("legacy link: using task branch issue prefix");
-        return [number];
       }
       const references = object(item.closingIssuesReferences);
       if (object(references.pageInfo).hasNextPage === true) {
@@ -588,15 +540,19 @@ export class TaskFlow {
             .filter((node) => object(node.repository).nameWithOwner === this.repo)
             .map((node) => Number(node.number))
         : [];
-      const headers = [...String(item.body).matchAll(/^\s*Closes\s+#([1-9]\d*)\b/gim)].map(
-        (match) => Number(match[1])
-      );
+      const headers = [
+        ...String(item.body).matchAll(
+          /^[\t ]*(?:>[\t ]*)?(?:\*\*)?(?:Closes|Agent task for)\s+#([1-9]\d*)\b/gim
+        ),
+      ].map((match) => Number(match[1]));
       const legacy = linked.length ? linked : headers;
       if (legacy.some((number) => !Number.isSafeInteger(number))) {
         throw new Error("Invalid legacy issue link");
       }
       if (legacy.length) {
         this.deps.report("legacy link: using pre-adoption issue relation");
+      } else {
+        this.deps.report("no linked issue");
       }
       return [...new Set(legacy)];
     }

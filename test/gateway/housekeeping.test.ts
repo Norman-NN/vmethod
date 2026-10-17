@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { expect, test } from "vitest";
 import { actor, fixtureServer, graph, item } from "./helpers.js";
 import { gatewayVerb } from "../../src/cli/gateway.js";
+import { createGateway } from "../../src/gateway/server.js";
 import issueResponse from "../fixtures/github/issue-response.json" with { type: "json" };
 import boardRecording from "../fixtures/github/board-write-inputs.json" with { type: "json" };
 
@@ -15,12 +16,18 @@ const acceptedIssue = () =>
   });
 
 test("issue create sends validated file content and repeated labels to the configured repository", async () => {
+  const recording = createdCard();
   const f = fixtureServer([
     {
       path: "/repos/example/project/issues",
       body: { title: "A title", body: "A body\n", labels: ["bug", "task"] },
       json: { number: issueResponse.number, node_id: issueResponse.node_id },
     },
+    ...createBoardReads(recording),
+    graph({ repository: { issue: item({ id: issueResponse.node_id }) } }),
+    graph({ node: { ...acceptedIssue(), id: issueResponse.node_id } }),
+    ...boardReads(recording),
+    boardGraph({ m0: { projectV2Item: { id: recording.items.nodes[0].id } } }),
   ]);
   const file = join(f.root, "body.md");
   writeFileSync(file, "A body\n");
@@ -32,6 +39,104 @@ test("issue create sends validated file content and repeated labels to the confi
       { VMETHOD_ROLE: "orchestrator" }
     )
   ).toBe("Created issue #37");
+  expect(
+    await f.transport.call("boardSetIssue", { ref: "37", field: "Estimate", value: "5" })
+  ).toBe("Board field updated");
+  f.done();
+}, 15000);
+
+function createdCard() {
+  const recording = structuredClone(boardRecording);
+  recording.items.nodes[0].content.id = issueResponse.node_id;
+  recording.items.nodes[0].content.number = issueResponse.number;
+  return recording;
+}
+
+const boardGraph = (data: unknown) => ({ path: "/graphql", json: { data } });
+
+function createBoardReads(recording = createdCard(), lag = 0) {
+  const card = recording.items.nodes[0];
+  return [
+    ...boardReads(recording).slice(0, 2),
+    boardGraph({ node: { __typename: "Issue", repository: { nameWithOwner: "example/project" } } }),
+    {
+      ...boardGraph({ addProjectV2ItemById: { item: { id: card.id } } }),
+      checkQuery(query: string, variables: unknown) {
+        expect(query).toContain("mutation BoardAdd");
+        expect(variables).toEqual({
+          input: { projectId: recording.id, contentId: issueResponse.node_id },
+        });
+      },
+    },
+    ...boardReads(recording).slice(0, 2),
+    ...Array.from({ length: lag }, () =>
+      boardGraph({
+        node: { items: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } },
+      })
+    ),
+    ...boardReads(recording).slice(2),
+  ];
+}
+
+test("issue create waits for board listing lag and applies optional estimate/status", async () => {
+  const recording = createdCard();
+  const card = recording.items.nodes[0];
+  const f = fixtureServer([
+    {
+      path: "/repos/example/project/issues",
+      json: { number: issueResponse.number, node_id: issueResponse.node_id },
+    },
+    ...createBoardReads(recording, 1),
+    ...boardReads(recording),
+    {
+      ...boardGraph({ m0: { projectV2Item: { id: card.id } } }),
+      checkQuery(query, variables) {
+        expect(query).toContain("mutation BoardSetCards");
+        expect(variables).toEqual({
+          m0: {
+            projectId: recording.id,
+            itemId: card.id,
+            fieldId: recording.fields.nodes.find((f) => f.name === "Estimate")!.id,
+            value: { number: 2.5 },
+          },
+        });
+      },
+    },
+    ...boardReads(recording),
+    {
+      ...boardGraph({
+        m0: { projectV2Item: { id: card.id } },
+        m1: { projectV2Item: { id: card.id } },
+      }),
+      checkQuery(query, variables) {
+        expect(query).toContain("mutation BoardSetCards");
+        expect(variables).toEqual({
+          m0: {
+            projectId: recording.id,
+            itemId: card.id,
+            fieldId: recording.fields.nodes.find((f) => f.name === "Progress")!.id,
+          },
+          m1: {
+            projectId: recording.id,
+            itemId: card.id,
+            fieldId: recording.fields.nodes.find((f) => f.name === "Status")!.id,
+            value: { singleSelectOptionId: "5acf990d" },
+          },
+        });
+      },
+    },
+  ]);
+  const file = join(f.root, "body.md");
+  writeFileSync(file, "Body");
+  expect(
+    await gatewayVerb(
+      f.transport,
+      "issue",
+      ["create", "Title", file, "--estimate", "2.5", "--status", "In progress"],
+      { VMETHOD_ROLE: "orchestrator" }
+    )
+  ).toBe("Created issue #37");
+  expect(f.sleeps).toEqual([1000]);
   f.done();
 }, 15000);
 
@@ -90,6 +195,9 @@ test.each(["missing", "foreign", "PR"])(
 
 test.each([
   ["issue", ["create", "Title", "file", "--label"]],
+  ["issue", ["create", "Title", "file", "--estimate", "NaN"]],
+  ["issue", ["create", "Title", "file", "--estimate", "-1"]],
+  ["issue", ["create", "Title", "file", "--status", "Done", "--status", "Done"]],
   ["issue", ["close", "37", "--comment"]],
   ["issue", ["close", "37", "--wrong", "file"]],
   ["board", ["set", "39", "Estimate"]],
@@ -237,6 +345,57 @@ test("issue create reports failure without retrying a non-idempotent write", asy
   writeFileSync(file, "Body");
   await expect(f.transport.call("issueCreate", { title: "Title", file })).rejects.toThrow();
   expect(f.sleeps).toEqual([]);
+  f.done();
+}, 15000);
+
+test("issue create bounds board visibility waiting and identifies the issue without recreating it", async () => {
+  const requests = createBoardReads(createdCard(), 6);
+  requests.pop(); // All six listing reads are absent; no successful seventh read.
+  const f = fixtureServer([
+    {
+      path: "/repos/example/project/issues",
+      json: { number: issueResponse.number, node_id: issueResponse.node_id },
+    },
+    ...requests,
+  ]);
+  const file = join(f.root, "body.md");
+  writeFileSync(file, "Body");
+  await expect(f.transport.call("issueCreate", { title: "Title", file })).rejects.toThrow(
+    "Created issue #37; board follow-up failed: Board item not readable after 6 reads. Do not recreate"
+  );
+  expect(f.sleeps).toEqual([1000, 2000, 4000, 8000, 16000]);
+  f.done();
+}, 15000);
+
+test.each([NaN, Infinity, -1])(
+  "issue create rejects invalid estimate %s before networking",
+  async (estimate) => {
+    const f = fixtureServer([]);
+    await expect(
+      f.transport.call("issueCreate", { title: "Title", file: "missing", estimate })
+    ).rejects.toThrow("finite nonnegative");
+    f.done();
+  }
+);
+
+test("issue create with disabled board preserves standalone creation", async () => {
+  const f = fixtureServer([
+    {
+      path: "/repos/example/project/issues",
+      json: { number: issueResponse.number, node_id: issueResponse.node_id },
+    },
+  ]);
+  const config = join(f.root, "vmethod.yaml");
+  writeFileSync(config, readFileSync(config, "utf8").replace("enabled: true", "enabled: false"));
+  const gateway = createGateway(f.root, f.env, f.deps);
+  const file = join(f.root, "body.md");
+  writeFileSync(file, "Body");
+  await expect(
+    gateway.call("issueCreate", { title: "Title", file }, { role: "orchestrator" })
+  ).resolves.toBe("Created issue #37");
+  await expect(
+    gateway.call("issueCreate", { title: "Title", file, estimate: 1 }, { role: "orchestrator" })
+  ).rejects.toThrow("Board is disabled");
   f.done();
 }, 15000);
 
