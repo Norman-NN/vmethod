@@ -3,11 +3,14 @@
   model: example/replace-me
   kind: opencode
   gate: none
+  tier: standard
 - family: astra
   model: example/owner-gated-model
   kind: opencode
   gate: owner
+  tier: expensive
 - family: sonnet
   model: replace-with-installed-model-id
   kind: claude
   gate: none
+  tier: standard

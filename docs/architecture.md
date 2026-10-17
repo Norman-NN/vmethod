@@ -609,6 +609,10 @@ moving the server out of process later changes the transport, not the logic:
 - **Push is a server operation:** `push(worktree, branch)` pushes a given local ref. The server
   enforces the branch policy (never `baseBranch` or `releaseBranch`; a worker only its own task
   branch). The `push` verb keeps this ref-based interface.
+- **Task flow is server-side too:** the four task-flow verbs call named gateway
+  operations; approval proofs, worker-status checks, CI, board updates and durable
+  merge follow-up never rely on client-supplied permission booleans. See
+  [task-flow commands](gateway.md#task-flow-commands).
 - **Scoped identities per role.** The server authenticates each client session (orchestrator,
   worker, track or side session) and scopes what it may do. A worker may read, post on its own
   task PR, and push its own branch. Only an orchestrator session may review, move cards or merge,

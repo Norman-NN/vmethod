@@ -209,6 +209,9 @@ export class FakeBoard {
                   fieldValues: this.values(card),
                   content: {
                     __typename: card.kind,
+                    id: card.contentId,
+                    number: card.number,
+                    closedAt: card.closedAt,
                     repository: card.repo ? { nameWithOwner: card.repo } : null,
                     assignees: connection(card.assignees.map((login) => ({ login }))),
                   },

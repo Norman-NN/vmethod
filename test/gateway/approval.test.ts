@@ -1,9 +1,38 @@
 import { expect, test } from "vitest";
-import { isOwnerApproved } from "../../src/gateway/approval.js";
+import { isOwnerApproved, isIssueOwnerApproved } from "../../src/gateway/approval.js";
 import { PeopleFilter } from "../../src/gateway/people.js";
 import { Digest } from "../../src/gateway/digest.js";
 import { fixture } from "../helpers.js";
 import { actor, people, sha } from "./helpers.js";
+
+test("issue approval follows latest configured-board event by verified owner id only", () => {
+  const filter = new PeopleFilter(
+    people,
+    "example",
+    new Digest({ XDG_STATE_HOME: fixture() }, "issue", () => 0)
+  );
+  const event = {
+    __typename: "ProjectV2ItemStatusChangedEvent",
+    status: "Approved",
+    actor: actor(),
+    project: { number: 1 },
+    createdAt: "2026-01-01T00:00:00Z",
+  };
+  expect(isIssueOwnerApproved([event], 1, filter)).toBe(true);
+  expect(
+    isIssueOwnerApproved([{ ...event, actor: { ...actor(), databaseId: 999 } }], 1, filter)
+  ).toBe(false);
+  expect(isIssueOwnerApproved([{ ...event, actor: actor(2) }], 1, filter)).toBe(false);
+  expect(isIssueOwnerApproved([{ ...event, actor: null }], 1, filter)).toBe("unknown");
+  expect(isIssueOwnerApproved([event], 2, filter)).toBe(false);
+  expect(
+    isIssueOwnerApproved(
+      [event, { ...event, status: "In progress", createdAt: "2026-01-02T00:00:00Z" }],
+      1,
+      filter
+    )
+  ).toBe(false);
+});
 
 test("only owner reviews on the head or owner status-change actors approve; card status and peers cannot", () => {
   const filter = new PeopleFilter(

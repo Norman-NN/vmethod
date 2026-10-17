@@ -1,4 +1,8 @@
 export const verbs = [
+  { name: "open-task", stub: "scripts/orchestrator/open-task.sh" },
+  { name: "review", stub: "scripts/orchestrator/review.sh" },
+  { name: "merge-task", stub: "scripts/orchestrator/merge-task.sh" },
+  { name: "release-hold", stub: "scripts/orchestrator/release-hold.sh" },
   { name: "board", stub: "scripts/agent/board.sh" },
   { name: "version", stub: "scripts/agent/version.sh" },
   { name: "config", stub: "scripts/agent/config.sh" },

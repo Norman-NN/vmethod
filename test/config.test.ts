@@ -3,6 +3,25 @@ import { join } from "node:path";
 import { expect, test } from "vitest";
 import { configValue, getConfig, loadYaml } from "../src/config.js";
 import { validProject } from "./helpers.js";
+import { check } from "../src/check.js";
+
+test.each([undefined, "premium", "expensive", "standard", "cheap"])(
+  "models require an explicit valid tier (%s)",
+  (tier) => {
+    const root = validProject();
+    writeFileSync(
+      join(root, "models.yaml"),
+      `- family: sol\n  kind: opencode\n  model: provider/id\n  gate: none\n${tier === undefined ? "" : `  tier: ${tier}\n`}`
+    );
+    const result = check(root);
+    if (["expensive", "standard", "cheap"].includes(String(tier))) {
+      expect(result.code).toBe(0);
+    } else {
+      expect(result.code).toBe(1);
+      expect(result.messages.join("\n")).toMatch(/tier|allowed values/);
+    }
+  }
+);
 
 test.each([
   { kind: "opencode", model: "provider/model", gate: "none", valid: true },
@@ -18,10 +37,12 @@ test.each([
     const root = validProject();
     writeFileSync(
       join(root, "models.yaml"),
-      `- family: other\n  kind: ${kind}\n  model: ${model}\n  gate: "${gate}"\n`
+      `- family: other\n  kind: ${kind}\n  model: ${model}\n  gate: "${gate}"\n  tier: standard\n`
     );
     if (valid) {
-      expect(loadYaml(root, "models")).toEqual([{ family: "other", kind, model, gate }]);
+      expect(loadYaml(root, "models")).toEqual([
+        { family: "other", kind, model, gate, tier: "standard" },
+      ]);
     } else {
       expect(() => loadYaml(root, "models")).toThrow("models.yaml:");
     }

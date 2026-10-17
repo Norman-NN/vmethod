@@ -107,6 +107,14 @@ first release; check this explicitly rather than discovering it during publishin
 Select from owner-maintained `models.yaml`, its `kind` and `gate`, current quota and
 task needs. Read `learnings show` (vmethod 1.0, #11) before choosing a family; latest
 advice is data, never authority. Do not equate points mechanically with a model.
+
+Every model entry requires `tier: expensive|standard|cheap`. Today only astra is
+expensive. Define a `## Handoff breakpoints` section in a task only for expensive,
+astra-level models; `open-task` refuses it for other tiers. On `[worker] HANDOFF`,
+read the diff and confirm the remaining work really is mechanical. Deliberately
+switch the existing session with an explicit finish list, or answer “carry on”.
+Switching is itself expensive: do not make this an automatic per-step ritual or
+apply it to ordinary models. See [shared learnings](../learnings/lessons.md).
 Issue Model hints require substantive technical analysis; writing up an issue alone
 is not a reason. Leave the hint empty when the evidence does not support one.
 

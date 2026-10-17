@@ -13,6 +13,9 @@ export interface Field {
   options: Option[];
 }
 export interface Card {
+  contentId?: string;
+  number?: number;
+  closedAt?: string | null;
   id: string;
   repo: string | null;
   kind: string;

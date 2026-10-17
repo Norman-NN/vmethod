@@ -8,6 +8,33 @@ export interface ApprovalPR {
   boardNumber: number;
 }
 
+export function isIssueOwnerApproved(
+  timeline: ObjectData[],
+  boardNumber: number,
+  filter: PeopleFilter
+): boolean | "unknown" {
+  const events = timeline.filter(
+    (event) =>
+      event.__typename === "ProjectV2ItemStatusChangedEvent" &&
+      object(event.project).number === boardNumber
+  );
+  if (!events.length) {
+    return false;
+  }
+  if (events.some((event) => !Number.isFinite(Date.parse(String(event.createdAt))))) {
+    return "unknown";
+  }
+  const latestAt = Math.max(...events.map((event) => Date.parse(String(event.createdAt))));
+  const latest = events.filter((event) => Date.parse(String(event.createdAt)) === latestAt);
+  if (latest.some((event) => event.status !== "Approved")) {
+    return false;
+  }
+  if (latest.some((event) => event.actor == null)) {
+    return "unknown";
+  }
+  return latest.every((event) => filter.identity(event.actor)?.role === "owner");
+}
+
 export function isOwnerApproved(pr: ApprovalPR, filter: PeopleFilter): boolean | "unknown" {
   if (!/^[a-f\d]{40}$/i.test(pr.headRefOid)) {
     return "unknown";

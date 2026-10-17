@@ -12,6 +12,22 @@ import type { Migration } from "../../src/board/types.js";
 import { baseline, FakeBoard } from "./fake.js";
 
 let fake: FakeBoard;
+test("Done cap ranks all repositories but archives only own cards outside the newest six", async () => {
+  const board = setup();
+  board.stamp(1);
+  board.pageSize = 3;
+  for (let i = 0; i < 10; i++) {
+    const card = board.card(`done-${i}`, i % 2 ? "example/foreign" : "example/project");
+    card.closedAt = `2026-10-${String(20 - i).padStart(2, "0")}T00:00:00Z`;
+    card.values.Status = "Done";
+  }
+  await board.service().capDone();
+  expect(board.cards.map((card) => card.id)).not.toContain("done-6");
+  expect(board.cards.map((card) => card.id)).not.toContain("done-8");
+  expect(board.cards.map((card) => card.id)).toContain("done-7");
+  expect(board.cards.map((card) => card.id)).toContain("done-9");
+  expect(board.cards.map((card) => card.id)).toContain("done-4");
+});
 afterEach(() => fake?.done());
 function setup() {
   fake = new FakeBoard();

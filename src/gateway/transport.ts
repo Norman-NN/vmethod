@@ -1,6 +1,12 @@
 import type { BoardStatus, Card, MigrationResult } from "../board/types.js";
+import type { OpenTaskInput, ReviewInput } from "./task-flow-types.js";
 
 export interface Operations {
+  openTask: { input: OpenTaskInput; output: string };
+  reviewTask: { input: ReviewInput; output: string };
+  mergeTask: { input: { ref: string; mergeCommit?: boolean }; output: string };
+  releaseHold: { input: { ref: string }; output: string };
+  workerStatus: { input: { ref: string }; output: "live" | "stopped" | "unknown" };
   boardStatus: { input: Record<string, never>; output: BoardStatus };
   boardMigrate: {
     input: { dryRun?: boolean; steal?: boolean };

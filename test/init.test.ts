@@ -107,43 +107,50 @@ test("converts the verbatim vecs registry with ungated and owner-gated opencode/
     {
       family: "sol",
       model: "codexbal/gpt-6.1-sol",
+      tier: "standard",
       kind: "opencode",
       gate: "none",
     },
     {
       family: "luna",
       model: "codexbal/gpt-6-luna",
+      tier: "standard",
       kind: "opencode",
       gate: "none",
     },
     {
       family: "astra",
       model: "codexbal/gpt-6-astra",
+      tier: "expensive",
       kind: "opencode",
       gate: "owner",
     },
     {
       family: "sonnet",
       model: "claude-sonnet-5-5",
+      tier: "standard",
       kind: "claude",
       gate: "none",
     },
-    { family: "opus", model: "claude-opus-5-5", kind: "claude", gate: "none" },
+    { family: "opus", model: "claude-opus-5-5", kind: "claude", gate: "none", tier: "standard" },
     {
       family: "glm",
       model: "ollama-cloud/glm-5.3",
+      tier: "standard",
       kind: "opencode",
       gate: "none",
     },
     {
       family: "glm-flash",
       model: "ollama-cloud/glm-5.3-flash",
+      tier: "standard",
       kind: "opencode",
       gate: "none",
     },
     {
       family: "big-pickle",
       model: "opencode/big-pickle",
+      tier: "standard",
       kind: "opencode",
       gate: "none",
     },
@@ -158,7 +165,7 @@ test("converts models.tsv once, preserving gate and original TSV", () => {
   writeFileSync(join(root, "models.tsv"), text);
   init(root, templates);
   expect(loadYaml(root, "models")).toEqual([
-    { family: "sol", model: "provider/model", kind: "opencode", gate: "owner" },
+    { family: "sol", model: "provider/model", kind: "opencode", gate: "owner", tier: "expensive" },
   ]);
   writeFileSync(join(root, "models.tsv"), "invalid");
   expect(init(root, templates)).toEqual([]);
