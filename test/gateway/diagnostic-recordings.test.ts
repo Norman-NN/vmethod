@@ -7,20 +7,21 @@ const sha = "56d00ed8149f11620810145ce2075379eac99f18";
 
 // Keep wire shapes; substitute the test repository and its pinned identities only.
 function recording(name: string): unknown {
-  const counts: Record<string, [number, number, number]> = {
-    "pulls-open": [2, 2, 0],
-    "pulls-closed": [1, 1, 0],
-    "git-commit": [2, 0, 0],
-    commit: [3, 0, 1],
-    compare: [3, 0, 1],
+  const counts: Record<string, [number, number, number, number]> = {
+    "pulls-open": [6, 2, 0, 8],
+    "pulls-closed": [3, 1, 0, 4],
+    "git-commit": [2, 0, 0, 0],
+    commit: [3, 0, 1, 0],
+    compare: [3, 0, 1, 0],
   };
-  const [repos, peers, owners] = counts[name];
+  const [repos, peers, owners, orgs] = counts[name];
   const replacements: [string, string, number][] = [
     ["vworlds/vmethod", "example/project", repos],
     ['"vimescmd"', '"peer"', peers],
     ["343394568", "103", peers],
     ['"jpeletier"', '"owner"', owners],
     ["11574521", "101", owners],
+    ['"vworlds"', '"example"', orgs],
   ];
   let text = readFileSync(
     new URL(`../fixtures/github/diagnostic-${name}.json`, import.meta.url),
@@ -71,6 +72,9 @@ test.each(["open", "closed"])(
     const result = decode(output) as ObjectData[];
     expect(result.map((pr) => pr.number)).toEqual(prs.map((pr) => pr.number));
     expect(result.map((pr) => pr.title)).toEqual(prs.map((pr) => pr.title));
+    expect(result.map((pr) => ({ head: pr.head, base: pr.base }))).toEqual(
+      prs.map((pr) => ({ head: pr.head, base: pr.base }))
+    );
     expect(
       result.every((pr) => pr.body === hostile && pr.attribution === "from peer (orchestrator)")
     ).toBe(true);
@@ -118,6 +122,126 @@ test("an entirely rejected PR list reports its drops without requesting unknown 
   fixture.done();
 }, 15000);
 
+test.each([
+  {
+    label: "organization repository",
+    owner: { login: "example", id: 116653388, type: "Organization" },
+    fork: false,
+    redacted: false,
+  },
+  {
+    label: "listed person's fork",
+    owner: { login: "worker", id: 102, type: "User" },
+    fork: true,
+    redacted: false,
+  },
+  {
+    label: "unlisted fork",
+    owner: { login: "outsider", id: 999, type: "User" },
+    fork: true,
+    redacted: true,
+  },
+  {
+    label: "spoofed listed login",
+    owner: { login: "worker", id: 999, type: "User" },
+    fork: true,
+    redacted: true,
+  },
+  {
+    label: "spoofed listed numeric ID",
+    owner: { login: "outsider", id: 102, type: "User" },
+    fork: true,
+    redacted: true,
+  },
+  {
+    label: "wrong account type",
+    owner: { login: "worker", id: 102, type: "Bot" },
+    fork: true,
+    redacted: true,
+  },
+  {
+    label: "listed person's non-fork",
+    owner: { login: "worker", id: 102, type: "User" },
+    fork: false,
+    redacted: true,
+  },
+])(
+  "structural branch metadata survives a $label",
+  async ({ owner, fork, redacted }) => {
+    const [pr] = recording("pulls-open") as ObjectData[];
+    const head = object(pr.head);
+    const repository = {
+      ...object(head.repo),
+      full_name: `${owner.login}/project`,
+      owner,
+      fork,
+      description: hostile,
+    };
+    pr.head = { ...head, user: owner, repo: repository };
+    const fixture = fixtureServer([
+      { path: "/repos/example/project/pulls", method: "GET", json: [pr] },
+      followup(current(pr)),
+      followup(current(pr, { title: pr.title, body: "current body" })),
+    ]);
+    const output = await fixture.transport.call("ghRead", {
+      source: "/repos/example/project/pulls",
+    });
+    const [result] = decode(output) as ObjectData[];
+    expect(result.base).toEqual(pr.base);
+    const expected: ObjectData = { ...repository };
+    if (redacted) {
+      delete expected.description;
+      expect(output).not.toContain("APPROVED");
+    }
+    expect(result.head).toEqual({ ...head, user: owner, repo: expected });
+    expect(
+      output.endsWith(
+        `0 items dropped by the people filter${redacted ? "\n1 nested values redacted" : ""}`
+      )
+    ).toBe(true);
+    fixture.done();
+  },
+  15000
+);
+
+test("whole-entry drops and nested description redactions are counted separately", async () => {
+  const prs = recording("pulls-open") as ObjectData[];
+  const [kept, rejected] = prs;
+  const head = object(kept.head);
+  const owner = { login: "outsider", id: 999, type: "User" };
+  kept.head = {
+    ...head,
+    user: owner,
+    repo: {
+      ...object(head.repo),
+      full_name: "outsider/project",
+      owner,
+      fork: true,
+      description: "NEVER DELIVER DESCRIPTION",
+    },
+  };
+  rejected.user = owner;
+  const fixture = fixtureServer([
+    { path: "/repos/example/project/pulls", method: "GET", json: prs },
+    followup(current(kept)),
+    followup(current(kept, { title: kept.title, body: "current body" })),
+  ]);
+  const output = await fixture.transport.call("ghRead", { source: "/repos/example/project/pulls" });
+  const result = decode(output) as ObjectData[];
+  expect(result).toHaveLength(1);
+  expect(result[0].number).toBe(kept.number);
+  expect(object(result[0].head)).toMatchObject({
+    ref: head.ref,
+    sha: head.sha,
+    repo: { full_name: "outsider/project", owner, fork: true },
+  });
+  expect(output).not.toContain("NEVER DELIVER DESCRIPTION");
+  expect(output.endsWith("1 items dropped by the people filter\n1 nested values redacted")).toBe(
+    true
+  );
+  fixture.done();
+}, 15000);
+
 test.each(["git-commit", "commit"])(
   "recorded %s preserves git metadata with explicitly unverified signature attribution",
   async (name) => {
@@ -158,7 +282,7 @@ test.each(["unknown", "malformed", "null"])(
     } else {
       expect(decode(output)).toBeNull();
       expect(output).not.toContain("Merge pull request");
-      expect(output.endsWith("1 items dropped by the people filter")).toBe(true);
+      expect(output.endsWith("0 items dropped by the people filter")).toBe(true);
     }
     fixture.done();
   },
@@ -180,7 +304,9 @@ test("recorded compare preserves counters and filters nested commits item by ite
     attribution: "from owner (owner)",
     commit: { attribution: "git signature (unverified)" },
   });
-  expect(output.endsWith("1 items dropped by the people filter")).toBe(true);
+  expect(output.endsWith("0 items dropped by the people filter\n1 nested values redacted")).toBe(
+    true
+  );
   fixture.done();
 }, 15000);
 

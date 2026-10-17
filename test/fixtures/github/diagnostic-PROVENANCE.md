@@ -12,7 +12,10 @@ gateway envelope or injected attribution.
   final commit only.
 
 Projections retain identity pins, git signatures, timestamps, titles, commit
-messages, trees and diagnostic counters with original wire types. Unused fields
+messages, trees, PR head/base branch metadata (including organization users and
+repository descriptions), and diagnostic counters with original wire types. Unused fields
 (including PR bodies and commit verification payloads) are omitted. Tests add
 hostile content and substitute identities explicitly for boundary cases. GraphQL
 follow-ups use the existing editor-aware fake, with the recorded PR node IDs.
+The supplied open capture contains two PRs (#53 and #52); the closed projection
+adds #50. The branch-retention tests cover all three, not the newer live PRs.

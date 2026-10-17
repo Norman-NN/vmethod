@@ -83,8 +83,17 @@ Repository `compare/<base>...<head>` GET reads are allowed within the same scope
 REST commit accounts use the usual identity pins; git-only commit metadata passes
 with `attribution: "git signature (unverified)"`. Git signatures never establish a
 verified person or protocol authority. Nested lists are filtered item by item.
-Each diagnostic response ends with `N items dropped by the people filter`, including
-zero, so a filtered-empty response is distinguishable from an empty source list.
+PR branch owners and repository objects are structural metadata, not content
+authors: keep `head`/`base` refs, SHAs, repository names and owner identities even
+for foreign repositories. Repository descriptions pass for the configured org or
+forks owned by a fully pinned listed identity; only the description is redacted for
+other repositories.
+
+Each diagnostic response includes `N items dropped by the people filter`, including
+zero. This counts only removed entries of a top-level response list, so a
+filtered-empty list is distinguishable from an empty source list. If fields or
+nested list entries are removed inside retained data, a separate trailing
+`M nested values redacted` note reports them without inflating the entry count.
 
 The diagnostic verb is not a generic write transport. New writes belong in named,
 policy-enforcing server operations. Future operations can extend the typed map

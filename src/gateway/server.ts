@@ -1187,7 +1187,7 @@ class GatewayServer {
   };
 
   ghRead: Handlers["ghRead"] = async ({ source }) => {
-    const counts = { dropped: 0 };
+    const counts = { dropped: 0, redacted: 0 };
     if (source.endsWith(".graphql")) {
       const query = readQuery(readFileSync(source, "utf8"));
       const data = await this.github.graphql(query);
@@ -1204,7 +1204,7 @@ class GatewayServer {
           2
         ) ?? "null"
       );
-      return `${output}\n${counts.dropped} items dropped by the people filter`;
+      return `${output}\n${counts.dropped} items dropped by the people filter${counts.redacted ? `\n${counts.redacted} nested values redacted` : ""}`;
     }
     // Only scoped repository endpoints. No URLs, alternate methods, redirects or encoded paths.
     const match =
@@ -1246,7 +1246,7 @@ class GatewayServer {
         2
       ) ?? "null"
     );
-    return `${output}\n${counts.dropped} items dropped by the people filter`;
+    return `${output}\n${counts.dropped} items dropped by the people filter${counts.redacted ? `\n${counts.redacted} nested values redacted` : ""}`;
   };
 
   private async diagnosticThread(

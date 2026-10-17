@@ -153,19 +153,25 @@ export function restActor(value: unknown): ObjectData {
   return { databaseId: actor.id, __typename: actor.type, login: actor.login };
 }
 
-/** Filter diagnostic values and count rejected items, including nested lists and aliased queries. */
+/** Filter diagnostic values; count removed root-list entries separately from nested redactions. */
 export function filterDiagnostic(
   value: unknown,
   filter: PeopleFilter,
   repo: string,
   link: string,
-  counts = { dropped: 0 }
+  counts = { dropped: 0, redacted: 0 }
 ): unknown {
-  const result = filterDiagnosticValue(value, filter, repo, link, counts);
-  if (result === undefined) {
-    counts.dropped++;
+  if (Array.isArray(value)) {
+    return value.flatMap((child) => {
+      const result = filterDiagnosticValue(child, filter, repo, link, counts);
+      if (result === undefined) {
+        counts.dropped++;
+        return [];
+      }
+      return [result];
+    });
   }
-  return result;
+  return filterDiagnosticValue(value, filter, repo, link, counts);
 }
 
 function filterDiagnosticValue(
@@ -173,12 +179,18 @@ function filterDiagnosticValue(
   filter: PeopleFilter,
   repo: string,
   link: string,
-  counts: { dropped: number }
+  counts: { dropped: number; redacted: number },
+  branchMetadata = false
 ): unknown {
   if (Array.isArray(value)) {
-    return value
-      .map((child) => filterDiagnostic(child, filter, repo, link, counts))
-      .filter((child) => child !== undefined);
+    return value.flatMap((child) => {
+      const result = filterDiagnosticValue(child, filter, repo, link, counts);
+      if (result === undefined) {
+        counts.redacted++;
+        return [];
+      }
+      return [result];
+    });
   }
   if (value === null || typeof value !== "object") {
     return value;
@@ -225,14 +237,6 @@ function filterDiagnosticValue(
           ...checkFacts(run),
         }
       : undefined;
-  }
-  if (
-    "full_name" in item &&
-    object(item.owner).login &&
-    String(object(item.owner).login).toLowerCase() !== filter.org.toLowerCase()
-  ) {
-    filter.accept({}, "", link);
-    return undefined;
   }
   if ("app" in item && ("conclusion" in item || "check_suite" in item)) {
     const person = filter.check(item, repo.split("/")[0], link);
@@ -284,6 +288,15 @@ function filterDiagnosticValue(
   const hasContent = Object.keys(item).some((key) =>
     ["body", "body_text", "body_html", "title"].includes(key)
   );
+  // A PR branch's user is its repository owner (often an Organization), not an author.
+  const structuralBranch =
+    branchMetadata &&
+    typeof item.ref === "string" &&
+    typeof item.sha === "string" &&
+    "repo" in item &&
+    !("__vm_author" in item) &&
+    !("author" in item) &&
+    !hasContent;
   let attribution: string | undefined;
   // Git metadata is not a GitHub identity and can never authorize instructions.
   const signatureOnly =
@@ -293,7 +306,7 @@ function filterDiagnosticValue(
     (gitCommit(item) || (item.author === null && gitCommit(object(item.commit))));
   if (signatureOnly) {
     attribution = "git signature (unverified)";
-  } else if (hasIdentity || hasContent) {
+  } else if ((hasIdentity || hasContent) && !structuralBranch) {
     const injected = "__vm_author" in item;
     const author = injected
       ? item.__vm_author
@@ -322,14 +335,34 @@ function filterDiagnosticValue(
     }
     attribution = `from ${person.login} (${person.role})`;
   }
+  const repository = typeof item.full_name === "string" && "owner" in item;
+  const owner = object(item.owner);
+  const keepDescription =
+    String(owner.login).toLowerCase() === filter.org.toLowerCase() ||
+    (item.fork === true && filter.identity(restActor(owner)) !== undefined);
   const output: ObjectData = {};
   for (const [key, child] of Object.entries(item)) {
     if (key.startsWith("__vm_")) {
       continue;
     }
-    const filtered = filterDiagnostic(child, filter, repo, link, counts);
+    // Foreign repositories remain useful structural metadata; only their free text is withheld.
+    if (repository && key === "description" && typeof child === "string" && !keepDescription) {
+      filter.accept({}, "", link);
+      counts.redacted++;
+      continue;
+    }
+    const filtered = filterDiagnosticValue(
+      child,
+      filter,
+      repo,
+      link,
+      counts,
+      (key === "head" || key === "base") && "number" in item && hasIdentity
+    );
     if (filtered !== undefined) {
       output[key] = filtered;
+    } else {
+      counts.redacted++;
     }
   }
   if (attribution) {
