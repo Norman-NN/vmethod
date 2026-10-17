@@ -267,7 +267,7 @@ class GatewayServer {
     }
     // Draft task prompts deliberately avoid closing keywords, so also accept the explicit task issue header.
     const body = String(item.body ?? "");
-    const header = /^# Task:.*?\(issue #([1-9]\d*)\)/m.exec(body);
+    const header = /^# Task:.*?\((?:part of )?issue #([1-9]\d*)\)/m.exec(body);
     if (header) {
       numbers.add(Number(header[1]));
     }
@@ -460,6 +460,62 @@ class GatewayServer {
   };
   boardItem: Handlers["boardItem"] = async ({ itemId }) => this.board.item(itemId);
   boardSet: Handlers["boardSet"] = async (input) => this.board.set(input);
+  /** Set a numeric/select field on an accepted own-repository issue already on our board. */
+  boardSetIssue: Handlers["boardSetIssue"] = async ({ ref, field, value }) => {
+    this.localNumber(ref);
+    const issue = await this.flowThread(ref, "issue");
+    return this.board.setIssueField(String(issue.id), field, value);
+  };
+
+  /** Create an own-repository issue from validated file content; repeated labels are supported. */
+  issueCreate: Handlers["issueCreate"] = async ({ title, file, labels = [] }) => {
+    if (
+      typeof title !== "string" ||
+      !title.trim() ||
+      /[\r\n]/.test(title) ||
+      !Array.isArray(labels) ||
+      labels.some((label) => typeof label !== "string" || !label.trim())
+    ) {
+      throw new Error("Invalid issue title or labels");
+    }
+    const body = readFileSync(file, "utf8");
+    await checkMarkdown(this.root, `${title}\n\n${body}`);
+    guardClosingKeywords(`${title}\n\n${body}`);
+    const created = object(
+      await this.github.rest(
+        `/repos/${String(this.config.repo)}/issues`,
+        "POST",
+        { title, body, labels },
+        false
+      )
+    );
+    if (!Number.isSafeInteger(created.number) || Number(created.number) < 1) {
+      throw new Error("Missing created issue number; inspect repository before retrying");
+    }
+    return `Created issue #${String(created.number)}`;
+  };
+
+  /** Close an accepted own-repository issue, optionally posting a validated file comment first. */
+  issueClose: Handlers["issueClose"] = async ({ ref, comment }) => {
+    const number = this.localNumber(ref);
+    const body = comment === undefined ? undefined : readFileSync(comment, "utf8");
+    if (body !== undefined) {
+      await checkMarkdown(this.root, body);
+      guardClosingKeywords(body);
+    }
+    await this.flowThread(ref, "issue");
+    const path = `/repos/${String(this.config.repo)}/issues/${number}`;
+    if (body !== undefined) {
+      await this.github.rest(`${path}/comments`, "POST", { body }, false);
+    }
+    const closed = object(
+      await this.github.rest(path, "PATCH", { state: "closed", state_reason: "completed" })
+    );
+    if (closed.state !== "closed") {
+      throw new Error("Issue closure not confirmed");
+    }
+    return `Closed issue #${number}`;
+  };
   boardArchive: Handlers["boardArchive"] = async ({ itemId }) => this.board.archive(itemId);
 
   private get flow(): TaskFlow {
@@ -1113,7 +1169,10 @@ class GatewayServer {
       );
     }
     const repo = `${match[1]}/${match[2]}`;
-    const data = await this.github.rest(source.startsWith("/") ? source : `/${source}`);
+    let data = await this.github.rest(source.startsWith("/") ? source : `/${source}`);
+    if (/^\/(?:issues|pulls)\/[1-9]\d*$/.test(match[3] ?? "")) {
+      data = await this.diagnosticThread(object(data), repo);
+    }
     return untrusted(
       JSON.stringify(
         filterDiagnostic(data, this.filter, repo, `https://github.com/${repo}`),
@@ -1122,6 +1181,48 @@ class GatewayServer {
       ) ?? "null"
     );
   };
+
+  private async diagnosticThread(rest: ObjectData, repo: string): Promise<unknown> {
+    const link = `https://github.com/${repo}/issues/${String(rest.number)}`;
+    // REST updated_at includes labels/state changes and cannot identify a text editor.
+    // Gate the original author, then obtain editor-aware metadata before requesting text.
+    if (!this.filter.accept({ author: restActor(rest.user) }, repo.split("/")[0], link)) {
+      return undefined;
+    }
+    if (typeof rest.node_id !== "string") {
+      throw new Error("Missing diagnostic thread node ID");
+    }
+    const kind = rest.pull_request || "merged" in rest ? "PullRequest" : "Issue";
+    const metadata = await this.node(rest.node_id, "", kind);
+    if (!this.filter.accept(metadata, repoOf(metadata).owner, link)) {
+      return undefined;
+    }
+    if (repoOf(metadata).repo !== repo) {
+      throw new Error("Diagnostic thread repository changed");
+    }
+    const current = await this.node(rest.node_id, "title body", kind);
+    if (!this.filter.accept(current, repoOf(current).owner, link)) {
+      return undefined;
+    }
+    if (repoOf(current).repo !== repo || current.id !== rest.node_id) {
+      throw new Error("Diagnostic thread identity changed");
+    }
+    if (typeof current.title !== "string" || typeof current.body !== "string") {
+      throw new Error("Missing current diagnostic thread text");
+    }
+    const result = { ...rest };
+    delete result.body_html;
+    delete result.body_text;
+    return {
+      ...result,
+      title: current.title,
+      body: current.body,
+      __vm_author: current.author,
+      __vm_editor: current.editor,
+      __vm_edited: current.lastEditedAt,
+      __vm_repository: current.repository,
+    };
+  }
 
   dropped: Handlers["dropped"] = async ({ since }) => this.digest.read(since);
 
@@ -1224,6 +1325,9 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
   const handlers: Handlers = {
     learnings: server.learnings,
     learningCheck: server.learningCheck,
+    issueCreate: server.issueCreate,
+    issueClose: server.issueClose,
+    boardSetIssue: server.boardSetIssue,
     worker: server.worker,
     grade: server.grade,
     suggestModel: server.suggestModel,
@@ -1258,6 +1362,9 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
   const policy = {
     learnings: ["worker", "orchestrator"],
     learningCheck: ["worker", "orchestrator"],
+    issueCreate: ["orchestrator"],
+    issueClose: ["orchestrator"],
+    boardSetIssue: ["orchestrator"],
     worker: ["orchestrator"],
     grade: ["orchestrator"],
     suggestModel: ["orchestrator"],

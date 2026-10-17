@@ -16,7 +16,11 @@ export async function taskFlowVerb(
       "--unapproved": "unapproved",
       "--model": "model",
     } as const;
-    const flags = { "--hold": "hold", "--owner-approved": "ownerApproved" } as const;
+    const flags = {
+      "--hold": "hold",
+      "--part": "part",
+      "--owner-approved": "ownerApproved",
+    } as const;
     const seen = new Set<string>();
     for (let i = 0; i < args.length; i++) {
       const arg = args[i];
@@ -36,7 +40,7 @@ export async function taskFlowVerb(
         input.issue = arg;
       } else {
         throw new Error(
-          "Usage: open-task <issue> [--direct title] [--unapproved reason] [--hold] [--model family] [--owner-approved]"
+          "Usage: open-task <issue> [--direct title] [--unapproved reason] [--hold] [--part] [--model family] [--owner-approved]"
         );
       }
     }

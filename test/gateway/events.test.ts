@@ -311,6 +311,22 @@ test("QUERY ERROR wakes immediately and transport errors report three failures",
   expect(f.sleeps.some((ms) => ms >= 20_000)).toBe(true);
 });
 
+test("number-scoped watchers observe shared merge completion without consuming it", async () => {
+  const f = setup();
+  f.task();
+  const loop = f.loop({ only: [24] });
+  await f.tick(loop);
+  f.advance();
+  f.pulls = [];
+  f.gone = { merged: true, user: user(0), merged_by: { login: "vimescmd" } };
+  const marker = join(f.dir, "merged-24");
+  mkdirSync(f.dir, { recursive: true });
+  writeFileSync(marker, "complete\n");
+  expect(await f.tick(loop)).toEqual([]);
+  expect(existsSync(marker)).toBe(true);
+  expect(existsSync(join(`${f.dir}-only-24`, "open-24"))).toBe(false);
+});
+
 test("budget events arrive before reset, board writes wait, healthy REST comments continue", async () => {
   const f = setup();
   f.task();

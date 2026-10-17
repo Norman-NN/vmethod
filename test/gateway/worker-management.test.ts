@@ -292,6 +292,16 @@ test("gateway dispatches a draft PR and grades its delivery, writing Estimate on
   f.done();
 });
 
+test("partial task headers still identify the issue for worker dispatch", async () => {
+  const f = fixture();
+  f.pr.body = "# Task: lifecycle (part of issue #9)\n\n**Estimate:** 8. **Model:** glm.";
+  await f.transport.call("worker", { args: ["start", "31"] }, f.ctx);
+  expect(f.mutations[0]).toMatchObject({
+    m0: { itemId: "CARD31", fieldId: "F_MODEL", value: { singleSelectOptionId: "O_glm" } },
+  });
+  f.done();
+});
+
 test.each([
   ["adopt", "31", "ses_test"],
   ["adopt", "--from-legacy"],
