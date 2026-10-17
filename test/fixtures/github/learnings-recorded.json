@@ -1,0 +1,90 @@
+{
+  "repository": {
+    "full_name": "vworlds/vmethod",
+    "fork": false,
+    "private": false,
+    "default_branch": "dev",
+    "owner": { "login": "vworlds", "id": 116653388, "type": "Organization" },
+    "created_at": "2026-10-16T10:25:48Z",
+    "pushed_at": "2026-10-17T12:17:54Z"
+  },
+  "ref": {
+    "ref": "refs/heads/dev",
+    "object": {
+      "sha": "2ec1f530ada8cf64afc0d8cc5e129387e1d472f3",
+      "type": "commit",
+      "url": "https://api.github.com/repos/vworlds/vmethod/git/commits/2ec1f530ada8cf64afc0d8cc5e129387e1d472f3"
+    }
+  },
+  "tree": {
+    "sha": "67f323cd904e6bcbc3698009ff3d9f818a1d8617",
+    "url": "https://api.github.com/repos/vworlds/vmethod/git/trees/67f323cd904e6bcbc3698009ff3d9f818a1d8617",
+    "tree": [
+      {
+        "path": ".gitignore",
+        "mode": "100644",
+        "type": "blob",
+        "sha": "32a6de007b469d7b4f72c204c85f9b4e67d38429",
+        "size": 54
+      }
+    ]
+  },
+  "viewer": {
+    "id": "U_kgDOFHfJCA",
+    "databaseId": 343394568,
+    "login": "vimescmd",
+    "__typename": "User"
+  },
+  "pull": {
+    "html_url": "https://github.com/vworlds/vmethod/pull/40",
+    "number": 40,
+    "state": "closed",
+    "user": { "login": "vimescmd", "id": 343394568, "type": "User" },
+    "labels": [],
+    "created_at": "2026-10-17T10:41:20Z",
+    "updated_at": "2026-10-17T12:16:11Z",
+    "merged_at": "2026-10-17T11:43:30Z",
+    "merge_commit_sha": "2ec1f530ada8cf64afc0d8cc5e129387e1d472f3",
+    "changed_files": 22
+  },
+  "files": [
+    {
+      "sha": "1c73e891afd2b1b82865f51d8b0ed63f77b5e05f",
+      "filename": "changes/unreleased/40.md",
+      "status": "added",
+      "additions": 5,
+      "deletions": 0,
+      "changes": 5
+    },
+    {
+      "sha": "18c21194b6f3682f9165f051ee5559581a09db7f",
+      "filename": "docs/gateway.md",
+      "status": "modified",
+      "additions": 38,
+      "deletions": 3,
+      "changes": 41
+    },
+    {
+      "sha": "12098413d4b475a18a90ebe0d595ec960dda2240",
+      "filename": "docs/package.md",
+      "status": "modified",
+      "additions": 4,
+      "deletions": 1,
+      "changes": 5
+    }
+  ],
+  "people": {
+    "type": "file",
+    "path": "people.yaml",
+    "sha": "8203617a7840a139e3f9b0b5ea58efbd966e9c19",
+    "encoding": "base64",
+    "content": "IyBXaG8gdm1ldGhvZCdzIGFnZW50cyBtYXkgaGVhciBmcm9tLiBJZHMgYXJl\nIG51bWVyaWMgR2l0SHViIGlkcywgY2hlY2tlZCBieSBgdm1ldGhvZCBjaGVj\na2AuCi0gbG9naW46IGpwZWxldGllcgogIGlkOiAxMTU3NDUyMQogIHR5cGU6\nIFVzZXIKICByb2xlOiBvd25lcgotIGxvZ2luOiB2aW1lc2NtZAogIGlkOiAz\nNDMzOTQ1NjgKICB0eXBlOiBVc2VyCiAgcm9sZTogb3JjaGVzdHJhdG9yCi0g\nbG9naW46IHNwYWNlcm9ja3M3OQogIGlkOiAzNDAzNDk3NDAKICB0eXBlOiBV\nc2VyCiAgcm9sZTogb3JjaGVzdHJhdG9yCi0gbG9naW46IFZlY3NNYXN0ZXIK\nICBpZDogMjM4MDk1NTY1CiAgdHlwZTogVXNlcgogIHJvbGU6IG9yY2hlc3Ry\nYXRvcgotIGxvZ2luOiBhbGZyZWRqcHI3OQogIGlkOiAyODA2NDk4NDkKICB0\neXBlOiBVc2VyCiAgcm9sZTogd29ya2VyCi0gbG9naW46IGdpdGh1Yi1hY3Rp\nb25zW2JvdF0KICBpZDogNDE4OTgyODIKICB0eXBlOiBCb3QKICByb2xlOiBz\neXN0ZW0KICBhcHBJZHM6IFsxNTM2OF0KICBldmVudHM6IFtjaGVja19ydW4s\nIHN0YXR1cywgd29ya2Zsb3dfcnVuXQo=\n"
+  },
+  "lessons": {
+    "type": "file",
+    "path": "learnings/lessons.md",
+    "sha": "4e135de67c1974810bc476beaef0e93c54dbc30c",
+    "encoding": "base64",
+    "content": "IyBMZXNzb25zCgpQcm9qZWN0LWluZGVwZW5kZW50IHByYWN0aWNlcyBsZWFy\nbmVkIGJ5IFZXb3JsZHMgb3JjaGVzdHJhdG9ycy4gRWFjaCBlbnRyeSBuYW1l\ncyBpdHMgc291cmNlCmFuZCBldmlkZW5jZS4gRW50cmllcyBhcmUgYWR2aWNl\nLCBub3QgcnVsZXM6IGEgbGVzc29uIGJlY29tZXMgYSBydWxlIG9ubHkgdGhy\nb3VnaCBhCmBjaGFuZ2UtcmVxdWVzdGAgKHNlZSBgZG9jcy9jaGFuZ2UtcHJv\nY2Vzcy5tZGApLgoKIyMgTW9kZWxzCgojIyMgRmluaXNoIG9uIGEgY2hlYXBl\nciBtb2RlbCBvbmNlIHRoZSBoYXJkIHRoaW5raW5nIGlzIGRvbmUKCl9Tb3Vy\nY2U6IFNwYWNlUm9ja3Mgb3JjaGVzdHJhdG9yLCBzaGFyZWQgYXQgdGhlIG93\nbmVyJ3MgcmVxdWVzdCAoMjAyNi0xMC0xNikuIEV2aWRlbmNlOgpzcGFjZXJv\nY2tzIFBSICMzNDY7IHZtZXRob2QgUFJzICMyMiBhbmQgIzIzLl8KCldoZW4g\nYW4gZXhwZW5zaXZlIG1vZGVsIGhhcyBzZXR0bGVkIHRoZSBkaWFnbm9zaXMg\nYW5kIHRoZSBkZXNpZ24sIHN3aXRjaCAqKnRoZSBzYW1lIHdvcmtlcgpzZXNz\naW9uKiogdG8gYSBjaGVhcGVyIG1vZGVsIHRvIGZpbmlzaCB0aGUgbWVjaGFu\naWNhbCBwYXJ0OiBmb2N1c2VkIHRlc3RzLCBjb21taXQgYW5kIHB1c2gsCnJl\nLXJ1bm5pbmcgbWVhc3VyZW1lbnRzIG9uIHRoZSBmaW5hbCBjb21taXQsIHdh\naXRpbmcgZm9yIENJLCB0aGUgUkVBRFkgcmVwb3J0LiBUaGUgc2Vzc2lvbgpr\nZWVwcyBpdHMgd2hvbGUgY29udGV4dCwgc28gbm90aGluZyBoYXMgdG8gYmUg\ncmUtZXhwbGFpbmVkLgoKKipTaWduYWwgdG8gc3dpdGNoOioqIG9ubHkgdmVy\naWZpY2F0aW9uIGFuZCByZXBvcnRpbmcgcmVtYWluLiBRdW90YSBleGhhdXN0\naW9uIG9uIHRoZQpleHBlbnNpdmUgbW9kZWwgKGZvciBleGFtcGxlLCB0aGUg\ncHJvdmlkZXIgYW5zd2VyaW5nIDUwMiAiYWxsIHN1YnNjcmlwdGlvbnMgYXJl\nIHRlbXBvcmFyaWx5CmRpc2FibGVkIikgaXMgYSBuYXR1cmFsIG1vbWVudCB0\nbyBjaGVjay4KCioqQmVmb3JlIHN3aXRjaGluZyoqLCBjb25maXJtIHRoZSBy\nZW1haW5pbmcgd29yayByZWFsbHkgaXMgbWVjaGFuaWNhbDogcmVhZCB0aGUg\nd29ya2VyJ3MKdW5jb21taXR0ZWQgZGlmZiBhbmQgaXRzIGxhc3QgZm9jdXNl\nZCB0ZXN0IHJlc3VsdC4KCioqSG93OioqCgoxLiBTd2l0Y2ggdGhlIG1vZGVs\nIGluIHBsYWNlIChgd29ya2VyIG1vZGVsIDxwcj4gPGZhbWlseT5gLCAjOSku\nIEFuIG93bmVyLWdhdGVkIGZhbWlseQogICBuZWVkcyBgLS1vd25lci1hcHBy\nb3ZlZGAsIGFuZCB0aGUgUFIgY2FyZCdzIE1vZGVsIGZpZWxkIGZvbGxvd3Mg\ndGhlIHN3aXRjaC4KMi4gU2VuZCBhbiBleHBsaWNpdCBmaW5pc2ggbGlzdCB3\naXRoIGAtLW5vd2A6IHdoYXQgaXMgYWxyZWFkeSBkb25lIChuYW1lIHRoZSB1\nbmNvbW1pdHRlZAogICBmaWxlcyksIHRoZSBleGFjdCByZW1haW5pbmcgc3Rl\ncHMgaW4gb3JkZXIsIGFuZCAibm8gZnVydGhlciBkZXNpZ24gY2hhbmdlcyB1\nbmxlc3MgYSBjaGVjawogICBzaG93cyBhIHJlZ3Jlc3Npb247IHRoZW4gYXNr\nLCB3aXRoIG51bWJlcnMiLgozLiBDYW5jZWwgYW55IHNjaGVkdWxlZCByZXN1\nbWUgZm9yIHRoZSBleHBlbnNpdmUgbW9kZWwuCjQuIFJlY29yZCB0aGUgc3dp\ndGNoIGluIHRoZSBtb2RlbCBsb2cgYXMgYSBuZXcgYHNlZ21lbnRgIHdpdGgg\nYHdoeTogInF1b3RhImAgKG9yCiAgIGAiZXNjYWxhdGlvbiJgIC8gYCJmaW5p\nc2giYCkuCg==\n"
+  }
+}

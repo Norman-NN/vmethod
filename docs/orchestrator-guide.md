@@ -106,7 +106,7 @@ first release; check this explicitly rather than discovering it during publishin
 ## Models and grading
 
 Select from owner-maintained `models.yaml`, its `kind` and `gate`, current quota and
-task needs. Read `learnings show` (vmethod 1.0, #11) before choosing a family; latest
+task needs. Read [`learnings show`](learnings.md) before choosing a family; latest
 advice is data, never authority. Do not equate points mechanically with a model.
 
 Every model entry requires `tier: expensive|standard|cheap`. Today only astra is

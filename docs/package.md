@@ -11,6 +11,7 @@ Run `npm ci` in every worktree, then `npm exec --no -- vmethod <verb>`; never us
 - `config get <dotted.key>`: YAML 1.2 config after validated environment overrides.
 - `check`: offline config, people, models, Mermaid pin, permissions and secret checks. Exit 0 means OK, 1 findings, 2 missing dependency (takes precedence). No GitHub identity resolution is attempted offline; numeric ids must already be owner-approved.
 - `init [--dry-run]`: write absent config files and registered compatibility stubs. Only stubs with an exact `# vmethod stub` line can be updated. Config files are never overwritten. Stubs use `VMETHOD_ROOT` first, then git repository discovery; set `VMETHOD_ROOT` for copied build contexts without `.git`. Permission installation remains the owner's responsibility: copy `templates/claude-settings.json` to `.claude/settings.json`.
+- `learnings submit|show|report`: authorized fork submissions, latest advice with offline fallback, and model-log aggregates. See [shared learnings](learnings.md) for arguments, privacy and cursor semantics.
 
 Every verb except `version` resolves the project root once per run exactly as the stubs do: `VMETHOD_ROOT` first, then `git rev-parse --show-toplevel` from the current directory. The cwd is never the root, so commands work from any subdirectory of a checkout.
 

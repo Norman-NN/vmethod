@@ -1,8 +1,11 @@
 import type { BoardStatus, Card, MigrationResult } from "../board/types.js";
 import type { OpenTaskInput, ReviewInput } from "./task-flow-types.js";
 import type { SessionInput, WatchEvent } from "./events.js";
+import type { LearningInput } from "./learnings.js";
 
 export interface Operations {
+  learnings: { input: LearningInput; output: string };
+  learningCheck: { input: { ref: string; label?: boolean }; output: string };
   issueCreate: { input: { title: string; file: string; labels?: string[] }; output: string };
   issueClose: { input: { ref: string; comment?: string }; output: string };
   boardSetIssue: { input: { ref: string; field: string; value: string }; output: string };
