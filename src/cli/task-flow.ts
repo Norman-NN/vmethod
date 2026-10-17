@@ -1,6 +1,6 @@
 import type { Transport } from "../gateway/transport.js";
 import type { OpenTaskInput, ReviewInput } from "../gateway/task-flow-types.js";
-import { context } from "./gateway.js";
+import { context } from "../gateway/transport.js";
 
 export async function taskFlowVerb(
   transport: Transport,

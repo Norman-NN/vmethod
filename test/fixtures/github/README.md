@@ -9,3 +9,9 @@ Only the Progress field is retained to exercise snapshot decoding and writing.
 
 Do not represent this as an unmodified full API capture. Future full recordings
 should retain the original wire types and document their redactions here.
+
+## Worker-management projection
+
+`test/gateway/worker-management.test.ts` reuses the recorded field's ISO-string
+`createdAt` for its Model/Estimate board fields, changing only fixture identifiers,
+field names/types and select options to exercise delivery writes.

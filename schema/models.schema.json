@@ -11,6 +11,11 @@
       "model": { "type": "string", "minLength": 1 },
       "kind": { "enum": ["opencode", "claude"] },
       "gate": { "enum": ["none", "owner"] },
+      "fallback": {
+        "type": "array",
+        "items": { "type": "string", "minLength": 1 },
+        "uniqueItems": true
+      },
       "tier": { "enum": ["expensive", "standard", "cheap"] }
     },
     "if": { "properties": { "kind": { "const": "opencode" } } },

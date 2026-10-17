@@ -3,6 +3,10 @@ import type { OpenTaskInput, ReviewInput } from "./task-flow-types.js";
 import type { SessionInput, WatchEvent } from "./events.js";
 
 export interface Operations {
+  worker: { input: { args: string[] }; output: string };
+  suggestModel: { input: { ref: string }; output: string };
+  grade: { input: { ref: string; points?: number }; output: string };
+  workerAccess: { input: { directory: string }; output: string };
   openTask: { input: OpenTaskInput; output: string };
   reviewTask: { input: ReviewInput; output: string };
   mergeTask: { input: { ref: string; mergeCommit?: boolean }; output: string };
@@ -61,6 +65,18 @@ export interface Operations {
 export interface CallContext {
   role: "orchestrator" | "worker";
   taskPr?: number;
+}
+
+export function context(env: NodeJS.ProcessEnv): CallContext {
+  const role = env.VMETHOD_ROLE ?? "worker";
+  if (role !== "orchestrator" && role !== "worker") {
+    throw new Error("Invalid VMETHOD_ROLE");
+  }
+  const task = env.VMETHOD_TASK_PR;
+  if (task !== undefined && (!/^[1-9]\d*$/.test(task) || !Number.isSafeInteger(Number(task)))) {
+    throw new Error("Invalid VMETHOD_TASK_PR");
+  }
+  return { role, ...(task === undefined ? {} : { taskPr: Number(task) }) };
 }
 
 /** CLI-ready outcome: the last text line is always the verdict. */

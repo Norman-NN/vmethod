@@ -3,7 +3,9 @@ repo: example/project
 org: example
 baseBranch: dev
 releaseBranch: master
-workerUser: example-worker
+# Set when workers run as a different OS user; both users must belong to workerGroup.
+# workerUser: example-worker
+# workerGroup: example-workers
 stateName: example-state
 vmethod:
   repo: vworlds/vmethod # off disables methodology subscriptions
@@ -40,3 +42,4 @@ credentials:
   githubToken: EXAMPLE_GITHUB_TOKEN
   sshKey: EXAMPLE_SSH_KEY
   workerPassword: EXAMPLE_WORKER_PASSWORD
+  workerGithubToken: EXAMPLE_WORKER_GITHUB_TOKEN

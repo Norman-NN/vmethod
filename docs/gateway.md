@@ -119,6 +119,102 @@ come from `credentials.githubToken` through the subprocess environment, never a
 token in argv or a global credential helper. These settings name environment
 variables, not credential values. Install subprocesses receive no gateway tokens.
 
+## Worker management (orchestrator only)
+
+`vmethod worker` controls one recorded session per task PR. Its generated stubs
+live in `scripts/orchestrator/`. Commands are:
+
+```text
+worker start <pr> [--model family|provider/id] [--owner-approved] [--replace]
+worker send <pr> <file> [--queue|--now]
+worker status [pr]
+worker log <pr> [n]
+worker stop <pr>
+worker wait <pr> [seconds]
+worker permit <pr> [once|always|reject]
+worker model <pr> <family> [--owner-approved] [--why reason]
+worker models
+worker health
+suggest-model <issue>
+grade <delivery-pr> [points]
+```
+
+The wrapper must set `VMETHOD_ROLE=orchestrator`. Worker clients cannot launch,
+switch, grade or interrupt sessions. All GitHub and opencode operations stay on
+the typed gateway transport; Basic authentication is in headers, never argv.
+
+Start requires an accepted, open draft task PR, one linked unblocked issue, an
+allowed model, and a prepared worktree with executable `node_modules/.bin/vmethod`.
+Missing worktrees use `start-task`; existing worktrees retain uncommitted work,
+but their repository and branch are checked. Task PRs link their issue through
+GitHub's linked issues or an explicit `# Task: … (issue #N)` header. Multiple or
+foreign-repository issue links are refused rather than guessed.
+
+Capture `<!-- points_open: 8 -->` **when creating the task PR**, using the issue's
+Estimate then; do not revise this snapshot. Legacy prompts can retain their original
+`**Estimate:** 8` header instead. Launch refuses a missing snapshot rather than
+substitute today's issue Estimate. A changed final grade belongs on the issue;
+`grade` reads the delivery PR, not an issue number, and never writes a PR Estimate.
+Grading requires a closed delivery with recorded session history and writes
+`.vmethod/model-log.jsonl`. An identical re-run does not append a duplicate; a
+different existing grade requires explicit reconciliation. The default final
+points are the issue's current Estimate. Records are validated against the shared
+`schema/model-log.schema.json` before either the Estimate write or log append.
+
+Records under `$XDG_STATE_HOME/vmethod/<stateName>/workers/<pr>.json` hold session
+identity, repository, issue, worktree, opening Estimate and timestamped model
+segments. Writes use a per-PR exclusive lock and atomic rename. A lock left after
+a crash must be removed only after confirming its operation is no longer running.
+Failed prompt submission leaves the created session recorded. Start refuses an
+existing known session, including an idle one; `--replace` interrupts and waits
+before replacing it. A lost session instead gets a re-entry prompt pointing to
+the PR description and the latest identity-verified orchestrator amendment.
+
+Status distinguishes running, permission-wait, quota, provider-error, idle,
+idle without reply, and session unknown. Provider errors include their diagnostic
+text. “Idle without reply” means no authenticated worker protocol comment follows
+the latest authenticated orchestrator protocol comment. A 404 is session unknown,
+not idle; network/authentication failures remain errors. Quota/provider failures
+print `QUOTA <family>` plus that family's ordered `fallback` list from `models.yaml`.
+They never trigger an automatic switch. The shared `OpencodeClient.status`
+preserves the watcher's directory-only permission/failure contract; its explicit
+session-id overload returns the detailed worker-control reasons.
+
+`send --now` interrupts and confirms idle under one 30-second deadline. If it
+cannot confirm idle, it explicitly did not send. `--queue` submits opencode's
+queue delivery; default sends steer the active turn. Claude defaults refuse busy
+turns; queue waits for idle, and now interrupts before resuming. `wait` defaults
+to 600 seconds; permission waits are not completion. `permit` without a decision
+lists pending requests. Model changes preserve the session id, synchronize the
+PR's Model card, and add a segment with `--why` (default `owner-request`). A
+cross-backend switch cannot preserve context and is refused. Gates apply equally
+to family names and configured raw ids; unconfigured provider/id selections need
+an explicit `other` family policy. `models` lists configured gates/fallbacks and
+the models offered by opencode. Suggestions use Estimate and task labels and
+print a local family learning when available; advice cannot override an owner gate.
+
+Claude families launch headless `claude` with `acceptEdits`, never bypassing
+permissions. `credentials.workerGithubToken` must name a populated environment
+variable whose GitHub viewer matches a pinned `worker` identity. The child gets
+that token (including through the configured GitHub token variable), not the
+orchestrator/opencode credentials; its prompt goes through stdin, not argv.
+Logs are under the worktree's `.tmp/`. PID birth identity guards against stopping
+a reused PID. A switch while Claude is running requires stopping its turn first.
+
+Set `workerUser` and `workerGroup` for two-user operation. Both users must belong
+to that group. Preparation is unprivileged: files owned by the launching user get
+the configured group and `g+rwX`; directories also get setgid so new files inherit
+the group. Files owned by the other user are inspected, not forcibly changed.
+The worktree, `node_modules` and `.tmp/` must have the correct group, group access
+and directory setgid bit. Errors advise adding both users to the group or running
+preparation as the worker user/file owner. Optional default ACLs are attempted;
+missing tools or unsupported ACLs silently fall back to group modes.
+Dependency installation runs with `umask 002`. Claude cannot change OS identity:
+launch it from the configured worker user's login. External scratch/dependency
+symlinks and paths outside the configured worktree root are refused. The owner
+must also provision shared group access to the linked repository's git metadata;
+preparation never changes another checkout's metadata ownership.
+
 ## Watching and muting
 
 Run as an orchestrator (`VMETHOD_ROLE=orchestrator`):

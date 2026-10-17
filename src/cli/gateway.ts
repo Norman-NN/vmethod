@@ -1,4 +1,4 @@
-import type { Transport, CallContext } from "../gateway/transport.js";
+import { context, type Transport, type CallContext } from "../gateway/transport.js";
 import type { ReadInput } from "../gateway/server.js";
 
 export async function gatewayVerb(
@@ -9,6 +9,26 @@ export async function gatewayVerb(
 ): Promise<string> {
   const ctx = context(env);
   switch (verb) {
+    case "worker":
+      return transport.call("worker", { args }, ctx);
+    case "suggest-model":
+      if (args.length !== 1) {
+        throw new Error("Usage: suggest-model <issue>");
+      }
+      return transport.call("suggestModel", { ref: args[0] }, ctx);
+    case "grade":
+      if (
+        args.length < 1 ||
+        args.length > 2 ||
+        (args[1] !== undefined && !/^(?:\d+)(?:\.\d+)?$/.test(args[1]))
+      ) {
+        throw new Error("Usage: grade <pr> [points]");
+      }
+      return transport.call(
+        "grade",
+        { ref: args[0], points: args[1] === undefined ? undefined : Number(args[1]) },
+        ctx
+      );
     case "mute":
     case "unmute":
       if (args.length !== 1) {
@@ -91,16 +111,4 @@ async function existingVerb(
     default:
       throw new Error("Unknown gateway verb");
   }
-}
-
-export function context(env: NodeJS.ProcessEnv): CallContext {
-  const role = env.VMETHOD_ROLE ?? "worker";
-  if (role !== "orchestrator" && role !== "worker") {
-    throw new Error("Invalid VMETHOD_ROLE");
-  }
-  const task = env.VMETHOD_TASK_PR;
-  if (task !== undefined && (!/^[1-9]\d*$/.test(task) || !Number.isSafeInteger(Number(task)))) {
-    throw new Error("Invalid VMETHOD_TASK_PR");
-  }
-  return { role, ...(task === undefined ? {} : { taskPr: Number(task) }) };
 }

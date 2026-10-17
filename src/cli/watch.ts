@@ -1,6 +1,6 @@
 import type { Transport } from "../gateway/transport.js";
 import type { SessionInput } from "../gateway/events.js";
-import { context } from "./gateway.js";
+import { context } from "../gateway/transport.js";
 
 /** Only printed batches are acknowledged. A failed/closed stdout leaves the batch pending. */
 export async function watchClient(

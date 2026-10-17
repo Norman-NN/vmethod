@@ -1,5 +1,5 @@
 import type { Transport, Verdict } from "../gateway/transport.js";
-import { context } from "./gateway.js";
+import { context } from "../gateway/transport.js";
 
 /** CI verbs parse options only; the gateway owns policy and execution. */
 export async function ciVerb(

@@ -3,6 +3,7 @@
   model: example/replace-me
   kind: opencode
   gate: none
+  fallback: [glm, big-pickle]
   tier: standard
 - family: astra
   model: example/owner-gated-model
@@ -14,3 +15,14 @@
   kind: claude
   gate: none
   tier: standard
+- family: glm
+  model: example/replace-glm
+  kind: opencode
+  gate: none
+  fallback: [big-pickle]
+  tier: cheap
+- family: big-pickle
+  model: example/replace-big-pickle
+  kind: opencode
+  gate: none
+  tier: cheap

@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { getConfig, loadYaml, type Config } from "../config.js";
 import { GitHubClient, type Dependencies } from "./client.js";
 import { Digest } from "./digest.js";
@@ -28,6 +28,9 @@ import { GitTransport, taskBranch, validateBranch } from "./git.js";
 import { realpathSync } from "node:fs";
 import { matchesGlob, resolve } from "node:path";
 import { BoardService } from "./board.js";
+import { WorkerService, type TaskMetadata } from "./workers.js";
+import { workerAccess } from "./access.js";
+import { startTask } from "./worker-verbs.js";
 import {
   EventLoop,
   eventDeps,
@@ -49,6 +52,321 @@ class GatewayServer {
   // Lazy: local digest reads and refused operations never need credentials.
   private client?: GitHubClient;
   private boardClient?: BoardService;
+  private workersClient?: WorkerService;
+
+  private get workers(): WorkerService {
+    return (this.workersClient ??= new WorkerService(this.root, this.config, this.env, this.deps, {
+      metadata: (pr) => this.workerMetadata(pr),
+      prepare: async (pr) => {
+        const task = await this.task({ ref: String(pr) }, { role: "orchestrator" });
+        const branches = object(this.config.branches);
+        const directory = resolve(
+          String(branches.mainCheckout ?? this.root),
+          String(branches.worktreeRoot ?? ".worktrees"),
+          task.branch
+        );
+        // Keep dependency installation/dirty-tree guards in the existing preparation path.
+        if (!existsSync(directory)) {
+          await startTask(
+            {
+              call: async (operation, input) => {
+                if (operation === "workerAccess") {
+                  return this.workerAccess(input as Operations["workerAccess"]["input"], {
+                    role: "orchestrator",
+                  }) as never;
+                }
+                if (operation !== "task") {
+                  throw new Error("Unexpected preparation operation");
+                }
+                return this.task(input as Operations["task"]["input"], {
+                  role: "orchestrator",
+                }) as never;
+              },
+            },
+            this.root,
+            String(pr),
+            this.env,
+            { role: "orchestrator" },
+            {
+              exec: this.deps.exec,
+              report: this.deps.report,
+            }
+          );
+        }
+        const git = (...args: string[]) =>
+          this.deps.exec(
+            "git",
+            [...(this.config.workerUser ? ["-c", `safe.directory=${directory}`] : []), ...args],
+            {
+              cwd: directory,
+              env: { PATH: this.env.PATH, HOME: this.env.HOME },
+            }
+          );
+        if (
+          realpathSync((await git("rev-parse", "--show-toplevel")).trim()) !==
+            realpathSync(directory) ||
+          (await git("rev-parse", "--abbrev-ref", "HEAD")).trim() !== task.branch
+        ) {
+          throw new Error("Worker directory is not the PR's worktree/branch");
+        }
+        if (
+          resolve(directory, (await git("rev-parse", "--git-common-dir")).trim()) ===
+          resolve(directory, (await git("rev-parse", "--git-dir")).trim())
+        ) {
+          throw new Error("Worker start requires a linked task worktree, not a main checkout");
+        }
+        await workerAccess(this.root, directory, this.config, this.deps);
+        return directory;
+      },
+      setModel: (pr, family) => this.setWorkerField(pr, "pr", "Model", family),
+      setEstimate: (issue, points) => this.setWorkerField(issue, "issue", "Estimate", points),
+      workerIdentity: () => this.workerIdentity(),
+      issue: (issue) => this.workerIssue(issue),
+    }));
+  }
+
+  worker: Handlers["worker"] = async ({ args }) => {
+    if (!Array.isArray(args) || args.some((arg) => typeof arg !== "string")) {
+      throw new Error("Invalid worker arguments");
+    }
+    return this.workers.command(args);
+  };
+  grade: Handlers["grade"] = async ({ ref, points }) =>
+    this.workers.grade(this.localNumber(ref), points);
+  suggestModel: Handlers["suggestModel"] = async ({ ref }) =>
+    this.workers.suggest(this.localNumber(ref));
+  workerAccess: Handlers["workerAccess"] = async ({ directory }, ctx) => {
+    if (ctx.role === "worker") {
+      const task = await this.task({ ref: String(ctx.taskPr) }, ctx);
+      const branches = object(this.config.branches);
+      if (
+        resolve(directory) !==
+        resolve(
+          String(branches.mainCheckout ?? this.root),
+          String(branches.worktreeRoot ?? ".worktrees"),
+          task.branch
+        )
+      ) {
+        throw new Error("Worker access requires its own worktree");
+      }
+    }
+    return workerAccess(this.root, directory, this.config, this.deps);
+  };
+
+  private localNumber(ref: string): number {
+    const target = reference(ref, this.config);
+    if (target.repo.toLowerCase() !== String(this.config.repo).toLowerCase()) {
+      throw new Error("Worker operations require configured repository");
+    }
+    return target.number;
+  }
+
+  private projectCard(item: ObjectData): ObjectData {
+    const nodes = object(item.projectItems).nodes;
+    if (!Array.isArray(nodes)) {
+      throw new Error("Missing task project metadata");
+    }
+    return object(
+      nodes.find(
+        (value) =>
+          object(object(value).project).number === object(this.config.board).number &&
+          String(object(object(object(value).project).owner).login).toLowerCase() ===
+            String(object(this.config.board).owner).toLowerCase()
+      )
+    );
+  }
+  private projectValue(item: ObjectData, field: string): unknown {
+    const fields = object(this.projectCard(item).fieldValues);
+    if (object(fields.pageInfo).hasNextPage === true) {
+      throw new Error("Incomplete project field values");
+    }
+    const values = fields.nodes;
+    if (!Array.isArray(values)) {
+      return undefined;
+    }
+    const value = object(values.find((v) => object(object(v).field).name === field));
+    return value.number ?? value.name ?? value.text;
+  }
+  private async richThread(ref: number, kind: "pr" | "issue"): Promise<ObjectData> {
+    const { item, person, link } = await this.thread(String(ref), kind);
+    if (!person) {
+      throw new Error("No accepted task thread");
+    }
+    const type = kind === "pr" ? "PullRequest" : "Issue";
+    const fields = `title body state ${kind === "pr" ? "isDraft merged headRefName closingIssuesReferences(first: 100) { nodes { number repository { nameWithOwner } } pageInfo { hasNextPage } }" : "labels(first: 100) { nodes { name } } blockedBy(first: 100) { nodes { state } pageInfo { hasNextPage } }"} projectItems(first: 100) { nodes { id project { number owner { ... on Organization { login } ... on User { login } } } fieldValues(first: 100) { nodes { ... on ProjectV2ItemFieldNumberValue { number field { ... on ProjectV2Field { name } } } ... on ProjectV2ItemFieldSingleSelectValue { name field { ... on ProjectV2SingleSelectField { name } } } } pageInfo { hasNextPage } } } pageInfo { hasNextPage } }`;
+    const result = await this.node(String(item.id), fields, type);
+    if (!this.filter.accept(result, repoOf(result).owner, link)) {
+      throw new Error("Task identity changed during read");
+    }
+    if (object(object(result.projectItems).pageInfo).hasNextPage === true) {
+      throw new Error("Too many project memberships; refusing incomplete metadata");
+    }
+    return result;
+  }
+  private async setWorkerField(
+    ref: number,
+    kind: "pr" | "issue",
+    field: "Estimate" | "Model",
+    value: number | string
+  ): Promise<void> {
+    const item = await this.richThread(ref, kind);
+    const card = this.projectCard(item);
+    if (typeof card.id !== "string") {
+      throw new Error("Task has no card on configured board");
+    }
+    await this.board.set({ itemId: card.id, field, value });
+  }
+  private async workerIssue(issue: number): Promise<{ estimate?: number; kind: string }> {
+    const item = await this.richThread(issue, "issue");
+    const estimate = this.projectValue(item, "Estimate");
+    const labels = object(item.labels).nodes;
+    return {
+      estimate: typeof estimate === "number" ? estimate : undefined,
+      kind: Array.isArray(labels)
+        ? labels.map((v) => String(object(v).name)).join(", ") || "other"
+        : "other",
+    };
+  }
+  private async workerMetadata(pr: number): Promise<TaskMetadata> {
+    await this.task({ ref: String(pr) }, { role: "orchestrator" }).catch((error: Error) => {
+      // Closed deliveries are valid grading targets; all other task guards remain mandatory.
+      if (error.message !== "Task PR is not open") {
+        throw error;
+      }
+    });
+    const item = await this.richThread(pr, "pr");
+    const links = object(item.closingIssuesReferences);
+    if (object(links.pageInfo).hasNextPage === true) {
+      throw new Error("Too many linked issues");
+    }
+    const numbers = new Set<number>();
+    if (Array.isArray(links.nodes)) {
+      for (const value of links.nodes) {
+        const issue = object(value);
+        if (object(issue.repository).nameWithOwner !== this.config.repo) {
+          throw new Error("Linked issue belongs to another repository");
+        }
+        numbers.add(Number(issue.number));
+      }
+    }
+    // Draft task prompts deliberately avoid closing keywords, so also accept the explicit task issue header.
+    const body = String(item.body ?? "");
+    const header = /^# Task:.*?\(issue #([1-9]\d*)\)/m.exec(body);
+    if (header) {
+      numbers.add(Number(header[1]));
+    }
+    if (numbers.size > 1) {
+      throw new Error("Task PR has ambiguous linked issues");
+    }
+    const issue = [...numbers][0];
+    let estimate: number | undefined,
+      kind = "other",
+      blocked = false;
+    if (issue) {
+      const linked = await this.richThread(issue, "issue");
+      const n = this.projectValue(linked, "Estimate");
+      estimate = typeof n === "number" ? n : undefined;
+      const blockers = object(linked.blockedBy);
+      if (!Array.isArray(blockers.nodes) || object(blockers.pageInfo).hasNextPage !== false) {
+        throw new Error("Missing or incomplete blocked-by metadata");
+      }
+      blocked = blockers.nodes.some((v) => object(v).state === "OPEN");
+      const labels = object(linked.labels).nodes;
+      kind = Array.isArray(labels)
+        ? labels.map((v) => String(object(v).name)).join(", ") || "other"
+        : "other";
+    }
+    const comments: TaskMetadata["comments"] = [];
+    for (const meta of await this.collection(String(item.id), "PullRequest", "comments")) {
+      if (
+        !this.filter.accept(
+          meta,
+          repoOf(meta).owner,
+          `https://github.com/${String(this.config.repo)}/pull/${pr}`
+        )
+      ) {
+        continue;
+      }
+      const comment = await this.node(String(meta.id), "body createdAt", "IssueComment");
+      const author = this.filter.accept(
+        comment,
+        repoOf(comment).owner,
+        `https://github.com/${String(this.config.repo)}/pull/${pr}`
+      );
+      if (!author || this.filter.identity(comment.author)?.role !== author.role) {
+        continue;
+      }
+      const date = String(comment.lastEditedAt ?? comment.createdAt);
+      if (Number.isFinite(Date.parse(date)) && typeof comment.body === "string") {
+        comments.push({ body: comment.body, role: author.role, date });
+      }
+    }
+    const snapshot =
+      /<!--\s*points_open:\s*(\d+(?:\.\d+)?)\s*-->/.exec(body) ??
+      /\*\*Estimate:\*\*\s*(\d+(?:\.\d+)?)/.exec(body);
+    const model = this.projectValue(item, "Model") ?? /\*\*Model:\*\*\s*`?([\w-]+)/.exec(body)?.[1];
+    return {
+      pr,
+      issue,
+      branch: String(item.headRefName),
+      title: String(item.title),
+      body,
+      state: String(item.state),
+      draft: item.isDraft === true,
+      blocked,
+      estimate,
+      pointsOpen: snapshot ? Number(snapshot[1]) : undefined,
+      model: typeof model === "string" ? model : undefined,
+      kind,
+      merged: item.merged === true,
+      comments,
+    };
+  }
+  private async workerIdentity(): Promise<NodeJS.ProcessEnv> {
+    if (this.config.workerUser) {
+      const run = (...args: string[]) =>
+        this.deps.exec("id", args, { cwd: this.root, env: { PATH: this.env.PATH } });
+      const current = (await run("-u")).trim();
+      const worker = (await run("-u", String(this.config.workerUser))).trim();
+      if (!/^\d+$/.test(current) || current !== worker) {
+        throw new Error(
+          `Claude launch must run as the worker user ${String(this.config.workerUser)}; use that user's login`
+        );
+      }
+    }
+    const name = object(this.config.credentials).workerGithubToken;
+    const token = typeof name === "string" ? this.env[name] : undefined;
+    if (!token) {
+      throw new Error(
+        "Claude workers require credentials.workerGithubToken naming a worker-scoped token environment variable"
+      );
+    }
+    const client = new GitHubClient(
+      { ...this.config, credentials: { githubToken: name } },
+      this.env,
+      this.deps
+    );
+    const viewer = object(
+      object(await client.graphql(`query WorkerIdentity { viewer { ${actorFields} } }`)).viewer
+    );
+    if (this.filter.identity(viewer)?.role !== "worker") {
+      throw new Error(
+        "Configured Claude GitHub identity is not a pinned worker; refusing orchestrator identity"
+      );
+    }
+    const env: NodeJS.ProcessEnv = { GH_TOKEN: token, GITHUB_TOKEN: token, VMETHOD_ROLE: "worker" };
+    const githubName = object(this.config.credentials).githubToken;
+    if (typeof githubName === "string") {
+      env[githubName] = token;
+    }
+    for (const key of ["PATH", "HOME", "TMPDIR", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]) {
+      if (this.env[key]) {
+        env[key] = this.env[key];
+      }
+    }
+    // Credentials for the gateway/opencode/orchestrator are deliberately not inherited.
+    return env;
+  }
   private readonly loops = new Map<string, EventLoop>();
 
   nextEvents: Handlers["nextEvents"] = async (input) => {
@@ -880,6 +1198,10 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
   const server = new GatewayServer(root, env, deps);
   const config = getConfig(root, env);
   const handlers: Handlers = {
+    worker: server.worker,
+    grade: server.grade,
+    suggestModel: server.suggestModel,
+    workerAccess: server.workerAccess,
     openTask: server.openTask,
     reviewTask: server.reviewTask,
     mergeTask: server.mergeTask,
@@ -908,6 +1230,10 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     ownerApproved: server.ownerApproved,
   };
   const policy = {
+    worker: ["orchestrator"],
+    grade: ["orchestrator"],
+    suggestModel: ["orchestrator"],
+    workerAccess: ["worker", "orchestrator"],
     openTask: ["orchestrator"],
     reviewTask: ["orchestrator"],
     mergeTask: ["orchestrator"],
@@ -934,7 +1260,7 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     ghRead: ["orchestrator"],
     dropped: ["orchestrator"],
     ownerApproved: ["orchestrator"],
-  } as const;
+  } as const satisfies Record<keyof Operations, readonly ("worker" | "orchestrator")[]>;
   return inProcess(handlers, (operation, input, ctx) => {
     if (
       !ctx ||
