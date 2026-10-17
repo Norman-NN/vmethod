@@ -32,6 +32,12 @@ Names, titles, protocol tags and commit metadata confer no authority.
 
 ## Commands
 
+Learning operations use the same transport: `learnings(LearningInput) → string`
+and central CI's `learningCheck({ref, label?}) → string`. Read/show/report are
+available to workers; submit and label writes require orchestrator context.
+Submission additionally verifies the token viewer against central numeric identity
+and explicit `repos` bindings. See [shared learnings](learnings.md).
+
 - `vmethod read pr <n> [--files|--diff|--reviews|--checks]`
 - `vmethod read issue <n>`
 - `vmethod read comment <id>` (numeric issue-comment ID in the configured repo)

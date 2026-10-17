@@ -44,6 +44,8 @@ import {
 import { ChecksService } from "./checks.js";
 import { VerificationService } from "./verify.js";
 import { reference } from "./refs.js";
+import { LearningsService } from "./learnings.js";
+import { checkLearningPr } from "./learning-check.js";
 
 class GatewayServer {
   private readonly config: Config;
@@ -133,8 +135,22 @@ class GatewayServer {
   };
   grade: Handlers["grade"] = async ({ ref, points }) =>
     this.workers.grade(this.localNumber(ref), points);
-  suggestModel: Handlers["suggestModel"] = async ({ ref }) =>
-    this.workers.suggest(this.localNumber(ref));
+  suggestModel: Handlers["suggestModel"] = async ({ ref }) => {
+    const suggestion = await this.workers.suggest(this.localNumber(ref));
+    const family = suggestion.split(":", 1)[0];
+    return `${suggestion}\n${await this.learningService().show(family)}`;
+  };
+  learnings: Handlers["learnings"] = async (input) => this.learningService().command(input);
+  learningCheck: Handlers["learningCheck"] = async ({ ref, label }) => {
+    if (String(this.config.repo).toLowerCase() !== "vworlds/vmethod") {
+      throw new Error("Learning PR checks run only in the central repository");
+    }
+    return checkLearningPr(this.github, this.localNumber(ref), label);
+  };
+
+  private learningService(): LearningsService {
+    return new LearningsService(this.root, this.config, this.env, this.deps, () => this.github);
+  }
   workerAccess: Handlers["workerAccess"] = async ({ directory }, ctx) => {
     if (ctx.role === "worker") {
       const task = await this.task({ ref: String(ctx.taskPr) }, ctx);
@@ -1206,6 +1222,8 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
   const server = new GatewayServer(root, env, deps);
   const config = getConfig(root, env);
   const handlers: Handlers = {
+    learnings: server.learnings,
+    learningCheck: server.learningCheck,
     worker: server.worker,
     grade: server.grade,
     suggestModel: server.suggestModel,
@@ -1238,6 +1256,8 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     ownerApproved: server.ownerApproved,
   };
   const policy = {
+    learnings: ["worker", "orchestrator"],
+    learningCheck: ["worker", "orchestrator"],
     worker: ["orchestrator"],
     grade: ["orchestrator"],
     suggestModel: ["orchestrator"],
@@ -1270,6 +1290,16 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     ownerApproved: ["orchestrator"],
   } as const satisfies Record<keyof Operations, readonly ("worker" | "orchestrator")[]>;
   return inProcess(handlers, (operation, input, ctx) => {
+    if (
+      (operation === "learnings" &&
+        (input as Operations["learnings"]["input"]).action === "submit" &&
+        ctx?.role !== "orchestrator") ||
+      (operation === "learningCheck" &&
+        (input as Operations["learningCheck"]["input"]).label &&
+        ctx?.role !== "orchestrator")
+    ) {
+      throw new Error("Learning writes require orchestrator role");
+    }
     if (
       !ctx ||
       !Object.hasOwn(policy, operation) ||

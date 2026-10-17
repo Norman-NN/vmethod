@@ -10,6 +10,7 @@ import { gatewayVerb } from "./gateway.js";
 import { workerVerb } from "./worker.js";
 import { taskFlowVerb } from "./task-flow.js";
 import { ciVerb } from "./ci.js";
+import { learningsVerb } from "./learnings.js";
 import { MarkdownDependencyError } from "../gateway/markdown.js";
 import { execFile, execFileSync } from "node:child_process";
 import { watchClient } from "./watch.js";
@@ -41,6 +42,7 @@ function root(): string {
 }
 try {
   switch (verb) {
+    case "learnings":
     case "worker":
     case "suggest-model":
     case "grade":
@@ -79,6 +81,10 @@ try {
         sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
         report: (message) => console.error(message),
       });
+      if (verb === "learnings") {
+        console.log(await learningsVerb(transport, args, process.env));
+        break;
+      }
       if (verb === "watch") {
         await watchClient(transport, args, process.env);
         break;

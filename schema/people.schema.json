@@ -19,6 +19,15 @@
       "role": {
         "enum": ["owner", "orchestrator", "worker", "collaborator", "system"]
       },
+      "repos": {
+        "type": "array",
+        "minItems": 1,
+        "uniqueItems": true,
+        "items": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9-]*/(?!\\.{1,2}$)[A-Za-z0-9_.-]+$"
+        }
+      },
       "events": {
         "type": "array",
         "minItems": 1,
@@ -27,6 +36,10 @@
       }
     },
     "allOf": [
+      {
+        "if": { "properties": { "repos": {} }, "required": ["repos"] },
+        "then": { "properties": { "role": { "const": "orchestrator" } } }
+      },
       {
         "if": { "properties": { "role": { "const": "system" } } },
         "then": {

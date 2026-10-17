@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { Ajv } from "ajv";
-import modelLogSchema from "../../schema/model-log.schema.json" with { type: "json" };
+import { modelRecord } from "../learnings.js";
 import {
   accessSync,
   appendFileSync,
@@ -25,8 +24,6 @@ import {
 } from "./client.js";
 import { processes, type ProcessIdentity } from "./claude.js";
 import { object, untrusted } from "./people.js";
-
-const validateLog = new Ajv({ allErrors: true, strict: true }).compile(modelLogSchema);
 
 interface Model {
   family: string;
@@ -828,9 +825,7 @@ export class WorkerService {
         notes: "",
       };
       const file = join(this.root, ".vmethod/model-log.jsonl");
-      if (!validateLog(record)) {
-        throw new Error(`Invalid model-log record: ${JSON.stringify(validateLog.errors)}`);
-      }
+      modelRecord(record);
       const records = existsSync(file)
         ? readFileSync(file, "utf8")
             .trim()

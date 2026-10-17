@@ -5,10 +5,26 @@ import { stringify } from "yaml";
 import { Digest } from "../../src/gateway/digest.js";
 import { PeopleFilter, labelled } from "../../src/gateway/people.js";
 import { check } from "../../src/check.js";
+import { validateYaml } from "../../src/config.js";
 import { validProject } from "../helpers.js";
 import { actor, hostile, item, people } from "./helpers.js";
 
 const link = "https://github.com/example/project/issues/3";
+
+test("orchestrator project bindings are optional, explicit and schema-validated", () => {
+  const orchestrator = people.find((person) => person.role === "orchestrator")!;
+  const validate = (entry: unknown) => validateYaml(stringify([entry]), "people", "people.yaml");
+  expect(validate(orchestrator)).toEqual([orchestrator]);
+  const bound = { ...orchestrator, repos: ["example/project"] };
+  expect(validate(bound)).toEqual([bound]);
+  for (const repos of [[], ["../project"], ["example/project", "example/project"], [7]]) {
+    expect(() => validate({ ...orchestrator, repos })).toThrow("people.yaml:");
+  }
+  for (const role of ["owner", "worker", "collaborator", "system"]) {
+    expect(() => validate({ ...bound, role })).toThrow("people.yaml:");
+  }
+}, 15000);
+
 function setup() {
   const root = validProject();
   const digest = new Digest({ XDG_STATE_HOME: root }, "project", () => 1000);

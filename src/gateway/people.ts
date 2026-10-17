@@ -7,6 +7,8 @@ export interface Person {
   role: "owner" | "orchestrator" | "worker" | "collaborator" | "system";
   events?: ("check_run" | "status" | "workflow_run")[];
   appIds?: number[];
+  /** Central, owner-approved project bindings for learning submissions. */
+  repos?: string[];
 }
 export type ObjectData = Record<string, unknown>;
 export function object(value: unknown): ObjectData {
