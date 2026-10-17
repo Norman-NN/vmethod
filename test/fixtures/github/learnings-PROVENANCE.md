@@ -39,9 +39,19 @@ list derive from `pull`, retarget author, open/merged state, URL, and documented
 head/base metadata. List items explicitly omit `changed_files`; only PR detail
 checks depend on that field. Error 404 responses, asynchronous fork readiness,
 label-write replies, hostile content and dropped-response errors are simulated.
-The fork `merge-upstream` response (`message`, `merge_type`, `base_branch`) is a
-documented derived shape, not a recording. Sync failure (422) and a divergent
-post-sync ref are simulated; no Git database or PR writes may follow either.
+Issue 51's live probes recorded sync refusal (422), update-branch refusal (403),
+and ref creation at a central-only commit (404). Submission tests no longer model
+sync success: any sync request fails loudly. Fork dev ref/tree SHAs are retargeted
+from the recorded envelopes to differ from central, modelling a behind fork.
+PR 52's authenticated round-1 review replaces the identical-bytes precondition with
+add-only submission files. Central tree listings derive from the captured tree
+envelope, retarget blob paths and add documented recursive-tree `truncated: false`.
+Content reads use the captured base64 envelope for legacy seeds, chunks and notes.
+Open PR lists/details derive from the captured pull with explicit head/base metadata;
+file lists reuse the captured file envelope with add-only project paths (or the
+legacy modified seed for read-only pending compatibility). Merged/closed states,
+stale fork refs and lost replies are scenario data, not additional recordings.
+Commit writes assert the fork's parent and tree, never central-only objects.
 
 `test/gateway/learnings.test.ts` exercises these envelopes through the real
 `GitHubClient`, submission/show decoders, cursor persistence and central metadata

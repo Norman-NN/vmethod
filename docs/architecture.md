@@ -417,9 +417,10 @@ today only writes the board's Estimate, gains the log writing.
 
 ### Contributing back
 
-- **Mechanical, continuous.** `vmethod learnings submit` sends the log records added since the
-  last submission (and the project's distilled notes) to vmethod as a PR labelled `learning`. Its
-  target is `learnings/models/<owner>-<repo>.jsonl`. Orchestrators run it after each grading round, or at
+- **Mechanical, continuous.** `vmethod learnings submit` sends records absent from central
+  and open submissions (and the project's distilled notes) as new, immutable files in a
+  PR labelled `learning`. The [learning command guide](learnings.md) owns the per-project
+  layout and submission semantics. Orchestrators run it after each grading round, or at
   least once a week.
 - **Distilled, by the vmethod orchestrator.** After merging submissions, the vmethod orchestrator
   updates `learnings/models/<family>.md`: strengths, failure modes, which task kinds and sizes
