@@ -74,10 +74,17 @@ cannot be supplied by callers. Known author-bearing REST output is filtered too;
 unverifiable REST edits are dropped rather than guessed. Check/status/workflow
 diagnostics yield allowlisted structured fields, never system free text. All
 diagnostic output is fenced as untrusted data, including registry metadata.
-For individual REST issue/PR endpoints, the gateway gates the REST author and
+For REST issue/PR endpoints, including each entry in issue/PR lists, the gateway gates the REST author and
 uses editor-aware GraphQL metadata and current text, preserving the REST response
 shape. This avoids confusing a label/state update timestamp with a body edit;
 unknown authors/editors still fail closed before text is delivered.
+
+Repository `compare/<base>...<head>` GET reads are allowed within the same scope.
+REST commit accounts use the usual identity pins; git-only commit metadata passes
+with `attribution: "git signature (unverified)"`. Git signatures never establish a
+verified person or protocol authority. Nested lists are filtered item by item.
+Each diagnostic response ends with `N items dropped by the people filter`, including
+zero, so a filtered-empty response is distinguishable from an empty source list.
 
 The diagnostic verb is not a generic write transport. New writes belong in named,
 policy-enforcing server operations. Future operations can extend the typed map
