@@ -24,8 +24,10 @@ jobs:
             echo "Invalid PR title: $PR_TITLE" >&2
             exit 1
           fi
-      - name: Require PR changelog fragment
+      - run: npm run build
+      - name: Validate learning submission and require other PR changelog fragments
         env:
+          GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: node scripts/changelog.mjs "$PR_NUMBER"
       - run: npm run format:check
@@ -33,12 +35,6 @@ jobs:
       - run: npm run typecheck
       - run: npm test
         timeout-minutes: 5
-      - run: npm run build
-      - name: Validate learning submission independently of its label
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: node dist/vmethod.mjs learnings check-pr "$PR_NUMBER"
       - name: Check vmethod's own config (only missing owner settings allowed)
         run: node scripts/check-self.mjs
       - run: npm run knip

@@ -1,0 +1,160 @@
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { expect, test } from "vitest";
+import { stringify } from "yaml";
+import { getConfig } from "../../src/config.js";
+import { GitHubClient } from "../../src/gateway/client.js";
+import { createGateway } from "../../src/gateway/server.js";
+import { checkLearningPr } from "../../src/gateway/learning-check.js";
+import { fixtureServer } from "./helpers.js";
+import recorded from "../fixtures/github/learning-47.json" with { type: "json" };
+import envelopes from "../fixtures/github/learnings-recorded.json" with { type: "json" };
+
+const prefix = "/repos/vworlds/vmethod";
+const baseSha = "b".repeat(40);
+const pull = {
+  ...recorded.pull,
+  head: { ...recorded.pull.head, repo: { full_name: "vimescmd/vmethod" } },
+  base: { ref: "dev", sha: baseSha, repo: { full_name: "vworlds/vmethod" } },
+};
+const person = { ...pull.user, role: "orchestrator", repos: ["vworlds/vmethod"] };
+const metadata = (value = pull) => ({ path: `${prefix}/pulls/47`, method: "GET", json: value });
+const registry = {
+  path: `${prefix}/contents/people.yaml?ref=${baseSha}`,
+  method: "GET",
+  json: { ...envelopes.people, content: Buffer.from(stringify([person])).toString("base64") },
+};
+const files = (values = recorded.files) => ({
+  path: `${prefix}/pulls/47/files?per_page=100&page=1`,
+  method: "GET",
+  json: values,
+});
+
+test.each([403, 200])(
+  "recorded learning label response %s preserves authorization and diagnostic context",
+  async (status) => {
+    const endpoint = `${prefix}/issues/47/labels`;
+    const f = fixtureServer([
+      metadata(),
+      registry,
+      files(),
+      metadata(),
+      { path: endpoint, method: "POST", body: { labels: ["learning"] }, status },
+    ]);
+    const github = new GitHubClient(getConfig(f.root, {}), f.env, f.deps);
+    if (status === 403) {
+      await expect(checkLearningPr(github, 47, true)).rejects.toThrow(
+        `GitHub HTTP 403 on POST ${endpoint}`
+      );
+    } else {
+      expect(await checkLearningPr(github, 47, true)).toBe(
+        "Learning PR #47: authorized; learning label applied"
+      );
+    }
+    f.done();
+  }
+);
+
+test.each([
+  "green",
+  "red",
+  "unauthorized",
+  "ordinary",
+  "mixed",
+  "moved",
+  "foreign-base",
+  "snapshot",
+])("fork learning waiting boundary: %s", async (scenario) => {
+  let value =
+    scenario === "foreign-base"
+      ? { ...pull, base: { ...pull.base, repo: { full_name: "elsewhere/repo" } } }
+      : pull;
+  const changed =
+    scenario === "ordinary" || scenario === "mixed"
+      ? [{ ...recorded.files[0], filename: "src/hostile.ts" }]
+      : recorded.files;
+  if (scenario === "mixed") {
+    changed.push(recorded.files[0]);
+    value = { ...value, changed_files: 2 };
+  }
+  const runs = recorded.checks.map((check, i) => ({
+    id: i + 1,
+    name: `job-${i}`,
+    app: { id: check.appId },
+    head_sha: check.headSha,
+    status: check.status,
+    conclusion: scenario === "red" ? check.conclusion : "success",
+  }));
+  const allowed = scenario === "green" || scenario === "red";
+  const validate = !["foreign-base", "snapshot"].includes(scenario);
+  const f = fixtureServer([
+    metadata(value),
+    ...(validate
+      ? [
+          scenario === "unauthorized"
+            ? {
+                ...registry,
+                json: {
+                  ...registry.json,
+                  content: Buffer.from(
+                    stringify([{ ...person, repos: ["vworlds/vecs"] }])
+                  ).toString("base64"),
+                },
+              }
+            : registry,
+          files(changed),
+        ]
+      : []),
+    ...(validate && scenario !== "ordinary"
+      ? [
+          metadata(
+            scenario === "moved" ? { ...pull, head: { ...pull.head, sha: "c".repeat(40) } } : value
+          ),
+        ]
+      : []),
+    ...(allowed
+      ? [
+          {
+            path: `${prefix}/commits/${pull.head.sha}/check-runs?filter=all&per_page=100&page=1`,
+            method: "GET",
+            json: { check_runs: runs },
+          },
+          metadata(),
+          registry,
+          files(),
+          metadata(),
+        ]
+      : []),
+  ]);
+  const config = { ...getConfig(f.root, {}), repo: "vworlds/vmethod", org: "vworlds" };
+  writeFileSync(join(f.root, "vmethod.yaml"), stringify(config));
+  writeFileSync(
+    join(f.root, "people.yaml"),
+    stringify([
+      person,
+      {
+        login: "github-actions[bot]",
+        id: 41898282,
+        type: "Bot",
+        role: "system",
+        appIds: [15368],
+        events: ["check_run"],
+      },
+    ])
+  );
+  const gateway = createGateway(f.root, f.env, f.deps);
+  const operation = scenario === "snapshot" ? "checkTaskCi" : "waitChecks";
+  const result = gateway.call(operation, { ref: "47" }, { role: "orchestrator" });
+  if (allowed) {
+    const verdict = await result;
+    if (scenario === "green") {
+      expect(verdict).toEqual({ code: 0, text: "checks: green" });
+    } else {
+      expect(verdict.code).toBe(1);
+      expect(verdict.text.split("\n").at(-1)).toBe("checks: RED: job-0, job-1");
+    }
+  } else {
+    await expect(result).rejects.toThrow();
+  }
+  f.done();
+});
