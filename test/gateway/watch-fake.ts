@@ -139,6 +139,11 @@ export class WatchFake {
         if (route === "/graphql") {
           expect(init?.method).toBe("POST");
           const payload = JSON.parse(String(init?.body));
+          if (
+            payload.query === "query GatewayIdentity { viewer { databaseId login __typename } }"
+          ) {
+            return Response.json({ data: { viewer: actor(2) } });
+          }
           const operation = parse(payload.query).definitions[0];
           expect(operation.kind).toBe(Kind.OPERATION_DEFINITION);
           if (this.enableWrites && operation.kind === Kind.OPERATION_DEFINITION) {

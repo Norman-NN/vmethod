@@ -101,45 +101,50 @@ test.each([
   }));
   const allowed = scenario === "green" || scenario === "red";
   const validate = !["foreign-base", "snapshot"].includes(scenario);
-  const f = fixtureServer([
-    metadata(value),
-    ...(validate
-      ? [
-          scenario === "unauthorized"
-            ? {
-                ...registry,
-                json: {
-                  ...registry.json,
-                  content: Buffer.from(
-                    stringify([{ ...person, repos: ["vworlds/vecs"] }])
-                  ).toString("base64"),
-                },
-              }
-            : registry,
-          files(changed),
-        ]
-      : []),
-    ...(validate && scenario !== "ordinary"
-      ? [
-          metadata(
-            scenario === "moved" ? { ...pull, head: { ...pull.head, sha: "c".repeat(40) } } : value
-          ),
-        ]
-      : []),
-    ...(allowed
-      ? [
-          {
-            path: `${prefix}/commits/${pull.head.sha}/check-runs?filter=all&per_page=100&page=1`,
-            method: "GET",
-            json: { check_runs: runs },
-          },
-          metadata(),
-          registry,
-          files(),
-          metadata(),
-        ]
-      : []),
-  ]);
+  const f = fixtureServer(
+    [
+      metadata(value),
+      ...(validate
+        ? [
+            scenario === "unauthorized"
+              ? {
+                  ...registry,
+                  json: {
+                    ...registry.json,
+                    content: Buffer.from(
+                      stringify([{ ...person, repos: ["vworlds/vecs"] }])
+                    ).toString("base64"),
+                  },
+                }
+              : registry,
+            files(changed),
+          ]
+        : []),
+      ...(validate && scenario !== "ordinary"
+        ? [
+            metadata(
+              scenario === "moved"
+                ? { ...pull, head: { ...pull.head, sha: "c".repeat(40) } }
+                : value
+            ),
+          ]
+        : []),
+      ...(allowed
+        ? [
+            {
+              path: `${prefix}/commits/${pull.head.sha}/check-runs?filter=all&per_page=100&page=1`,
+              method: "GET",
+              json: { check_runs: runs },
+            },
+            metadata(),
+            registry,
+            files(),
+            metadata(),
+          ]
+        : []),
+    ],
+    { login: person.login, databaseId: person.id, __typename: person.type }
+  );
   const config = { ...getConfig(f.root, {}), repo: "vworlds/vmethod", org: "vworlds" };
   writeFileSync(join(f.root, "vmethod.yaml"), stringify(config));
   writeFileSync(

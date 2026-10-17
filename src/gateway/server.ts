@@ -21,7 +21,14 @@ import {
   restActor,
 } from "./queries.js";
 import { checkMarkdown, guardClosingKeywords } from "./markdown.js";
-import { inProcess, type Handlers, type Operations, type Transport } from "./transport.js";
+import {
+  inProcess,
+  type CallContext,
+  type Handlers,
+  type Operations,
+  type Transport,
+} from "./transport.js";
+import { tokenIdentity } from "./identity.js";
 import { isOwnerApproved, isIssueOwnerApproved } from "./approval.js";
 import { TaskFlow } from "./task-flow.js";
 import { GitTransport, taskBranch, validateBranch } from "./git.js";
@@ -50,10 +57,31 @@ class GatewayServer {
   private readonly config: Config;
   private readonly filter: PeopleFilter;
   private readonly digest: Digest;
-  // Lazy: local digest reads and refused operations never need credentials.
+  // Lazy: offline CLI verbs never create or authenticate a gateway client.
   private client?: GitHubClient;
+  private identity?: Promise<Person>;
   private boardClient?: BoardService;
   private workersClient?: WorkerService;
+
+  /** Cache the promise too, so concurrent first calls share one viewer lookup. */
+  async authenticate(ctx: CallContext): Promise<void> {
+    const person = await (this.identity ??= tokenIdentity(this.github, this.filter));
+    if (person.role !== "orchestrator" && person.role !== "worker") {
+      throw new Error(
+        `Gateway token refused: ${person.login} (${person.role}) is not an orchestrator or worker identity`
+      );
+    }
+    if (ctx.taskPr !== undefined && person.role !== "worker") {
+      throw new Error(
+        `worker session holds a non-worker token (${person.login}); fix the worker environment`
+      );
+    }
+    if (ctx.role === "orchestrator" && person.role !== "orchestrator") {
+      throw new Error(
+        `VMETHOD_ROLE=orchestrator refused: token belongs to ${person.login} (${person.role})`
+      );
+    }
+  }
 
   private get workers(): WorkerService {
     return (this.workersClient ??= new WorkerService(this.root, this.config, this.env, this.deps, {
@@ -1460,7 +1488,7 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     dropped: ["orchestrator"],
     ownerApproved: ["orchestrator"],
   } as const satisfies Record<keyof Operations, readonly ("worker" | "orchestrator")[]>;
-  return inProcess(handlers, (operation, input, ctx) => {
+  return inProcess(handlers, async (operation, input, ctx) => {
     if (
       (operation === "learnings" &&
         (input as Operations["learnings"]["input"]).action === "submit" &&
@@ -1478,6 +1506,7 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     ) {
       throw new Error("Gateway operation denied for client role");
     }
+    await server.authenticate(ctx);
     if (ctx.role === "worker" && ["post", "task", "waitReview", "waitChecks"].includes(operation)) {
       const target = reference((input as Operations["post"]["input"]).ref, config);
       if (

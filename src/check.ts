@@ -5,6 +5,7 @@ import { getConfig, loadYaml } from "./config.js";
 import permissionTemplate from "../templates/claude-settings.json" with { type: "json" };
 import packageMetadata from "../package.json" with { type: "json" };
 import { gitIdentityVariables } from "./gateway/git.js";
+import { claudeCredentialFindings } from "./gateway/identity.js";
 
 const mermaidPin = packageMetadata.peerDependencies.mermaid;
 const secretPattern =
@@ -66,6 +67,11 @@ export function check(
     } catch (error) {
       messages.push((error as Error).message);
     }
+  }
+  try {
+    messages.push(...claudeCredentialFindings(root, env));
+  } catch {
+    // The configuration loop above already reports invalid models/configuration.
   }
   let peerPath: string | undefined;
   try {

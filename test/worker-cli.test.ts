@@ -15,6 +15,7 @@ import { beforeAll, expect, test } from "vitest";
 import { fixture, validProject } from "./helpers.js";
 import { actor, item, people } from "./gateway/helpers.js";
 import { stringify } from "yaml";
+import recorded from "./fixtures/github/learnings-recorded.json" with { type: "json" };
 
 const require = createRequire(import.meta.url);
 let bundle: string;
@@ -88,7 +89,7 @@ test.each([0, 1, 2, 3])(
     const preload = join(f.root, "offline.mjs");
     writeFileSync(
       preload,
-      `import assert from 'node:assert/strict'; const responses=${JSON.stringify(responses)}; const paths=${JSON.stringify(paths)}; globalThis.fetch=async (url, init)=> { assert.equal(String(url), 'https://api.github.com/repos/example/project'+paths.shift()); assert.equal(init.method,'GET'); assert.equal(init.redirect,'error'); assert.ok(responses.length); return new Response(JSON.stringify(responses.shift())); }; process.on('exit',()=>{ assert.equal(responses.length,0); assert.equal(paths.length,0); });`
+      `import assert from 'node:assert/strict'; let identities=0; const responses=${JSON.stringify(responses)}; const paths=${JSON.stringify(paths)}; globalThis.fetch=async (url, init)=> { assert.equal(init.redirect,'error'); if (String(url)==='https://api.github.com/graphql') { assert.equal(++identities,1); assert.equal(init.method,'POST'); assert.equal(JSON.parse(init.body).query,'query GatewayIdentity { viewer { databaseId login __typename } }'); return Response.json({data:{viewer:${JSON.stringify(actor(1))}}}); } assert.equal(String(url), 'https://api.github.com/repos/example/project'+paths.shift()); assert.equal(init.method,'GET'); assert.ok(responses.length); return new Response(JSON.stringify(responses.shift())); }; process.on('exit',()=>{ assert.equal(identities,1); assert.equal(responses.length,0); assert.equal(paths.length,0); });`
     );
     const result = f.run(["wait-checks", "3", "0"], ["--import", preload], {
       VMETHOD_TASK_PR: "3",
@@ -120,6 +121,48 @@ function peers(root: string) {
     "exports.JSDOM = class { window = { document: {}, close() {} }; };"
   );
 }
+
+test("check --online reports both credential identities through the built CLI", () => {
+  const f = cliFixture();
+  // Captured viewer (learnings-PROVENANCE.md), projected to the requested fields.
+  const viewer = {
+    databaseId: recorded.viewer.databaseId,
+    login: recorded.viewer.login,
+    __typename: recorded.viewer.__typename,
+  };
+  writeFileSync(
+    join(f.root, "people.yaml"),
+    stringify([
+      { login: viewer.login, id: viewer.databaseId, type: viewer.__typename, role: "orchestrator" },
+      people[1],
+    ])
+  );
+  const preload = join(f.root, "online-check.mjs");
+  writeFileSync(
+    preload,
+    `import assert from 'node:assert/strict';
+    const viewers=${JSON.stringify([viewer, actor(1)])};
+    const tokens=['Bearer orchestrator-token','Bearer worker-token'];
+    globalThis.fetch=async (url, init)=> {
+      assert.equal(String(url),'https://api.github.com/graphql');
+      assert.equal(init.method,'POST');
+      assert.equal(init.headers.authorization,tokens.shift());
+      assert.equal(JSON.parse(init.body).query,'query GatewayIdentity { viewer { databaseId login __typename } }');
+      assert.ok(viewers.length);
+      return Response.json({data:{viewer:viewers.shift()}});
+    };
+    process.on('exit',()=>{assert.equal(viewers.length,0);assert.equal(tokens.length,0);});`
+  );
+  const result = f.run(["check", "--online"], ["--import", preload], {
+    EXAMPLE_GITHUB_TOKEN: "orchestrator-token",
+    EXAMPLE_WORKER_GITHUB_TOKEN: "worker-token",
+  });
+  expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+  expect(result.stdout).toContain("credentials.githubToken: vimescmd (orchestrator)");
+  expect(result.stdout).toContain("credentials.workerGithubToken: worker (worker)");
+  expect(result.stdout).not.toContain("orchestrator-token");
+  expect(result.stdout).not.toContain("worker-token");
+}, 5000);
 
 test("Markdown CLI reports missing peers with a stable exit", () => {
   const f = cliFixture();
@@ -314,7 +357,7 @@ test("start-task child uses PATH fakes, installs once, and continues old bundled
   };
   writeFileSync(
     preload,
-    `import assert from 'node:assert/strict'; let calls=0; globalThis.fetch=async (url, init) => { assert.equal(String(url),'https://api.github.com/graphql'); assert.equal(++calls,1); const payload=JSON.parse(init.body); assert.equal(payload.variables.number,3); assert.ok(payload.query.includes('headRefName')); return new Response(${JSON.stringify(JSON.stringify(response))}); }; process.on('exit',()=>assert.equal(calls,1));`
+    `import assert from 'node:assert/strict'; let calls=0; globalThis.fetch=async (url, init) => { assert.equal(String(url),'https://api.github.com/graphql'); const payload=JSON.parse(init.body); if (++calls===1) { assert.equal(payload.query,'query GatewayIdentity { viewer { databaseId login __typename } }'); return Response.json({data:{viewer:${JSON.stringify(actor(1))}}}); } assert.equal(calls,2); assert.equal(payload.variables.number,3); assert.ok(payload.query.includes('headRefName')); return new Response(${JSON.stringify(JSON.stringify(response))}); }; process.on('exit',()=>assert.equal(calls,2));`
   );
   const env = {
     PATH: bin,

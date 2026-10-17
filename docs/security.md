@@ -48,14 +48,29 @@ raw API clients and direct pushes; allow only reviewed local stubs and
 or narrowly allowlisted. Shell patterns are not an OS/network sandbox: aliases,
 interpreters, alternate clients and writable wrappers also require owner control.
 
-Check installed rules during adoption. Current offline `check` validates the Claude
-deny entries. Online validation through `check --online` (vmethod 1.0, #5)
-remains planned. Do not imply
-that a passing skeleton check proves those protections exist. Keep permission files
+Check installed rules during adoption. Offline `check` validates the Claude
+deny entries; `check --online` additionally verifies configured GitHub credential
+identities, not the effective shell sandbox. Do not imply
+that a passing check proves those protections exist. Keep permission files
 and reviewed stubs owner-controlled;
 protect identity changes with owner review.
 
 ## Credentials and supply chain
+
+Gateway authority comes from the configured token's viewer, matched against the
+numeric ID, login and account type in owner-approved `people.yaml`. Only pinned
+orchestrator and worker identities may call gateway operations. `VMETHOD_ROLE`
+defaults to worker and can only narrow authority: a worker token claiming
+orchestrator is refused. Task-scoped sessions (`VMETHOD_TASK_PR`) must actually
+hold a worker token; an orchestrator token there is refused, not silently downgraded.
+The first allowed operation authenticates once per process. Offline `version`,
+`check`, `config get` and `check-markdown` do not require identity.
+
+Run `check --online` to report each configured GitHub credential's pinned login
+and role. It fails unless `credentials.githubToken` belongs to an orchestrator
+and, when configured, `credentials.workerGithubToken` belongs to a worker.
+Claude families require the worker credential setting even in offline `check`;
+Claude launch independently verifies that token's worker identity before starting.
 
 Configuration stores credential **environment-variable names**, never values.
 Take credentials only from the launching wrapper's environment, not global git

@@ -10,9 +10,18 @@ policy permits workers to read and to post only to their own `taskPr` in the
 configured repository. Diagnostic `ghRead`, the dropped digest and approval checks
 are orchestrator-only. The CLI reads `VMETHOD_ROLE` (default `worker`) and
 `VMETHOD_TASK_PR` (a positive PR number) from the launching wrapper's environment.
-Invalid roles or task numbers are refused. In-process context is not independent
-authentication: the owner-controlled wrapper/permissions must protect these
-environment values until the separate server authenticates clients itself.
+Invalid roles or task numbers are refused. Before dispatching an allowed operation,
+the gateway queries the configured token's `viewer { databaseId login __typename }`
+and matches all three pins in `people.yaml`. The lookup is cached for the gateway's
+process lifetime, including concurrent first calls. Only pinned orchestrator and
+worker identities may operate the gateway. `VMETHOD_ROLE` may narrow an orchestrator
+to worker without a task, but a worker token claiming orchestrator is refused.
+Any task-scoped call (`VMETHOD_TASK_PR`) requires a worker identity, even if the
+requested role is orchestrator. A non-worker token reports
+`worker session holds a non-worker token (<login>); fix the worker environment`.
+Offline `version`, `check`, `config get` and `check-markdown` need no token.
+Owner-controlled wrappers and permissions are still necessary: the in-process
+gateway is not a separate credential sandbox.
 
 ## Identity pins (pre-1.0 migration)
 

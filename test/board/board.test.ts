@@ -458,7 +458,27 @@ test("new operations use the same orchestrator policy and board CLI transport se
   const transport = createGateway(
     root,
     { FAKE_TOKEN: "offline", XDG_STATE_HOME: join(root, "state") },
-    board.deps
+    {
+      ...board.deps,
+      fetch: async (url, init) => {
+        if (
+          String(url) === "https://api.github.com/graphql" &&
+          JSON.parse(String(init?.body)).query ===
+            "query GatewayIdentity { viewer { databaseId login __typename } }"
+        ) {
+          return Response.json({
+            data: {
+              viewer: {
+                login: people[2].login,
+                databaseId: people[2].id,
+                __typename: people[2].type,
+              },
+            },
+          });
+        }
+        return board.deps.fetch(url, init);
+      },
+    }
   );
   for (const operation of [
     "boardStatus",

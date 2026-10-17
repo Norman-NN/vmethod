@@ -103,6 +103,29 @@ test("built CLI initializes and checks the verbatim public vecs TSV registry off
   );
 }, 6000);
 
+test("offline CLI verbs need no identity while check --online reports missing credentials", () => {
+  const root = validProject();
+  const cli = resolve("dist/vmethod.mjs");
+  for (const args of [["version"], ["check"], ["config", "get", "repo"]]) {
+    const result = runChild(process.execPath, [cli, ...args], {
+      cwd: root,
+      env: { VMETHOD_ROOT: root },
+      encoding: "utf8",
+      timeout: 3000,
+    });
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+  }
+  const online = runChild(process.execPath, [cli, "check", "--online"], {
+    cwd: root,
+    env: { VMETHOD_ROOT: root },
+    encoding: "utf8",
+    timeout: 3000,
+  });
+  expect(online.status, online.stderr).toBe(1);
+  expect(online.stdout).toContain("credentials.githubToken: Missing configured GitHub token");
+  expect(online.stdout).toContain("credentials.workerGithubToken: Missing configured GitHub token");
+}, 15000);
+
 test("CI self-check skips absent config and allows only missing owner settings", () => {
   const script = resolve("scripts/check-self.mjs");
   const run = (root: string) =>
