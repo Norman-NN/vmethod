@@ -40,3 +40,13 @@ mutation encoding. Mutation response envelopes retain only the selected
 `projectV2Item { id }` from this recorded item; they are projections, **not a live
 write recording**. The orchestrator owns live write smoke under amendment 1.
 Scratch captures remain ignored; no credentials or unfiltered text are committed.
+
+## Legacy task bodies (PR #44)
+
+`legacy-task-bodies.json` retains only branch names and the opening/closing body
+lines relevant to issue resolution. The vecs excerpt was read through
+`vmethod read pr vworlds/vecs#345` on 2026-10-17. The SpaceRocks excerpt is the
+verified orchestrator's PR #44 AMENDMENT 1 recording (its abbreviated link is
+preserved and its keyword placeholder expanded). These are body projections,
+not complete API response captures. Tests rename repository scope only and
+exercise the real merge follow-up with unexpected requests rejected.

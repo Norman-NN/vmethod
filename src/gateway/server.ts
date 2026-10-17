@@ -467,8 +467,11 @@ class GatewayServer {
     return this.board.setIssueField(String(issue.id), field, value);
   };
 
-  /** Create an own-repository issue from validated file content; repeated labels are supported. */
-  issueCreate: Handlers["issueCreate"] = async ({ title, file, labels = [] }) => {
+  /** Create an own-repository issue from checked content and ensure readable configured-board
+   * membership. Optional estimate/status use the shared board field writer; labels may repeat.
+   * Board follow-up failures identify the created issue so callers do not create a duplicate.
+   */
+  issueCreate: Handlers["issueCreate"] = async ({ title, file, labels = [], estimate, status }) => {
     if (
       typeof title !== "string" ||
       !title.trim() ||
@@ -477,6 +480,19 @@ class GatewayServer {
       labels.some((label) => typeof label !== "string" || !label.trim())
     ) {
       throw new Error("Invalid issue title or labels");
+    }
+    if (
+      estimate !== undefined &&
+      (typeof estimate !== "number" || !Number.isFinite(estimate) || estimate < 0)
+    ) {
+      throw new Error("Estimate must be a finite nonnegative number");
+    }
+    if (status !== undefined && (typeof status !== "string" || !status.trim())) {
+      throw new Error("Invalid issue status");
+    }
+    const boardEnabled = object(this.config.board).enabled !== false;
+    if (!boardEnabled && (estimate !== undefined || status !== undefined)) {
+      throw new Error("Board is disabled; estimate/status require a configured board");
     }
     const body = readFileSync(file, "utf8");
     await checkMarkdown(this.root, `${title}\n\n${body}`);
@@ -491,6 +507,39 @@ class GatewayServer {
     );
     if (!Number.isSafeInteger(created.number) || Number(created.number) < 1) {
       throw new Error("Missing created issue number; inspect repository before retrying");
+    }
+    if (boardEnabled) {
+      try {
+        if (typeof created.node_id !== "string" || !created.node_id) {
+          throw new Error("Missing created issue node ID");
+        }
+        const board = this.board;
+        const itemId = await board.ensure(created.node_id);
+        const snapshot = await board.snapshot();
+        for (let attempt = 0; ; attempt++) {
+          const card = (await board.cards(snapshot.id)).find(
+            (card) => card.id === itemId && card.contentId === created.node_id
+          );
+          if (card) {
+            break;
+          }
+          if (attempt === 5) {
+            throw new Error("Board item not readable after 6 reads");
+          }
+          await this.deps.sleep(1000 * 2 ** attempt);
+        }
+        if (estimate !== undefined) {
+          await board.setIssueField(created.node_id, "Estimate", String(estimate));
+        }
+        if (status !== undefined) {
+          await board.setIssueField(created.node_id, "Status", status);
+        }
+      } catch (error) {
+        throw new Error(
+          `Created issue #${String(created.number)}; board follow-up failed: ${error instanceof Error ? error.message : String(error)}. Do not recreate; inspect this issue and retry board operations only.`,
+          { cause: error }
+        );
+      }
     }
     return `Created issue #${String(created.number)}`;
   };

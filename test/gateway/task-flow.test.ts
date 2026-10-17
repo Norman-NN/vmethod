@@ -9,6 +9,7 @@ import { object, type ObjectData } from "../../src/gateway/people.js";
 import type { Card } from "../../src/board/types.js";
 import { validProject } from "../helpers.js";
 import { people, sha } from "./helpers.js";
+import legacyBodies from "../fixtures/github/legacy-task-bodies.json" with { type: "json" };
 
 const baseSha = "b".repeat(40),
   mergedSha = "c".repeat(40);
@@ -32,7 +33,8 @@ function fixture() {
     actualBase = "dev",
     branch = "8-task";
   let body = '<!-- vmethod-task {"issues":[8]} -->';
-  let sibling = false;
+  let issueNumber = 8;
+  let references: ObjectData = { nodes: [], pageInfo: { hasNextPage: false } };
   let checks = [
     {
       id: 1,
@@ -77,15 +79,6 @@ function fixture() {
       if (method === "POST" && path === "/graphql") {
         parse(String(payload.query));
         data = { data: {} };
-      } else if (
-        method === "GET" &&
-        path === "/repos/example/project/pulls?state=open&per_page=100&page=1"
-      ) {
-        // GitHub's listing may briefly still contain the just-merged PR.
-        data = [
-          { number: 27, head: { ref: "8-task" } },
-          ...(sibling ? [{ number: 28, head: { ref: "8-other" } }] : []),
-        ];
       } else if (method === "GET" && path.includes("/check-runs?")) {
         data = { check_runs: checks };
       } else if (method === "PUT" && path === "/repos/example/project/pulls/27/merge") {
@@ -101,16 +94,20 @@ function fixture() {
         data = {};
       } else if (method === "POST" && path === "/repos/example/project/issues/27/labels") {
         data = {};
-      } else if (method === "GET" && /^\/repos\/example\/project\/issues\/(8|27)$/.test(path)) {
+      } else if (
+        method === "GET" &&
+        [issueNumber, 27].some((n) => path === `/repos/example/project/issues/${n}`)
+      ) {
         data = { assignees: [] };
       } else if (method === "POST" && path === "/repos/example/project/issues/27/assignees") {
         data = {};
-      } else if (method === "PATCH" && path === "/repos/example/project/issues/8") {
+      } else if (method === "PATCH" && path === `/repos/example/project/issues/${issueNumber}`) {
         issueClosed = true;
         data = {};
       } else if (
         method === "GET" &&
-        path === "/repos/example/project/issues/8/dependencies/blocking?per_page=100&page=1"
+        path ===
+          `/repos/example/project/issues/${issueNumber}/dependencies/blocking?per_page=100&page=1`
       ) {
         data = [
           {
@@ -236,7 +233,7 @@ function fixture() {
     }),
     thread: async (ref, kind) => {
       events.push(`read ${kind} ${ref}`);
-      if (kind === "issue" && ref === "8") {
+      if (kind === "issue" && ref === String(issueNumber)) {
         return {
           id: "issue",
           title,
@@ -257,6 +254,7 @@ function fixture() {
         title,
         body,
         state: prState,
+        closingIssuesReferences: references,
         mergeable: "MERGEABLE",
         isDraft: true,
         headRepository: { nameWithOwner: "example/project" },
@@ -293,7 +291,8 @@ function fixture() {
       body?: string;
       dirty?: boolean;
       changed?: boolean;
-      sibling?: boolean;
+      issueNumber?: number;
+      references?: ObjectData;
     }) => {
       approved = values.approved ?? approved;
       issueApproved = values.issueApproved ?? issueApproved;
@@ -307,7 +306,8 @@ function fixture() {
       body = values.body ?? body;
       dirty = values.dirty ?? dirty;
       changed = values.changed ?? changed;
-      sibling = values.sibling ?? sibling;
+      issueNumber = values.issueNumber ?? issueNumber;
+      references = values.references ?? references;
     },
     red: () => {
       checks = checks.map((c) => ({ ...c, conclusion: "failure" }));
@@ -433,12 +433,83 @@ test.each([
   f.done();
 });
 
-test.each([false, true])("branch fallback respects sibling open PRs (%s)", async (sibling) => {
+test("a PR-numbered branch without a relation reports no linked issue", async () => {
   const f = fixture();
-  f.set({ state: "MERGED", body: "Legacy task prompt", sibling });
+  f.set({ state: "MERGED", branch: "345-tracks", body: "Legacy task prompt" });
   await f.flow().merge("27");
-  expect(f.writes.some((w) => w.body.state === "closed")).toBe(!sibling);
-  expect(f.touched.some((w) => w.id === "issue")).toBe(!sibling);
+  expect(f.writes.some((w) => w.body.state === "closed")).toBe(false);
+  expect(f.touched.some((w) => w.id === "issue")).toBe(false);
+  expect(f.events).toContain("report no linked issue");
+  f.done();
+});
+
+test.each(legacyBodies)(
+  "recorded legacy body on $headRefName links only its issue",
+  async (recording) => {
+    const f = fixture();
+    f.set({
+      state: "MERGED",
+      branch: recording.headRefName,
+      body: recording.body,
+      issueNumber: recording.issue,
+    });
+    await f.flow().merge("27");
+    expect(f.events).toContain(`read issue ${recording.issue}`);
+    expect(f.writes.filter((w) => w.body.state === "closed")).toEqual([
+      {
+        path: `/repos/example/project/issues/${recording.issue}`,
+        body: { state: "closed", state_reason: "completed" },
+      },
+    ]);
+    f.done();
+  }
+);
+
+test.each(["Agent task for #344", "> **Agent task for #344.**", "> **Closes #344.**"])(
+  "legacy header %s overrides branch numbering",
+  async (body) => {
+    const f = fixture();
+    f.set({ state: "MERGED", branch: "345-tracks", body, issueNumber: 344 });
+    await f.flow().merge("27");
+    expect(f.events).toContain("read issue 344");
+    f.done();
+  }
+);
+
+test.each(["Part of #344.", "> **Part of #344.**"])(
+  "partial legacy header %s suppresses closing references",
+  async (body) => {
+    const f = fixture();
+    f.set({
+      state: "MERGED",
+      body: `${body}\nCloses #8`,
+      references: {
+        nodes: [{ number: 8, repository: { nameWithOwner: "example/project" } }],
+        pageInfo: { hasNextPage: false },
+      },
+    });
+    await f.flow().merge("27");
+    expect(f.writes.some((w) => w.body.state === "closed")).toBe(false);
+    f.done();
+  }
+);
+
+test("same-repository closing references take precedence over legacy headers", async () => {
+  const f = fixture();
+  f.set({
+    state: "MERGED",
+    branch: "345-tracks",
+    body: "Agent task for #344",
+    references: {
+      nodes: [
+        { number: 8, repository: { nameWithOwner: "example/project" } },
+        { number: 999, repository: { nameWithOwner: "example/foreign" } },
+      ],
+      pageInfo: { hasNextPage: false },
+    },
+  });
+  await f.flow().merge("27");
+  expect(f.events).toContain("read issue 8");
   f.done();
 });
 

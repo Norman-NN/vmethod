@@ -12,13 +12,51 @@ export async function gatewayVerb(
     case "issue": {
       if (args[0] === "create" && args.length >= 3) {
         const labels: string[] = [];
+        let estimate: number | undefined;
+        let status: string | undefined;
         for (let i = 3; i < args.length; i += 2) {
-          if (args[i] !== "--label" || !args[i + 1] || args[i + 1].startsWith("--")) {
-            throw new Error("Usage: issue create <title> <body-file> [--label l]");
+          const flag = args[i],
+            value = args[i + 1];
+          if (
+            !["--label", "--estimate", "--status"].includes(flag) ||
+            !value ||
+            value.startsWith("--")
+          ) {
+            throw new Error(
+              "Usage: issue create <title> <body-file> [--label l] [--estimate n] [--status name]"
+            );
           }
-          labels.push(args[i + 1]);
+          if (flag === "--label") {
+            labels.push(value);
+          }
+          if (flag === "--status") {
+            if (status !== undefined) {
+              throw new Error("Usage: --status may appear only once");
+            }
+            status = value;
+          }
+          if (flag === "--estimate") {
+            if (
+              estimate !== undefined ||
+              !/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(value) ||
+              !Number.isFinite(Number(value))
+            ) {
+              throw new Error("Usage: --estimate requires a finite nonnegative number, once");
+            }
+            estimate = Number(value);
+          }
         }
-        return transport.call("issueCreate", { title: args[1], file: args[2], labels }, ctx);
+        return transport.call(
+          "issueCreate",
+          {
+            title: args[1],
+            file: args[2],
+            labels,
+            ...(estimate === undefined ? {} : { estimate }),
+            ...(status === undefined ? {} : { status }),
+          },
+          ctx
+        );
       }
       if (
         args[0] === "close" &&
@@ -27,7 +65,7 @@ export async function gatewayVerb(
         return transport.call("issueClose", { ref: args[1], comment: args[3] }, ctx);
       }
       throw new Error(
-        "Usage: issue create <title> <body-file> [--label l] | issue close <n> [--comment file]"
+        "Usage: issue create <title> <body-file> [--label l] [--estimate n] [--status name] | issue close <n> [--comment file]"
       );
     }
     case "worker":

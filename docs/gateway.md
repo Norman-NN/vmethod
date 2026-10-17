@@ -48,7 +48,7 @@ and explicit `repos` bindings. See [shared learnings](learnings.md).
 - `vmethod dropped [--since <ISO-date>]`
 - `vmethod board status`
 - `vmethod board migrate [--dry-run] [--steal]`
-- `vmethod issue create <title> <body-file> [--label l]`
+- `vmethod issue create <title> <body-file> [--label l] [--estimate n] [--status name]`
 - `vmethod issue close <n> [--comment file]`
 - `vmethod board set <issue> <field> <value>`
 
@@ -94,7 +94,14 @@ the README compatibility guard; migrations alone act board-wide.
 
 Issue housekeeping and `board set` require the orchestrator role and the configured
 repository. Issue creation reads checked Markdown from a file; repeat `--label` for
-multiple labels. Closure gates the issue's author/editor through the people filter
+multiple labels. With the board enabled, creation adds the issue to the configured
+board and waits for listing visibility (six reads, exponential delays from one to
+16 seconds). It then applies optional nonnegative finite `--estimate` and exact-name
+`--status` values through the shared field writer; Status clears Progress. You can
+immediately use `board set` after successful creation. If board follow-up fails,
+the error identifies the created issue: inspect it and retry board operations,
+never repeat creation. A disabled board skips membership; estimate/status flags
+require a board. Closure gates the issue's author/editor through the people filter
 and optionally posts a checked file comment before closing. It does not close PRs
 or move board cards implicitly. Both file paths reject closing/association syntax.
 Do not blindly retry a failed create: inspect the repository for a created issue.
@@ -104,7 +111,7 @@ people filter and already belong to the configured board. Choose a single-select
 option by its exact name or supply a finite numeric value; other field types are
 refused. Status writes clear Progress first and record the move for the watcher,
 like other board writes. No housekeeping command changes repository/board scope.
-The typed operations are `issueCreate({title, file, labels?})`,
+The typed operations are `issueCreate({title, file, labels?, estimate?, status?})`,
 `issueClose({ref, comment?})` and `boardSetIssue({ref, field, value})` in
 `src/gateway/transport.ts`.
 
@@ -461,11 +468,13 @@ Otherwise cleanup continues with issue closure, board Done, branch deletion and
 checkout fast-forward. Installation remains last. Unmarked watcher merge events
 name `merged_by` and only suggest follow-up, regardless of who merged.
 Issue resolution prefers the structured task header, including its partial flag,
-then the existing task marker. Without either, a numeric task-branch prefix is
-used only if no other open PR relates to that issue; otherwise the issue/card stay
-unchanged. GitHub closing references and legacy Closes headers are last-resort
-relations; legacy Part-of headers do not complete issues. Legacy fallback emits
-a `legacy link` notice. Old empty journals reconcile newly discoverable issues.
+then the existing task marker. Without either, a legacy `Part of #n` line prevents
+issue completion; otherwise same-repository GitHub closing references take
+precedence over legacy `Closes #n` and `Agent task for #n` lines. Legacy lines
+accept a leading blockquote, bold markers and a trailing period. Branch numbers
+are never issue relations and no sibling-PR scan is performed. Explicit legacy
+relations emit a `legacy link` notice; absent relations report `no linked issue`
+and leave issues unchanged. Old empty journals reconcile newly discoverable issues.
 Completed follow-up writes the watcher's `merged-<pr>` marker before any reinstall;
 failed follow-up does not mark completion. Number-scoped watchers also read the
 shared track/main marker without consuming it. Done capping ranks all board repositories but archives
