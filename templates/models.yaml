@@ -3,6 +3,7 @@
   model: example/replace-me
   kind: opencode
   gate: none
+  fallback: [glm, big-pickle]
 - family: astra
   model: example/owner-gated-model
   kind: opencode
@@ -10,4 +11,13 @@
 - family: sonnet
   model: replace-with-installed-model-id
   kind: claude
+  gate: none
+- family: glm
+  model: example/replace-glm
+  kind: opencode
+  gate: none
+  fallback: [big-pickle]
+- family: big-pickle
+  model: example/replace-big-pickle
+  kind: opencode
   gate: none

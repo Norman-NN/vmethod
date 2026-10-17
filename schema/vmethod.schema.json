@@ -13,6 +13,7 @@
     "releaseBranch": { "type": "string" },
     "track": { "type": "string" },
     "workerUser": { "type": "string" },
+    "workerGroup": { "type": "string" },
     "stateName": { "type": "string" },
     "learningsPrivacy": { "enum": ["public", "private"] },
     "board": {

@@ -38,6 +38,9 @@ function root(): string {
 }
 try {
   switch (verb) {
+    case "worker":
+    case "suggest-model":
+    case "grade":
     case "read":
     case "post":
     case "gh-read":

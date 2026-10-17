@@ -132,6 +132,27 @@ export function validateYaml(
         .join("\n")
     );
   }
+  if (kind === "models") {
+    const models = value as { family: string; model: string; kind: string; fallback?: string[] }[];
+    const families = new Set<string>();
+    const identifiers = new Set<string>();
+    for (const [index, model] of models.entries()) {
+      const node = doc.getIn([index], true);
+      const line = lineCounter.linePos(
+        node && typeof node === "object" && "range" in node ? (node.range as number[])[0] : 0
+      ).line;
+      if (families.has(model.family) || identifiers.has(`${model.kind}/${model.model}`)) {
+        throw new Error(`${file}:${line}: duplicate model family or identifier`);
+      }
+      families.add(model.family);
+      identifiers.add(`${model.kind}/${model.model}`);
+      for (const fallback of model.fallback ?? []) {
+        if (!models.some((entry) => entry.family === fallback)) {
+          throw new Error(`${file}:${line}: unknown fallback family ${fallback}`);
+        }
+      }
+    }
+  }
   return value;
 }
 

@@ -1,4 +1,7 @@
 export const verbs = [
+  { name: "worker", stub: "scripts/orchestrator/worker.sh" },
+  { name: "suggest-model", stub: "scripts/orchestrator/suggest-model.sh" },
+  { name: "grade", stub: "scripts/orchestrator/grade.sh" },
   { name: "board", stub: "scripts/agent/board.sh" },
   { name: "version", stub: "scripts/agent/version.sh" },
   { name: "config", stub: "scripts/agent/config.sh" },

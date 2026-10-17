@@ -1,4 +1,7 @@
 import type { Config } from "../config.js";
+import type { ProcessRuntime } from "./claude.js";
+import type { WorkerFilesystem } from "./access.js";
+import { object, type ObjectData } from "./people.js";
 
 export interface Dependencies {
   fetch: typeof fetch;
@@ -10,6 +13,8 @@ export interface Dependencies {
   now: () => number;
   sleep: (ms: number) => Promise<void>;
   report: (message: string) => void;
+  processes?: ProcessRuntime;
+  workerFilesystem?: WorkerFilesystem;
 }
 
 /** Credentials and unfiltered responses must never cross the operation seam. */
@@ -207,7 +212,8 @@ export class OpencodeClient {
 
   constructor(
     env: NodeJS.ProcessEnv,
-    private fetcher: typeof fetch
+    private fetcher: typeof fetch,
+    private now: () => number = Date.now
   ) {
     if (!env.OPENCODE_BASE_URL || !env.OPENCODE_SERVER_USERNAME || !env.OPENCODE_SERVER_PASSWORD) {
       throw new Error(
@@ -227,17 +233,26 @@ export class OpencodeClient {
     this.authorization = `Basic ${Buffer.from(`${env.OPENCODE_SERVER_USERNAME}:${env.OPENCODE_SERVER_PASSWORD}`).toString("base64")}`;
   }
 
-  async request(method: "GET" | "POST", path: string, body?: unknown): Promise<unknown> {
+  async request(
+    method: "GET" | "POST",
+    path: string,
+    body?: unknown,
+    deadline?: number
+  ): Promise<unknown> {
     if (!/^\/[A-Za-z0-9_/?=&%.-]*$/.test(path) || path.startsWith("//") || path.includes("..")) {
       throw new Error("Invalid opencode path");
     }
     const url = new URL(`${this.url.toString().replace(/\/$/, "")}${path}`);
+    const timeout = Math.min(30000, deadline === undefined ? 30000 : deadline - this.now());
+    if (timeout <= 0) {
+      throw new Error("opencode deadline exceeded");
+    }
     let response: Response;
     try {
       response = await this.fetcher(url, {
         method,
         redirect: "error",
-        signal: AbortSignal.timeout(30000),
+        signal: AbortSignal.timeout(Math.ceil(timeout)),
         headers: {
           authorization: this.authorization,
           "content-type": "application/json",
@@ -248,7 +263,10 @@ export class OpencodeClient {
       throw new Error("opencode network request failed");
     }
     if (!response.ok) {
-      throw new Error(`opencode HTTP ${response.status}`);
+      throw new OpencodeError(response.status);
+    }
+    if (response.status === 204) {
+      return {};
     }
     try {
       return await response.json();
@@ -256,4 +274,120 @@ export class OpencodeClient {
       throw new Error("opencode returned invalid JSON");
     }
   }
+
+  async status(directory: string, id?: string, deadline?: number): Promise<WorkerStatus> {
+    const active = object(
+      object(await this.request("GET", "/api/session/active", undefined, deadline)).data
+    );
+    id ??= Object.keys(active).find(
+      (key) => object(object(active[key]).location).directory === directory
+    );
+    if (!id) {
+      return { reason: "session unknown", active: false };
+    }
+    let session: ObjectData;
+    try {
+      session = object(
+        object(
+          await this.request("GET", `/api/session/${encodeURIComponent(id)}`, undefined, deadline)
+        ).data
+      );
+    } catch (error) {
+      if (error instanceof OpencodeError && error.status === 404) {
+        return { reason: "session unknown", active: false };
+      }
+      throw error;
+    }
+    if (!session.id) {
+      return { reason: "session unknown", active: false };
+    }
+    const permissions = object(
+      await this.request(
+        "GET",
+        `/api/session/${encodeURIComponent(id)}/permission`,
+        undefined,
+        deadline
+      )
+    ).data;
+    const messages = object(
+      await this.request(
+        "GET",
+        `/api/session/${encodeURIComponent(id)}/message?limit=20`,
+        undefined,
+        deadline
+      )
+    ).data;
+    if (!Array.isArray(permissions) || !Array.isArray(messages)) {
+      throw new Error("Invalid opencode status response");
+    }
+    const latest = messages.map(object).find((m) => m.type === "idle");
+    const detail = {
+      title: typeof session.title === "string" ? session.title : undefined,
+      directory,
+      inputTokens:
+        typeof object(session.tokens).input === "number"
+          ? Number(object(session.tokens).input)
+          : undefined,
+      outputTokens:
+        typeof object(session.tokens).output === "number"
+          ? Number(object(session.tokens).output)
+          : undefined,
+      updated:
+        typeof object(session.time).updated === "number"
+          ? Number(object(session.time).updated)
+          : undefined,
+      permissions: permissions.length,
+    };
+    if (Array.isArray(permissions) && permissions.length) {
+      return { reason: "permission-wait", active: Boolean(active[id]), ...detail };
+    }
+    if (active[id]) {
+      return { reason: "running", active: true, ...detail };
+    }
+    return { ...classifyTurn(latest ?? session), ...detail };
+  }
+}
+
+class OpencodeError extends Error {
+  constructor(readonly status: number) {
+    super(`opencode HTTP ${status}`);
+  }
+}
+
+export interface WorkerStatus {
+  reason:
+    | "running"
+    | "permission-wait"
+    | "quota"
+    | "provider-error"
+    | "idle"
+    | "idle without reply"
+    | "session unknown";
+  active: boolean;
+  error?: string;
+  title?: string;
+  directory?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  updated?: number;
+  permissions?: number;
+}
+
+export function classifyTurn(turn: ObjectData): WorkerStatus {
+  if (
+    turn.outcome !== "failed" &&
+    !turn.error &&
+    turn.is_error !== true &&
+    !/^error/.test(String(turn.subtype))
+  ) {
+    return { reason: "idle", active: false };
+  }
+  const error = JSON.stringify(turn.error ?? turn.errors ?? turn);
+  return {
+    reason: /quota|rate.?limit|429|subscription|credit|capacity|usage.limit/i.test(error)
+      ? "quota"
+      : "provider-error",
+    active: false,
+    error,
+  };
 }
