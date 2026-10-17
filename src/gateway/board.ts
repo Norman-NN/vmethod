@@ -424,6 +424,50 @@ export class BoardService implements BoardIO {
     }
     return "Board field updated";
   }
+  /** Set a single-select/number field by issue content ID on the configured board only.
+   * Status writes clear Progress and record the move through the shared watcher callback.
+   */
+  async setIssueField(contentId: string, name: string, value: string): Promise<string> {
+    if (typeof name !== "string" || !name || typeof value !== "string" || !value.trim()) {
+      throw new Error("Invalid board field/value");
+    }
+    const snapshot = await this.snapshot();
+    compatibility(readState(snapshot.readme), this.boardVersion, this.report);
+    const field = snapshot.fields.find((field) => field.name === name);
+    if (!field || !["number", "single_select"].includes(field.type)) {
+      throw new Error("Expected a single-select or number board field");
+    }
+    const card = (await this.cards(snapshot.id)).find((card) => card.contentId === contentId);
+    if (!card || card.kind !== "Issue") {
+      throw new Error("Issue is not on configured board");
+    }
+    this.scope(card);
+    let parsed: string | number = value;
+    if (field.type === "number") {
+      if (
+        !/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(value) ||
+        !Number.isFinite(Number(value))
+      ) {
+        throw new Error("Expected finite numeric board value");
+      }
+      parsed = Number(value);
+    }
+    const changes: { id: string; field: Field; value: string | number | null }[] = [
+      { id: card.id, field, value: parsed },
+    ];
+    if (name === "Status") {
+      const progress = snapshot.fields.find((field) => field.name === "Progress");
+      if (!progress) {
+        throw new Error("Missing Progress field");
+      }
+      changes.unshift({ id: card.id, field: progress, value: null });
+    }
+    await this.setChanges(snapshot.id, changes);
+    if (name === "Status") {
+      this.remember?.(card.id, value);
+    }
+    return "Board field updated";
+  }
   async archive(itemId: string): Promise<string> {
     this.scope(await this.item(itemId));
     const snapshot = await this.snapshot();

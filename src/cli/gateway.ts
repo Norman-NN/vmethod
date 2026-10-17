@@ -9,6 +9,27 @@ export async function gatewayVerb(
 ): Promise<string> {
   const ctx = context(env);
   switch (verb) {
+    case "issue": {
+      if (args[0] === "create" && args.length >= 3) {
+        const labels: string[] = [];
+        for (let i = 3; i < args.length; i += 2) {
+          if (args[i] !== "--label" || !args[i + 1] || args[i + 1].startsWith("--")) {
+            throw new Error("Usage: issue create <title> <body-file> [--label l]");
+          }
+          labels.push(args[i + 1]);
+        }
+        return transport.call("issueCreate", { title: args[1], file: args[2], labels }, ctx);
+      }
+      if (
+        args[0] === "close" &&
+        (args.length === 2 || (args.length === 4 && args[2] === "--comment"))
+      ) {
+        return transport.call("issueClose", { ref: args[1], comment: args[3] }, ctx);
+      }
+      throw new Error(
+        "Usage: issue create <title> <body-file> [--label l] | issue close <n> [--comment file]"
+      );
+    }
     case "worker":
       return transport.call("worker", { args }, ctx);
     case "suggest-model":
@@ -53,6 +74,16 @@ async function existingVerb(
 ): Promise<string> {
   switch (verb) {
     case "board": {
+      if (args[0] === "set") {
+        if (args.length !== 4) {
+          throw new Error("Usage: board set <issue> <field> <value>");
+        }
+        return transport.call(
+          "boardSetIssue",
+          { ref: args[1], field: args[2], value: args[3] },
+          ctx
+        );
+      }
       const [action, ...flags] = args;
       if (
         (action !== "status" && action !== "migrate") ||

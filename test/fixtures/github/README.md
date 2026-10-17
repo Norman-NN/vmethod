@@ -15,3 +15,25 @@ should retain the original wire types and document their redactions here.
 `test/gateway/worker-management.test.ts` reuses the recorded field's ISO-string
 `createdAt` for its Model/Estimate board fields, changing only fixture identifiers,
 field names/types and select options to exercise delivery writes.
+
+## Issue/board housekeeping projections (PR #40)
+
+Recorded 2026-10-17 through the built gateway CLI, read-only:
+
+- `gh-read repos/vworlds/vmethod/issues/37`: `issue-response.json` retains the
+  issue representation's number, node ID, state and timestamp fields. Other fields
+  (including text and identities) are omitted. The same issue representation is
+  returned by create and close; create tests project only number and node ID.
+- `gh-read .tmp/board-record.graphql`: project #5 ID, README and fields. The fixture
+  retains Status (two options), Estimate and Progress, with original IDs, dates
+  and wire types.
+- `gh-read .tmp/issue-card.graphql`: issue #39 and its projectItems relation supply
+  the card ID, content fields and fieldValues. `board-write-inputs.json` re-envelopes
+  those recorded values as the BoardCards query's `content`/`items` shape; the
+  `Issue` discriminator is explicit. Other cards/fields/options are omitted.
+
+Board-write tests exercise these inputs through real snapshot/card decoding and
+mutation encoding. Mutation response envelopes retain only the selected
+`projectV2Item { id }` from this recorded item; they are projections, **not a live
+write recording**. The orchestrator owns live write smoke under amendment 1.
+Scratch captures remain ignored; no credentials or unfiltered text are committed.

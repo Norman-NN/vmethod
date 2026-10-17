@@ -18,6 +18,7 @@ test("task-flow CLI routes typed inputs and rejects malformed options before tra
     env
   );
   await taskFlowVerb(transport, "open-task", ["--direct", "fix: small task"], env);
+  await taskFlowVerb(transport, "open-task", ["8", "--part"], env);
   await taskFlowVerb(
     transport,
     "review",
@@ -45,6 +46,7 @@ test("task-flow CLI routes typed inputs and rejects malformed options before tra
       ctx: { role: "orchestrator" },
     },
     { operation: "openTask", input: { direct: "fix: small task" }, ctx: { role: "orchestrator" } },
+    { operation: "openTask", input: { issue: "8", part: true }, ctx: { role: "orchestrator" } },
     {
       operation: "reviewTask",
       input: {
