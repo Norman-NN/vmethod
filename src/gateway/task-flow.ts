@@ -10,6 +10,8 @@ import { object, type ObjectData, type Person } from "./people.js";
 import { checkMarkdown, guardClosingKeywords } from "./markdown.js";
 import { GitTransport, taskBranch, validateBranch } from "./git.js";
 import { cleanBaseMerges } from "./clean-base.js";
+import { stateRoot } from "./digest.js";
+import { resolveSession } from "./events.js";
 import type { OpenTaskInput, ReviewInput } from "./task-flow-types.js";
 
 interface Host {
@@ -83,7 +85,7 @@ export class TaskFlow {
       throw new Error("Refusing fork task branch");
     }
     this.track(item);
-    return item;
+    return { ...item, number: this.number(ref) };
   }
   private track(item: ObjectData): void {
     const labels = object(item.labels).nodes;
@@ -157,7 +159,7 @@ export class TaskFlow {
   }
 
   async open(input: OpenTaskInput): Promise<string> {
-    for (const value of [input.hold, input.ownerApproved]) {
+    for (const value of [input.hold, input.part, input.ownerApproved]) {
       if (value !== undefined && typeof value !== "boolean") {
         throw new Error("Invalid task flags");
       }
@@ -176,6 +178,9 @@ export class TaskFlow {
     const issue = input.issue
       ? await this.host.thread(String(this.number(input.issue)), "issue")
       : undefined;
+    if (input.part && !issue) {
+      throw new Error("--part requires an issue");
+    }
     if (issue) {
       this.track(issue);
       if (issue.state !== "OPEN") {
@@ -217,6 +222,9 @@ export class TaskFlow {
       throw new Error("Model requires --owner-approved");
     }
     let title = String(input.direct ?? issue?.title ?? "");
+    if (!input.direct && issue) {
+      title = title.replace(/^bug:\s*/, "fix: ");
+    }
     if (!conformingTitle(title)) {
       // Issue titles are prose; generate a conventional feature title, never retain a scope.
       title = `feat: ${title.replace(/^[a-z]+\([^)]*\):\s*/, "").trim()}`;
@@ -256,7 +264,10 @@ export class TaskFlow {
     );
     const body =
       template
-        .replaceAll("<delivery title>", `${title}${input.issue ? ` (issue #${input.issue})` : ""}`)
+        .replaceAll(
+          "<delivery title>",
+          `${title}${input.issue ? ` (${input.part ? "part of " : ""}issue #${input.issue})` : ""}`
+        )
         .replace(
           "<!-- points_open: <issue estimate> -->",
           pointsOpen === undefined ? "" : `<!-- points_open: ${pointsOpen} -->`
@@ -307,7 +318,7 @@ export class TaskFlow {
       (handoff
         ? "\nAt each defined breakpoint post `[worker] HANDOFF` with what is done, uncommitted files and remaining mechanical steps, then end your turn.\n"
         : "") +
-      `\n<!-- vmethod-task ${JSON.stringify({ issues: issue ? [Number(input.issue)] : [] })} -->\n`;
+      `\n<!-- vmethod-task ${JSON.stringify({ issues: issue ? [Number(input.issue)] : [], ...(input.part ? { part: true } : {}) })} -->\n`;
     await checkMarkdown(this.root, body);
     guardClosingKeywords(body);
     if (input.unapproved && issue) {
@@ -504,9 +515,69 @@ export class TaskFlow {
     }
   }
 
-  private issues(item: ObjectData): number[] {
+  private async issues(item: ObjectData): Promise<number[]> {
+    const header = /^# Task: [^\r\n]* \((part of )?issue #([1-9]\d*)\)[\t ]*(?:\r?\n|$)/.exec(
+      String(item.body)
+    );
+    if (header) {
+      if (!Number.isSafeInteger(Number(header[2]))) {
+        throw new Error("Invalid task header issue");
+      }
+      return header[1] ? [] : [Number(header[2])];
+    }
     const match = /<!-- vmethod-task (\{[^\n]*\}) -->/.exec(String(item.body));
     if (!match) {
+      if (/^\s*Part of\s+#([1-9]\d*)\b/im.test(String(item.body))) {
+        return [];
+      }
+      const prefix = /^([1-9]\d*)-/.exec(String(item.headRefName));
+      if (prefix) {
+        const number = this.number(prefix[1]);
+        for (let page = 1; ; page++) {
+          const prs = await this.host.github.rest(
+            `/repos/${this.repo}/pulls?state=open&per_page=100&page=${page}`
+          );
+          if (!Array.isArray(prs)) {
+            throw new Error("Missing open PRs for branch issue fallback");
+          }
+          for (const value of prs) {
+            const pr = object(value);
+            if (!Number.isSafeInteger(pr.number) || Number(pr.number) < 1) {
+              throw new Error("Invalid open PR number");
+            }
+            if (pr.number === item.number) {
+              continue;
+            }
+            // Conservative safety check: only numeric relations are consumed, never relayed text.
+            const relation = /^# Task: [^\r\n]* \((?:part of )?issue #([1-9]\d*)\)\s*$/m.exec(
+              String(pr.body)
+            );
+            const marker = /<!-- vmethod-task (\{[^\n]*\}) -->/.exec(String(pr.body));
+            const linked = marker ? object(JSON.parse(marker[1])).issues : [];
+            const closing = [
+              ...String(pr.body).matchAll(
+                /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#([1-9]\d*)\b/gi
+              ),
+            ];
+            if (
+              String(object(pr.head).ref).startsWith(`${number}-`) ||
+              Number(relation?.[1]) === number ||
+              (Array.isArray(linked) && linked.includes(number)) ||
+              closing.some((match) => Number(match[1]) === number)
+            ) {
+              this.deps.report(
+                `legacy link: #${number} has another open PR; leaving issue unchanged`
+              );
+              return [];
+            }
+          }
+          if (prs.length < 100) {
+            break;
+          }
+        }
+        this.deps.report("legacy link: using task branch issue prefix");
+        return [number];
+      }
       const references = object(item.closingIssuesReferences);
       if (object(references.pageInfo).hasNextPage === true) {
         throw new Error("Too many legacy issue links");
@@ -517,9 +588,9 @@ export class TaskFlow {
             .filter((node) => object(node.repository).nameWithOwner === this.repo)
             .map((node) => Number(node.number))
         : [];
-      const headers = [
-        ...String(item.body).matchAll(/^\s*(?:Closes|Part of)\s+#([1-9]\d*)\b/gim),
-      ].map((match) => Number(match[1]));
+      const headers = [...String(item.body).matchAll(/^\s*Closes\s+#([1-9]\d*)\b/gim)].map(
+        (match) => Number(match[1])
+      );
       const legacy = linked.length ? linked : headers;
       if (legacy.some((number) => !Number.isSafeInteger(number))) {
         throw new Error("Invalid legacy issue link");
@@ -529,11 +600,15 @@ export class TaskFlow {
       }
       return [...new Set(legacy)];
     }
-    const issues: unknown = object(JSON.parse(match[1])).issues;
+    const relation = object(JSON.parse(match[1]));
+    if (relation.part !== undefined && typeof relation.part !== "boolean") {
+      throw new Error("Invalid partial task relation");
+    }
+    const issues: unknown = relation.issues;
     if (!Array.isArray(issues) || issues.some((n) => !Number.isSafeInteger(n) || n < 1)) {
       throw new Error("Invalid task issue relation");
     }
-    return [...new Set(issues as number[])];
+    return relation.part ? [] : [...new Set(issues as number[])];
   }
   private stateFile(ref: string): string {
     const name = String(this.config.stateName ?? this.repo.replace("/", "-"));
@@ -699,9 +774,18 @@ export class TaskFlow {
     const file = this.stateFile(ref);
     const journal: Journal = existsSync(file)
       ? (JSON.parse(readFileSync(file, "utf8")) as Journal)
-      : { head, base, branch, issues: this.issues(item), done: [] };
+      : { head, base, branch, issues: await this.issues(item), done: [] };
     if (journal.head !== head || journal.base !== base || journal.branch !== branch) {
       throw new Error("Merge journal does not match PR");
+    }
+    // Older completed journals may have missed the issue entirely. Reconcile newly
+    // discoverable relations without replaying already-checkpointed issue writes.
+    if (existsSync(file)) {
+      const issues = await this.issues(item);
+      if (JSON.stringify(journal.issues) !== JSON.stringify(issues)) {
+        journal.issues = issues;
+        journal.done = journal.done.filter((name) => name !== "estimates");
+      }
     }
     this.save(file, journal);
     const step = async (name: string, action: () => Promise<void>) => {
@@ -823,6 +907,13 @@ export class TaskFlow {
     await step("follow-up", async () => {
       this.deps.report(`#${ref} merged; follow-up complete`);
     });
+    const marker = join(
+      stateRoot(this.env, resolveSession(this.config, {}).stateName),
+      `merged-${this.number(ref)}`
+    );
+    mkdirSync(dirname(marker), { recursive: true });
+    writeFileSync(`${marker}.tmp`, `${Math.floor(this.deps.now() / 1000)}\n`, { mode: 0o600 });
+    renameSync(`${marker}.tmp`, marker);
     const output = `Merged #${ref}`;
     if (journal.install) {
       const install = String(object(this.config.postMerge).install ?? "npm ci");

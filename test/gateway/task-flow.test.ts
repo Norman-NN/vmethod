@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { parse } from "graphql";
@@ -32,6 +32,7 @@ function fixture() {
     actualBase = "dev",
     branch = "8-task";
   let body = '<!-- vmethod-task {"issues":[8]} -->';
+  let sibling = false;
   let checks = [
     {
       id: 1,
@@ -76,6 +77,15 @@ function fixture() {
       if (method === "POST" && path === "/graphql") {
         parse(String(payload.query));
         data = { data: {} };
+      } else if (
+        method === "GET" &&
+        path === "/repos/example/project/pulls?state=open&per_page=100&page=1"
+      ) {
+        // GitHub's listing may briefly still contain the just-merged PR.
+        data = [
+          { number: 27, head: { ref: "8-task" } },
+          ...(sibling ? [{ number: 28, head: { ref: "8-other" } }] : []),
+        ];
       } else if (method === "GET" && path.includes("/check-runs?")) {
         data = { check_runs: checks };
       } else if (method === "PUT" && path === "/repos/example/project/pulls/27/merge") {
@@ -283,6 +293,7 @@ function fixture() {
       body?: string;
       dirty?: boolean;
       changed?: boolean;
+      sibling?: boolean;
     }) => {
       approved = values.approved ?? approved;
       issueApproved = values.issueApproved ?? issueApproved;
@@ -296,6 +307,7 @@ function fixture() {
       body = values.body ?? body;
       dirty = values.dirty ?? dirty;
       changed = values.changed ?? changed;
+      sibling = values.sibling ?? sibling;
     },
     red: () => {
       checks = checks.map((c) => ({ ...c, conclusion: "failure" }));
@@ -306,6 +318,129 @@ function fixture() {
     done: () => expect(unexpected).toEqual([]),
   };
 }
+
+test.each([
+  ["bug: merge-task markers", "fix: merge-task markers"],
+  ["fix: existing type", "fix: existing type"],
+  ["a prose title", "feat: a prose title"],
+])("open-task generates %s as %s", async (title, expected) => {
+  const f = fixture();
+  f.set({ title });
+  await f.flow().open({ issue: "8" });
+  expect(f.writes.find((w) => w.path.endsWith("/pulls"))!.body.title).toBe(expected);
+  f.done();
+});
+
+test("open-task --part records matching structured relations without closing syntax", async () => {
+  const f = fixture();
+  await f.flow().open({ issue: "8", part: true });
+  const body = String(f.writes.find((w) => w.path.endsWith("/pulls"))!.body.body);
+  expect(body).toContain("# Task: feat: task (part of issue #8)");
+  expect(body).toContain('<!-- vmethod-task {"issues":[8],"part":true} -->');
+  expect(body).not.toMatch(/(?:closes|fixes|resolves|part of)\s+#8/i);
+  f.done();
+});
+
+test("merged task with only its task header closes its issue and completes the issue card", async () => {
+  const f = fixture();
+  f.set({ state: "MERGED", body: "# Task: feat: task (issue #8)" });
+  await f.flow().merge("27");
+  expect(f.writes).toContainEqual(
+    expect.objectContaining({
+      path: "/repos/example/project/issues/8",
+      body: { state: "closed", state_reason: "completed" },
+    })
+  );
+  expect(f.touched).toContainEqual(
+    expect.objectContaining({ id: "issue", field: "Status", value: "Done" })
+  );
+  expect(
+    existsSync(join(f.env.XDG_STATE_HOME, "vmethod", String(f.config.stateName), "merged-27"))
+  ).toBe(true);
+  f.done();
+});
+
+test("merge follow-up writes watcher completion before dependency reinstall, never on partial failure", async () => {
+  const f = fixture();
+  const marker = join(f.env.XDG_STATE_HOME, "vmethod", String(f.config.stateName), "merged-27");
+  f.set({ state: "MERGED", fail: "board" });
+  await expect(f.flow().merge("27")).rejects.toThrow("board failed");
+  expect(existsSync(marker)).toBe(false);
+  f.set({ fail: "" });
+  const exec = f.deps.exec;
+  f.deps.exec = async (file, args, options) => {
+    if (file === "sh") {
+      expect(existsSync(marker)).toBe(true);
+    }
+    return exec(file, args, options);
+  };
+  await f.flow().merge("27");
+  expect(existsSync(marker)).toBe(true);
+  f.done();
+});
+
+test("an old empty completed journal discovers its task header issue on retry", async () => {
+  const f = fixture();
+  f.set({ state: "MERGED", body: "# Task: feat: task (issue #8)" });
+  const dir = join(f.env.XDG_STATE_HOME, "vmethod", String(f.config.stateName));
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, "merge-27.json"),
+    JSON.stringify({
+      head: sha,
+      base: "dev",
+      branch: "8-task",
+      issues: [],
+      done: ["estimates", "follow-up"],
+    })
+  );
+  await f.flow().merge("27");
+  expect(f.writes.some((w) => w.body.state === "closed")).toBe(true);
+  expect(f.touched).toContainEqual(
+    expect.objectContaining({ id: "issue", field: "Status", value: "Done" })
+  );
+  f.done();
+});
+
+test("track follow-up writes completion in its watcher's scoped state directory", async () => {
+  const f = fixture();
+  f.config.track = "engine";
+  f.set({ state: "MERGED", base: "track/engine" });
+  const thread = f.host.thread;
+  f.host.thread = async (ref, kind) => ({
+    ...(await thread(ref, kind)),
+    labels: { nodes: [{ name: "track:engine" }] },
+  });
+  await f.flow().merge("27");
+  expect(
+    existsSync(
+      join(f.env.XDG_STATE_HOME, "vmethod", `${String(f.config.stateName)}-engine`, "merged-27")
+    )
+  ).toBe(true);
+  expect(f.writes.some((w) => w.body.state === "closed")).toBe(false);
+  f.done();
+});
+
+test.each([
+  '# Task: feat: task (part of issue #8)\n<!-- vmethod-task {"issues":[8],"part":true} -->',
+  "# Task: feat: task (part of issue #8)",
+])("partial task never completes its issue: %s", async (body) => {
+  const f = fixture();
+  f.set({ state: "MERGED", body });
+  await f.flow().merge("27");
+  expect(f.writes.some((w) => w.body.state === "closed")).toBe(false);
+  expect(f.touched.some((w) => w.id === "issue")).toBe(false);
+  f.done();
+});
+
+test.each([false, true])("branch fallback respects sibling open PRs (%s)", async (sibling) => {
+  const f = fixture();
+  f.set({ state: "MERGED", body: "Legacy task prompt", sibling });
+  await f.flow().merge("27");
+  expect(f.writes.some((w) => w.body.state === "closed")).toBe(!sibling);
+  expect(f.touched.some((w) => w.id === "issue")).toBe(!sibling);
+  f.done();
+});
 
 test.each(["unapproved", "gated", "handoff"])(
   "open-task refuses %s before mutation",

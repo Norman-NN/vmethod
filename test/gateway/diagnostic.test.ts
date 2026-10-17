@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { expect, test } from "vitest";
 import { parse, visit } from "graphql";
 import { readQuery } from "../../src/gateway/queries.js";
-import { actor, fixtureServer, hostile, item } from "./helpers.js";
+import { actor, fixtureServer, graph, hostile, item } from "./helpers.js";
 
 test.each([
   'mutation { addComment(input: { subjectId: "x", body: "x" }) { clientMutationId } }',
@@ -139,6 +139,69 @@ test("REST diagnostics filter known author fields and unverifiable edits and nev
   expect(output).not.toContain("NEVER DELIVER");
   fixture.done();
 }, 15000);
+
+test("REST issue diagnostics resolve verified current text despite metadata update timestamps", async () => {
+  const fixture = fixtureServer([
+    {
+      path: "/repos/example/project/issues/3",
+      method: "GET",
+      json: {
+        node_id: "node-1",
+        number: 3,
+        title: "stale REST title",
+        body: "stale REST text",
+        user: { id: 102, type: "User", login: "worker" },
+        created_at: "2026-10-16T10:00:00Z",
+        updated_at: "2026-10-17T10:00:00Z",
+      },
+    },
+    graph({ node: item() }),
+    graph({ node: item({ title: "Verified title", body: "Verified body" }) }),
+  ]);
+  const output = await fixture.transport.call("ghRead", {
+    source: "repos/example/project/issues/3",
+  });
+  expect(output).toContain("Verified title");
+  expect(output).toContain("Verified body");
+  expect(output).toContain('"number": 3');
+  expect(output).not.toContain("stale REST");
+  fixture.done();
+}, 15000);
+
+test.each(["author", "editor", "changed editor"])(
+  "REST issue diagnostics reject an unknown %s",
+  async (reason) => {
+    const rest = {
+      node_id: "node-1",
+      number: 3,
+      title: "NEVER DELIVER",
+      body: "NEVER DELIVER",
+      user: { id: reason === "author" ? 999 : 102, type: "User", login: "worker" },
+    };
+    const unknown = item({
+      title: "NEVER DELIVER",
+      body: "NEVER DELIVER",
+      editor: { ...actor(), databaseId: 999 },
+      lastEditedAt: "2026-10-17T10:00:00Z",
+    });
+    const metadata = { ...unknown };
+    delete metadata.title;
+    delete metadata.body;
+    const f = fixtureServer([
+      { path: "/repos/example/project/issues/3", method: "GET", json: rest },
+      ...(reason === "author"
+        ? []
+        : reason === "editor"
+          ? [graph({ node: metadata })]
+          : [graph({ node: item() }), graph({ node: unknown })]),
+    ]);
+    expect(
+      await f.transport.call("ghRead", { source: "repos/example/project/issues/3" })
+    ).not.toContain("NEVER DELIVER");
+    f.done();
+  },
+  15000
+);
 
 test("REST diagnostic check runs also enforce app pins and omit attacker-controlled output", async () => {
   const fixture = fixtureServer([

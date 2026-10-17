@@ -52,6 +52,7 @@ try {
     case "post":
     case "gh-read":
     case "board":
+    case "issue":
     case "dropped":
     case "start-task":
     case "read-pr":

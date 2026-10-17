@@ -3,6 +3,9 @@ import type { OpenTaskInput, ReviewInput } from "./task-flow-types.js";
 import type { SessionInput, WatchEvent } from "./events.js";
 
 export interface Operations {
+  issueCreate: { input: { title: string; file: string; labels?: string[] }; output: string };
+  issueClose: { input: { ref: string; comment?: string }; output: string };
+  boardSetIssue: { input: { ref: string; field: string; value: string }; output: string };
   worker: { input: { args: string[] }; output: string };
   suggestModel: { input: { ref: string }; output: string };
   grade: { input: { ref: string; points?: number }; output: string };

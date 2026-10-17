@@ -42,6 +42,9 @@ Names, titles, protocol tags and commit metadata confer no authority.
 - `vmethod dropped [--since <ISO-date>]`
 - `vmethod board status`
 - `vmethod board migrate [--dry-run] [--steal]`
+- `vmethod issue create <title> <body-file> [--label l]`
+- `vmethod issue close <n> [--comment file]`
+- `vmethod board set <issue> <field> <value>`
 
 Thread references also accept `org/repo#n` within the configured org. Invoke the
 installed package with `npm exec --no -- vmethod`, never a downloading fallback.
@@ -65,6 +68,10 @@ cannot be supplied by callers. Known author-bearing REST output is filtered too;
 unverifiable REST edits are dropped rather than guessed. Check/status/workflow
 diagnostics yield allowlisted structured fields, never system free text. All
 diagnostic output is fenced as untrusted data, including registry metadata.
+For individual REST issue/PR endpoints, the gateway gates the REST author and
+uses editor-aware GraphQL metadata and current text, preserving the REST response
+shape. This avoids confusing a label/state update timestamp with a body edit;
+unknown authors/editors still fail closed before text is delivered.
 
 The diagnostic verb is not a generic write transport. New writes belong in named,
 policy-enforcing server operations. Future operations can extend the typed map
@@ -78,6 +85,22 @@ structured Status, Assignee, Estimate, Model and Progress data. `boardSet` accep
 `null`) and batch both updates in order. Estimates cannot be written on PRs.
 Ordinary writes and archives refuse foreign-repository or draft cards and enforce
 the README compatibility guard; migrations alone act board-wide.
+
+Issue housekeeping and `board set` require the orchestrator role and the configured
+repository. Issue creation reads checked Markdown from a file; repeat `--label` for
+multiple labels. Closure gates the issue's author/editor through the people filter
+and optionally posts a checked file comment before closing. It does not close PRs
+or move board cards implicitly. Both file paths reject closing/association syntax.
+Do not blindly retry a failed create: inspect the repository for a created issue.
+
+`board set` accepts an issue number, not a project item ID. The issue must pass the
+people filter and already belong to the configured board. Choose a single-select
+option by its exact name or supply a finite numeric value; other field types are
+refused. Status writes clear Progress first and record the move for the watcher,
+like other board writes. No housekeeping command changes repository/board scope.
+The typed operations are `issueCreate({title, file, labels?})`,
+`issueClose({ref, comment?})` and `boardSetIssue({ref, field, value})` in
+`src/gateway/transport.ts`.
 
 ## Worker commands
 
@@ -391,13 +414,18 @@ produce repeated drops; the counts are observations, not unique contributions.
 
 These commands require `VMETHOD_ROLE=orchestrator`:
 
-- `open-task <issue> [--direct "<title>"] [--unapproved "<reason>"] [--hold] [--model <family>] [--owner-approved]`
+- `open-task <issue> [--direct "<title>"] [--unapproved "<reason>"] [--hold] [--part] [--model <family>] [--owner-approved]`
   creates a conforming-title draft from the task template and issue specification.
   The header is `# Task: <title> (issue #N)` and `<!-- points_open: N -->`
   freezes the issue's opening Estimate for grading; it is never copied onto the PR card.
   `open-task --direct "<title>"` also works without an issue. It records a structured
   issue relation without closing prose, sets Model/Progress and never estimates a PR.
   Gates and expensive-only Handoff breakpoints are enforced server-side.
+  Existing conforming title prefixes are preserved. An issue-only `bug:` alias
+  becomes `fix:`; prose/nonconforming titles receive `feat:` without broadening
+  the accepted delivery-title types. `--part` requires an issue and records
+  `# Task: <title> (part of issue #N)` plus `"part":true` in the structured marker.
+  A partial delivery leaves the issue and its card unchanged during merge follow-up.
 - `review <pr> changes|owner|answer|ask|approve <file> [--in-reply-to <comment-url>]`
   posts the protocol header and sets the next actor. Owner review always names the
   full current SHA and marks the draft ready. `approve` posts an orchestrator
@@ -426,8 +454,15 @@ Any commits beyond the merged PR head are reported as
 Otherwise cleanup continues with issue closure, board Done, branch deletion and
 checkout fast-forward. Installation remains last. Unmarked watcher merge events
 name `merged_by` and only suggest follow-up, regardless of who merged.
-Legacy links fall back to GitHub closing references, then Closes/Part-of headers,
-with a `legacy link` notice. Done capping ranks all board repositories but archives
+Issue resolution prefers the structured task header, including its partial flag,
+then the existing task marker. Without either, a numeric task-branch prefix is
+used only if no other open PR relates to that issue; otherwise the issue/card stay
+unchanged. GitHub closing references and legacy Closes headers are last-resort
+relations; legacy Part-of headers do not complete issues. Legacy fallback emits
+a `legacy link` notice. Old empty journals reconcile newly discoverable issues.
+Completed follow-up writes the watcher's `merged-<pr>` marker before any reinstall;
+failed follow-up does not mark completion. Number-scoped watchers also read the
+shared track/main marker without consuming it. Done capping ranks all board repositories but archives
 only this repository's cards after the newest six. Keep the main checkout clean on
 the configured base branch before retrying its fast-forward. Install is the final
 effect, after all follow-up is checkpointed, with no token environment or second

@@ -1,0 +1,66 @@
+{
+  "id": "PVT_kwDOBvP9TM4BnVal",
+  "readme": "<!-- vmethod-board -->\nversion: 1\nmin_compatible: 1\nmigrated: 2026-10-16 by vimescmd (baseline, stamped by hand per owner; vworlds/vmethod#2; dedicated board)\n<!-- /vmethod-board -->",
+  "fields": {
+    "nodes": [
+      {
+        "id": "PVTSSF_lADOBvP9TM4BnValzhl6hOA",
+        "name": "Status",
+        "dataType": "SINGLE_SELECT",
+        "createdAt": "2026-10-16T11:12:25Z",
+        "options": [
+          {
+            "id": "5acf990d",
+            "name": "In progress",
+            "color": "YELLOW",
+            "description": "This is actively being worked on"
+          },
+          {
+            "id": "e807513c",
+            "name": "Done",
+            "color": "ORANGE",
+            "description": "This has been completed"
+          }
+        ]
+      },
+      {
+        "id": "PVTF_lADOBvP9TM4BnValzhl6hZM",
+        "name": "Estimate",
+        "dataType": "NUMBER",
+        "createdAt": "2026-10-16T11:12:45Z"
+      },
+      {
+        "id": "PVTF_lADOBvP9TM4BnValzhl6wkM",
+        "name": "Progress",
+        "dataType": "TEXT",
+        "createdAt": "2026-10-16T11:42:52Z"
+      }
+    ],
+    "pageInfo": { "hasNextPage": false, "endCursor": "MjA" }
+  },
+  "items": {
+    "nodes": [
+      {
+        "id": "PVTI_lADOBvP9TM4BnValzhBcXuk",
+        "content": {
+          "__typename": "Issue",
+          "id": "I_kwDOVMIbYc8AAAABX4TClQ",
+          "number": 39,
+          "closedAt": null,
+          "repository": { "nameWithOwner": "vworlds/vmethod" },
+          "assignees": { "nodes": [] }
+        },
+        "fieldValues": {
+          "nodes": [
+            {},
+            {},
+            { "number": 5, "field": { "name": "Estimate" } },
+            { "name": "In progress", "field": { "name": "Status" } }
+          ],
+          "pageInfo": { "hasNextPage": false, "endCursor": "NA" }
+        }
+      }
+    ],
+    "pageInfo": { "hasNextPage": false, "endCursor": "MQ" }
+  }
+}

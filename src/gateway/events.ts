@@ -1400,9 +1400,16 @@ export class EventLoop {
       await this.restRead(() => this.host.github.rest(`/repos/${this.own}/pulls/${number}`))
     );
     const person = this.host.filter.identity(restActor(data.user));
-    if (data.merged === true && this.marked(`merged-${number}`)) {
+    const completion = join(
+      stateRoot(
+        this.host.env,
+        resolveSession(this.host.config, { track: this.session.track ?? undefined }).stateName
+      ),
+      `merged-${number}`
+    );
+    if (data.merged === true && (this.marked(`merged-${number}`) || existsSync(completion))) {
       // Our own merge-task follow-up: not news.
-      remove(join(this.dir, `merged-${number}`));
+      // Keep completion durable: main and explicit-number watchers can observe it independently.
       this.clearPrState(number);
       this.queueProgress(number, { state: null, round: null, ci: "ok" });
       return;
