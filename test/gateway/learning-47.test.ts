@@ -10,6 +10,7 @@ import { actor, fixtureServer } from "./helpers.js";
 import { learningsVerb } from "../../src/cli/learnings.js";
 import recorded from "../fixtures/github/learning-47.json" with { type: "json" };
 import envelopes from "../fixtures/github/learnings-recorded.json" with { type: "json" };
+import actionsViewer from "../fixtures/github/actions-viewer.json" with { type: "json" };
 
 const prefix = "/repos/vworlds/vmethod";
 const baseSha = "b".repeat(40);
@@ -117,6 +118,29 @@ test("Actions system label writes still require a fully validated submission", a
   await expect(learningsVerb(gateway, ["check-pr", "47", "--label"], env)).rejects.toThrow(
     "denied"
   );
+  f.done();
+}, 15000);
+
+test("recorded GraphQL Actions viewer authorizes CI using the REST-form registry pin", async () => {
+  const f = fixtureServer([metadata(), registry, files(), metadata()], actionsViewer);
+  const config = { ...getConfig(f.root, {}), repo: "vworlds/vmethod", org: "vworlds" };
+  writeFileSync(join(f.root, "vmethod.yaml"), stringify(config));
+  writeFileSync(
+    join(f.root, "people.yaml"),
+    stringify([
+      {
+        login: "github-actions[bot]",
+        id: actionsViewer.databaseId,
+        type: "Bot",
+        role: "system",
+        appIds: [15368],
+        events: ["check_run"],
+      },
+    ])
+  );
+  const env = { ...f.env, GITHUB_ACTIONS: "true" };
+  const gateway = createGateway(f.root, env, f.deps);
+  expect(await learningsVerb(gateway, ["check-pr", "47"], env)).toBe("Learning PR #47: authorized");
   f.done();
 }, 15000);
 

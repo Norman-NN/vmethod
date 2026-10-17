@@ -22,7 +22,9 @@ unread digest of counts, repository, numbers and links for daily owner triage.
 Mentions outside `org` are dropped. Bot PRs/comments are dropped like any unlisted
 author; trusted system entries yield only allowlisted structured event kinds.
 
-Match author numeric id and account type; pin login/id correspondence. A comment
+Match author numeric id and account type; pin login/id correspondence. GraphQL
+spells `Bot` logins without REST's trailing `[bot]` suffix; normalize that suffix
+only for Bot login comparison, never numeric IDs or types. A comment
 edited by another person counts as the editor's input. Association is secondary;
 display names and commit metadata are never authority. Label every accepted event
 with verified login and role before classifying its protocol tag.

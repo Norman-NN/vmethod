@@ -8,6 +8,7 @@ import { check } from "../../src/check.js";
 import { validateYaml } from "../../src/config.js";
 import { validProject } from "../helpers.js";
 import { actor, hostile, item, people } from "./helpers.js";
+import actionsViewer from "../fixtures/github/actions-viewer.json" with { type: "json" };
 
 const link = "https://github.com/example/project/issues/3";
 
@@ -30,6 +31,36 @@ function setup() {
   const digest = new Digest({ XDG_STATE_HOME: root }, "project", () => 1000);
   return { digest, filter: new PeopleFilter(people, "example", digest) };
 }
+
+test.each(["github-actions", "github-actions[bot]", "GITHUB-ACTIONS[BOT]"])(
+  "Bot pins accept the GraphQL/REST login spelling %s without changing id or type",
+  (login) => {
+    const { digest } = setup();
+    const person = { ...people[3], id: actionsViewer.databaseId, login };
+    const filter = new PeopleFilter([person], "example", digest);
+    expect(filter.identity(actionsViewer)).toBe(person);
+    expect(filter.identity({ ...actionsViewer, login: "github-actions[bot]" })).toBe(person);
+    expect(filter.identity({ ...actionsViewer, databaseId: 999 })).toBeUndefined();
+    expect(filter.identity({ ...actionsViewer, __typename: "User" })).toBeUndefined();
+    expect(filter.identity({ ...actionsViewer, login: "other-actions" })).toBeUndefined();
+    expect(
+      filter.identity({ ...actionsViewer, login: "github-actions[bot][bot]" })
+    ).toBeUndefined();
+    expect(filter.accept(item({ author: actionsViewer }), "example", link, "workflow_run")).toBe(
+      person
+    );
+    expect(filter.accept(item({ author: actionsViewer }), "example", link)).toBeUndefined();
+  },
+  15000
+);
+
+test("User logins never receive Bot suffix normalization", () => {
+  const { filter } = setup();
+  expect(filter.identity({ ...actor(1), login: "worker[bot]" })).toBeUndefined();
+  const user = { ...people[1], login: "worker[bot]" };
+  const suffixed = new PeopleFilter([user], "example", setup().digest);
+  expect(suffixed.identity(actor(1))).toBeUndefined();
+});
 
 test("identity requires pinned numeric id, login and account type, never display names or forged tags", () => {
   const { filter, digest } = setup();

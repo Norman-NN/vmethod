@@ -46,7 +46,7 @@ export class PeopleFilter {
         person.id === actor.databaseId &&
         person.type === actor.__typename &&
         typeof actor.login === "string" &&
-        person.login.toLowerCase() === actor.login.toLowerCase()
+        identityLogin(person.login, person.type) === identityLogin(actor.login, person.type)
     );
   }
 
@@ -86,6 +86,12 @@ export class PeopleFilter {
     }
     return person;
   }
+}
+
+/** GraphQL omits REST's trailing [bot] suffix; only Bot accounts share these spellings. */
+function identityLogin(login: string, type: Person["type"]): string {
+  const lower = login.toLowerCase();
+  return type === "Bot" ? lower.replace(/\[bot\]$/, "") : lower;
 }
 
 /** A variable-length fence cannot be closed by hostile body text. */
