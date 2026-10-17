@@ -25,6 +25,7 @@ export interface Card {
 export interface FieldShape {
   type: FieldType;
   options?: string[];
+  states?: { name: string; emoji: string }[];
 }
 export type Operation =
   | ({ op: "add_field"; field: string } & FieldShape)

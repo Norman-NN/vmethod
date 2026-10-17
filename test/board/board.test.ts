@@ -10,6 +10,7 @@ import { validProject } from "../helpers.js";
 import { people } from "../gateway/helpers.js";
 import type { Migration } from "../../src/board/types.js";
 import { baseline, FakeBoard } from "./fake.js";
+import recordedFields from "../fixtures/github/board-fields.json" with { type: "json" };
 
 let fake: FakeBoard;
 test("task-flow board adds are scoped, compatibility-guarded and replay-safe", async () => {
@@ -68,6 +69,53 @@ const expand: Migration = {
     },
   },
 };
+
+test("live-reported ISO field creation time decodes through snapshot and permits a Progress write", async () => {
+  const board = setup();
+  board.stamp(1, 1);
+  board.recordedFields = structuredClone(recordedFields);
+  board.fields = [
+    {
+      id: "field-progress",
+      name: "Progress",
+      type: "text",
+      createdAt: Date.parse("2026-10-16T11:12:25Z"),
+      options: [],
+    },
+  ];
+  const card = board.card();
+  card.contentId = "recorded-progress-content";
+  const service = board.service();
+  expect((await service.snapshot()).fields[0].createdAt).toBe(Date.parse("2026-10-16T11:12:25Z"));
+  // Task-flow adds the card before writing Progress: exercise both paths with the
+  // recorded ISO-string wire value, rather than a decoded numeric timestamp.
+  await expect(service.ensure(card.contentId)).resolves.toBe(card.id);
+  await expect(
+    service.set({ itemId: card.id, field: "Progress", value: "🤖🤝 🔁2️⃣" })
+  ).resolves.toBe("Board field updated");
+  expect(card.values.Progress).toBe("🤖🤝 🔁2️⃣");
+  expect(board.mutations).toContain("BoardSetCards");
+  expect(board.mutations).toContain("BoardAdd");
+});
+
+test.each([undefined, null, "", "invalid-date", 1792149145000])(
+  "field creation time %s fails closed before a write",
+  async (createdAt) => {
+    const board = setup();
+    board.stamp(1, 1);
+    const fields = structuredClone(recordedFields);
+    board.recordedFields = {
+      node: {
+        fields: { ...fields.node.fields, nodes: [{ ...fields.node.fields.nodes[0], createdAt }] },
+      },
+    };
+    const card = board.card();
+    await expect(
+      board.service().set({ itemId: card.id, field: "Progress", value: "🤖🤝" })
+    ).rejects.toThrow("invalid board field creation time");
+    expect(board.mutations).toEqual([]);
+  }
+);
 const contract: Migration = {
   version: 3,
   requires: "1.2.0",

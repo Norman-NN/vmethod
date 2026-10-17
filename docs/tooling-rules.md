@@ -43,10 +43,36 @@ and commands. Any unexpected request or command fails the test; there is no sile
 default. Include hostile titles, bodies and branches, untrusted authors, fake tags
 and closing syntax as data. Every test and suite has a timeout.
 
+Fakes must use **recorded real response shapes**, never invented ones. Preserve
+wire types when sanitizing recordings (for example, GitHub field `createdAt` is
+an ISO-8601 string, not an epoch number). Record the source and any projections or
+redactions with the fixture. Exercise recordings through the real decoding and
+write paths so a fake cannot silently validate its own incorrect assumptions.
+
 Test behavior, not source greps. Patchers and fixture rewriters assert anchors and
 replacement counts. Missing scan/build inputs fail rather than produce an empty
 pass. Consumer hooks can use the shared testing kit when available; project-specific
 verification recipes remain local hooks rather than shared assumptions.
+
+Size each test's timeout from the measured cold cost of what it spawns: measure
+fresh child processes repeatedly, including under parallel load, and allow several
+times the p95 for that workload. Set the budget per test, never one blanket value
+or a larger global timeout that hides hangs. Bound child processes too, and report
+the command, elapsed time and budget on expiry. Do one Markdown/Mermaid check per
+test; real Mermaid/jsdom imports need their own generous budget (30 seconds), not
+the lightweight CLI budget. Cap the runner's pool based on available CPUs in its
+shared config, not ad hoc command flags. Inject clocks and sleeps for polling,
+backoff and deadlines; tests must not wait for wall-clock delays they cannot control.
+
+The child-process test helper can record fresh-process durations without changing
+assertions or budgets. Use a writable temporary directory and retain the suite's
+per-test durations too:
+
+```sh
+timings=$(mktemp -d)
+VMETHOD_TEST_TIMINGS="$timings/children.jsonl" npm test -- \
+  --reporter=json --outputFile="$timings/suite.json"
+```
 
 ## A package replacing itself
 

@@ -12,6 +12,7 @@ import { taskFlowVerb } from "./task-flow.js";
 import { ciVerb } from "./ci.js";
 import { MarkdownDependencyError } from "../gateway/markdown.js";
 import { execFile, execFileSync } from "node:child_process";
+import { watchClient } from "./watch.js";
 import { promisify } from "node:util";
 
 declare const __VERSION__: string;
@@ -41,6 +42,10 @@ function root(): string {
 try {
   switch (verb) {
     case "read":
+    case "watch":
+    case "mute":
+    case "unmute":
+    case "mutes":
     case "post":
     case "gh-read":
     case "board":
@@ -71,6 +76,10 @@ try {
         sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
         report: (message) => console.error(message),
       });
+      if (verb === "watch") {
+        await watchClient(transport, args, process.env);
+        break;
+      }
       if (["wait-checks", "verify", "refresh-checks", "check-task-ci"].includes(verb)) {
         const result = await ciVerb(transport, verb, args, process.env);
         console.log(result.text);
