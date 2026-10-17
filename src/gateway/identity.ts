@@ -1,7 +1,7 @@
 import { getConfig, loadYaml } from "../config.js";
 import { GitHubClient, type Dependencies } from "./client.js";
 import { Digest } from "./digest.js";
-import { PeopleFilter, object, type Person } from "./people.js";
+import { PeopleFilter, object, type Person, type ObjectData } from "./people.js";
 
 /** Offline cross-file validation: Claude launches must have a separate worker credential. */
 export function claudeCredentialFindings(root: string, env: NodeJS.ProcessEnv): string[] {
@@ -14,13 +14,31 @@ export function claudeCredentialFindings(root: string, env: NodeJS.ProcessEnv): 
     : [];
 }
 
-/** Authenticate the configured credential against all three owner-approved identity pins. */
-export async function tokenIdentity(client: GitHubClient, filter: PeopleFilter): Promise<Person> {
-  const viewer = object(
+/** Read only the non-secret credential identity; callers may cache this promise. */
+export async function tokenViewer(client: GitHubClient): Promise<ObjectData> {
+  return object(
     object(await client.graphql("query GatewayIdentity { viewer { databaseId login __typename } }"))
       .viewer
   );
-  const person = filter.identity(viewer);
+}
+
+/** Match token pins strictly; only the gated Actions learning path permits its recorded User viewer. */
+export function tokenIdentity(
+  viewer: ObjectData,
+  filter: PeopleFilter,
+  actionsLearningCheck = false
+): Person {
+  const person =
+    filter.identity(viewer, false) ??
+    (actionsLearningCheck && viewer.__typename === "User"
+      ? filter.people.find(
+          (person) =>
+            person.role === "system" &&
+            person.type === "Bot" &&
+            person.id === viewer.databaseId &&
+            person.login === viewer.login
+        )
+      : undefined);
   if (!person) {
     throw new Error(
       `Gateway token refused: identity is not pinned in people.yaml: login=${String(viewer.login ?? "<missing>")} databaseId=${String(viewer.databaseId ?? "<missing>")} type=${String(viewer.__typename ?? "<missing>")}`
@@ -54,7 +72,7 @@ export async function checkOnline(
     }
     try {
       const client = new GitHubClient({ ...config, credentials: { githubToken: name } }, env, deps);
-      const person = await tokenIdentity(client, filter);
+      const person = tokenIdentity(await tokenViewer(client), filter);
       messages.push(`credentials.${key}: ${person.login} (${person.role})`);
       if (person.role !== expected) {
         messages.push(

@@ -76,6 +76,12 @@ the base-code checkout and base-pinned registry rules; label writes happen only
 after submission validation. Setting the environment flag never substitutes for
 the pinned credential identity.
 
+On this token-only CI path, Actions' recorded `viewer` type `User` may match a
+`system`/`Bot` registry entry only when its numeric ID and login match exactly.
+No Bot suffix normalization applies to token matching. This exception never
+applies to authors/editors, worker or orchestrator pins, or other operations;
+author/editor type pins remain strict.
+
 Unpinned-token errors report the viewer's login, numeric database ID and account
 type, using `<missing>` for absent fields. These identity diagnostics contain no
 credential values; use them to investigate pin mismatches without guessing.

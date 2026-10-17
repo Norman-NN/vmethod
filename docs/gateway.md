@@ -36,9 +36,11 @@ default trusted application, and missing pins fail configuration validation.
 `vmethod check` reports invalid pins with source line numbers. Do not let agents
 change their own trust list.
 
-Login, numeric ID and type must agree. Bot login comparisons normalize REST's
+Author/editor login, numeric ID and type must agree. Bot author/editor login comparisons normalize REST's
 trailing `[bot]` suffix to match GraphQL's suffixless spelling; numeric IDs and
-account types still match exactly, and User logins are not normalized.
+account types still match exactly, and User logins are not normalized. Token
+authentication does not normalize Bot suffixes; its sole Actions viewer-type
+exception is documented in [Security](security.md).
 Edited text is attributed to its verified
 editor; a missing editor on edited text fails closed. Repository ownership must
 match `org`. System comments are dropped. Check runs yield only structured facts

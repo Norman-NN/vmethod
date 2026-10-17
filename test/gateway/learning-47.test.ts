@@ -140,7 +140,21 @@ test("recorded GraphQL Actions viewer authorizes CI using the REST-form registry
   );
   const env = { ...f.env, GITHUB_ACTIONS: "true" };
   const gateway = createGateway(f.root, env, f.deps);
+  await expect(
+    gateway.call(
+      "boardSetIssue",
+      { ref: "3", field: "Status", value: "Done" },
+      { role: "orchestrator" }
+    )
+  ).rejects.toThrow("Gateway token refused");
   expect(await learningsVerb(gateway, ["check-pr", "47"], env)).toBe("Learning PR #47: authorized");
+  await expect(
+    gateway.call(
+      "issueCreate",
+      { title: "Title", file: "nonexistent.md" },
+      { role: "orchestrator" }
+    )
+  ).rejects.toThrow("Gateway token refused");
   f.done();
 }, 15000);
 

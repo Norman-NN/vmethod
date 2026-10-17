@@ -9,6 +9,7 @@ test.each([
   [actor(2), actor(1), 0],
   [actor(1), actor(2), 1],
   [actor(3), actor(1), 1],
+  [{ ...actor(3), __typename: "User" }, actor(1), 1],
   [{ ...actor(2), databaseId: 999 }, actor(1), 1],
 ] as const)(
   "online check reports and verifies both configured identities",

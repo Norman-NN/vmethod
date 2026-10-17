@@ -1,5 +1,5 @@
 {
-  "login": "github-actions",
+  "login": "github-actions[bot]",
   "databaseId": 41898282,
-  "__typename": "Bot"
+  "__typename": "User"
 }

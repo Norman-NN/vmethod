@@ -38,18 +38,26 @@ test.each(["github-actions", "github-actions[bot]", "GITHUB-ACTIONS[BOT]"])(
     const { digest } = setup();
     const person = { ...people[3], id: actionsViewer.databaseId, login };
     const filter = new PeopleFilter([person], "example", digest);
-    expect(filter.identity(actionsViewer)).toBe(person);
-    expect(filter.identity({ ...actionsViewer, login: "github-actions[bot]" })).toBe(person);
-    expect(filter.identity({ ...actionsViewer, databaseId: 999 })).toBeUndefined();
-    expect(filter.identity({ ...actionsViewer, __typename: "User" })).toBeUndefined();
-    expect(filter.identity({ ...actionsViewer, login: "other-actions" })).toBeUndefined();
+    const author = { ...actionsViewer, login: "github-actions", __typename: "Bot" };
+    expect(filter.identity(author)).toBe(person);
+    expect(filter.identity({ ...author, login: "github-actions[bot]" })).toBe(person);
+    expect(filter.identity({ ...author, databaseId: 999 })).toBeUndefined();
+    expect(filter.identity(actionsViewer)).toBeUndefined();
+    expect(filter.identity({ ...author, login: "other-actions" })).toBeUndefined();
+    expect(filter.identity({ ...author, login: "github-actions[bot][bot]" })).toBeUndefined();
+    expect(filter.accept(item({ author }), "example", link, "workflow_run")).toBe(person);
+    expect(filter.accept(item({ author }), "example", link)).toBeUndefined();
     expect(
-      filter.identity({ ...actionsViewer, login: "github-actions[bot][bot]" })
+      filter.accept(item({ author: actionsViewer }), "example", link, "workflow_run")
     ).toBeUndefined();
-    expect(filter.accept(item({ author: actionsViewer }), "example", link, "workflow_run")).toBe(
-      person
-    );
-    expect(filter.accept(item({ author: actionsViewer }), "example", link)).toBeUndefined();
+    expect(
+      filter.accept(
+        item({ lastEditedAt: "now", editor: actionsViewer }),
+        "example",
+        link,
+        "workflow_run"
+      )
+    ).toBeUndefined();
   },
   15000
 );

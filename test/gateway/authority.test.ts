@@ -6,11 +6,13 @@ import { gatewayVerb } from "../../src/cli/gateway.js";
 import { taskFlowVerb } from "../../src/cli/task-flow.js";
 import { createGateway } from "../../src/gateway/server.js";
 import { actor, fakeServer, people } from "./helpers.js";
+import type { Person } from "../../src/gateway/people.js";
+import actionsViewer from "../fixtures/github/actions-viewer.json" with { type: "json" };
 import { validProject } from "../helpers.js";
 
-function fixture(viewer: unknown, env: NodeJS.ProcessEnv = {}) {
+function fixture(viewer: unknown, env: NodeJS.ProcessEnv = {}, pins: Person[] = people) {
   const root = validProject();
-  writeFileSync(join(root, "people.yaml"), stringify(people));
+  writeFileSync(join(root, "people.yaml"), stringify(pins));
   const fake = fakeServer([
     {
       path: "/graphql",
@@ -157,7 +159,7 @@ test.each([undefined, "false", "TRUE"])(
 test.each([
   { ...actor(3), databaseId: 999 },
   { ...actor(3), login: "impostor[bot]" },
-  { ...actor(3), __typename: "User" },
+  { ...actor(3), __typename: "Organization" },
 ])(
   "Actions flag cannot authenticate an unpinned system viewer: %j",
   async (viewer) => {
@@ -183,6 +185,73 @@ test("Actions flag cannot grant a worker identity the system-only label exceptio
   await expect(
     f.gateway.call("learningCheck", { ref: "47", label: true }, { role: "worker" })
   ).rejects.toThrow("Learning writes require orchestrator role");
+  f.done();
+}, 15000);
+
+test.each([
+  [actionsViewer, { GITHUB_ACTIONS: "false" }, "system", "Bot", undefined],
+  [actionsViewer, { GITHUB_ACTIONS: "true" }, "system", "Bot", 47],
+  [{ ...actionsViewer, databaseId: 999 }, { GITHUB_ACTIONS: "true" }, "system", "Bot", undefined],
+  [
+    { ...actionsViewer, login: "github-actions" },
+    { GITHUB_ACTIONS: "true" },
+    "system",
+    "Bot",
+    undefined,
+  ],
+  [
+    { ...actionsViewer, login: "GITHUB-ACTIONS[BOT]" },
+    { GITHUB_ACTIONS: "true" },
+    "system",
+    "Bot",
+    undefined,
+  ],
+  [actionsViewer, { GITHUB_ACTIONS: "true" }, "worker", "Bot", undefined],
+  [actionsViewer, { GITHUB_ACTIONS: "true" }, "orchestrator", "Bot", undefined],
+] as const)(
+  "CI viewer type exception never widens other identity pins: %j",
+  async (viewer, env, role, type, taskPr) => {
+    const pin: Person = {
+      login: "github-actions[bot]",
+      id: actionsViewer.databaseId,
+      role,
+      type,
+      ...(role === "system" ? { appIds: [15368], events: ["check_run" as const] } : {}),
+    };
+    const f = fixture(viewer, env, [pin]);
+    await expect(
+      f.gateway.call("learningCheck", { ref: "47" }, { role: "worker", taskPr })
+    ).rejects.toThrow("Gateway token refused");
+    f.done();
+  },
+  15000
+);
+
+test("real Actions User viewer cannot call board or issue operations", async () => {
+  const f = fixture(actionsViewer, { GITHUB_ACTIONS: "true" }, [
+    {
+      login: "github-actions[bot]",
+      id: actionsViewer.databaseId,
+      type: "Bot",
+      role: "system",
+      appIds: [15368],
+      events: ["check_run"],
+    },
+  ]);
+  await expect(
+    f.gateway.call(
+      "boardSetIssue",
+      { ref: "3", field: "Status", value: "Done" },
+      { role: "orchestrator" }
+    )
+  ).rejects.toThrow("Gateway token refused");
+  await expect(
+    f.gateway.call(
+      "issueCreate",
+      { title: "Title", file: "nonexistent.md" },
+      { role: "orchestrator" }
+    )
+  ).rejects.toThrow("Gateway token refused");
   f.done();
 }, 15000);
 

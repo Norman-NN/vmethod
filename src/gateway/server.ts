@@ -28,7 +28,7 @@ import {
   type Operations,
   type Transport,
 } from "./transport.js";
-import { tokenIdentity } from "./identity.js";
+import { tokenIdentity, tokenViewer } from "./identity.js";
 import { isOwnerApproved, isIssueOwnerApproved } from "./approval.js";
 import { TaskFlow } from "./task-flow.js";
 import { GitTransport, taskBranch, validateBranch } from "./git.js";
@@ -59,21 +59,21 @@ class GatewayServer {
   private readonly digest: Digest;
   // Lazy: offline CLI verbs never create or authenticate a gateway client.
   private client?: GitHubClient;
-  private identity?: Promise<Person>;
+  private identity?: Promise<ObjectData>;
   private boardClient?: BoardService;
   private workersClient?: WorkerService;
 
   /** Cache the promise too, so concurrent first calls share one viewer lookup. */
   async authenticate(ctx: CallContext, operation: keyof Operations): Promise<boolean> {
-    const person = await (this.identity ??= tokenIdentity(this.github, this.filter));
-    // The CI-only learning validator retains its pinned-base registry and write gates.
-    // Neither an environment flag alone nor a system identity grants any other verb.
-    if (
-      person.role === "system" &&
+    const viewer = await (this.identity ??= tokenViewer(this.github));
+    const actionsLearningCheck =
       operation === "learningCheck" &&
       this.env.GITHUB_ACTIONS === "true" &&
-      ctx.taskPr === undefined
-    ) {
+      ctx.taskPr === undefined;
+    const person = tokenIdentity(viewer, this.filter, actionsLearningCheck);
+    // The CI-only learning validator retains its pinned-base registry and write gates.
+    // Neither an environment flag alone nor a system identity grants any other verb.
+    if (person.role === "system" && actionsLearningCheck) {
       return true;
     }
     if (person.role !== "orchestrator" && person.role !== "worker") {
@@ -403,7 +403,7 @@ class GatewayServer {
     const viewer = object(
       object(await client.graphql(`query WorkerIdentity { viewer { ${actorFields} } }`)).viewer
     );
-    if (this.filter.identity(viewer)?.role !== "worker") {
+    if (this.filter.identity(viewer, false)?.role !== "worker") {
       throw new Error(
         "Configured Claude GitHub identity is not a pinned worker; refusing orchestrator identity"
       );
