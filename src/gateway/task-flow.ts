@@ -146,6 +146,9 @@ export class TaskFlow {
     }
   }
   private async ready(item: ObjectData, draft: boolean): Promise<void> {
+    if (item.isDraft === draft) {
+      return;
+    }
     const mutation = draft ? "convertPullRequestToDraft" : "markPullRequestReadyForReview";
     await this.host.github.graphql(
       `mutation TaskReady($id: ID!) { ${mutation}(input: {pullRequestId: $id}) { pullRequest { id } } }`,
@@ -154,6 +157,16 @@ export class TaskFlow {
   }
 
   async open(input: OpenTaskInput): Promise<string> {
+    for (const value of [input.hold, input.ownerApproved]) {
+      if (value !== undefined && typeof value !== "boolean") {
+        throw new Error("Invalid task flags");
+      }
+    }
+    for (const value of [input.issue, input.direct, input.model, input.unapproved]) {
+      if (value !== undefined && (typeof value !== "string" || !value.trim())) {
+        throw new Error("Invalid task text argument");
+      }
+    }
     if (
       (!input.issue && !input.direct) ||
       (input.unapproved !== undefined && !input.unapproved.trim())
@@ -240,7 +253,7 @@ export class TaskFlow {
         .replaceAll(
           "<link and agreement, or explicit direct go>",
           issue
-            ? `https://github.com/${this.repo}/issues/${input.issue}; approved specification reproduced below`
+            ? `https://github.com/${this.repo}/issues/${input.issue}; ${input.unapproved ? `unapproved exception: ${input.unapproved}` : input.direct ? "direct owner go" : "approved specification"} reproduced below`
             : `Direct owner go: ${input.direct}`
         )
         .replaceAll("<actual values from project config>", `base ${base}; branch ${branch}`)
@@ -357,13 +370,20 @@ export class TaskFlow {
       ask: "ANSWER",
       approve: "APPROVED",
     }[input.outcome];
-    if (
-      input.replyTo &&
-      !new RegExp(
-        `^https://github\\.com/${this.repo}/(?:issues|pull)/${input.ref}#(?:issuecomment-|discussion_r)\\d+$`
-      ).test(input.replyTo)
-    ) {
-      throw new Error("Invalid reply URL");
+    if (input.replyTo) {
+      const url = new URL(input.replyTo);
+      if (
+        url.origin !== "https://github.com" ||
+        url.search ||
+        url.username ||
+        url.password ||
+        ![`/${this.repo}/issues/${input.ref}`, `/${this.repo}/pull/${input.ref}`].includes(
+          url.pathname
+        ) ||
+        !/^#(?:issuecomment-|discussion_r)\d+$/.test(url.hash)
+      ) {
+        throw new Error("Invalid reply URL");
+      }
     }
     const body =
       `[orchestrator] ${heading}\n\n` +
@@ -523,6 +543,9 @@ export class TaskFlow {
   }
 
   async merge(ref: string, mergeCommit = false): Promise<string> {
+    if (typeof mergeCommit !== "boolean") {
+      throw new Error("Invalid merge-commit flag");
+    }
     const item = await this.pr(ref);
     if (!["OPEN", "MERGED"].includes(String(item.state))) {
       throw new Error("PR is closed without merging");

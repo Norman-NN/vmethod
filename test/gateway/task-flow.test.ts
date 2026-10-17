@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { parse } from "graphql";
@@ -283,6 +283,9 @@ function fixture() {
     red: () => {
       checks = checks.map((c) => ({ ...c, conclusion: "failure" }));
     },
+    greenHead: (head: string) => {
+      checks = checks.map((check) => ({ ...check, head_sha: head }));
+    },
     done: () => expect(unexpected).toEqual([]),
   };
 }
@@ -451,6 +454,104 @@ test("requireCurrentBase false allows conflict-free green-head squash on moved b
   f.config.merge = { requireCurrentBase: false };
   await f.flow().merge("27");
   expect(f.events.some((event) => event.includes("merge-base --is-ancestor"))).toBe(false);
+  f.done();
+});
+
+test.each([true, false])("merge gateway recomputes clean base proof (clean=%s)", async (clean) => {
+  const f = fixture();
+  const old = "d".repeat(40),
+    tree = "e".repeat(40);
+  f.host.approved = async (_ref, historical) => historical === old;
+  f.host.candidates = async () => [old];
+  const exec = f.deps.exec;
+  const commands: Record<string, string> = {
+    [`rev-list --first-parent --parents ${old}..${sha}`]: clean
+      ? `${sha} ${old} ${baseSha}`
+      : `${sha} ${old}`,
+    [`merge-tree --write-tree ${old} ${baseSha}`]: tree,
+    [`rev-parse ${sha}^{tree}`]: tree,
+    [`merge-base ${old} ${baseSha}`]: old,
+    [`merge-base ${sha} ${baseSha}`]: baseSha,
+    [`diff --name-only -z ${old} ${old}`]: "task.ts\0",
+    [`diff --name-only -z ${baseSha} ${sha}`]: "task.ts\0",
+    [`diff --binary --full-index ${old} ${old} -- task.ts`]: "patch",
+    [`diff --binary --full-index ${baseSha} ${sha} -- task.ts`]: "patch",
+  };
+  f.deps.exec = async (file, args, options) => {
+    const key = args.join(" ");
+    if (file === "git" && key in commands) {
+      f.events.push(`git ${key}`);
+      return commands[key];
+    }
+    return exec(file, args, options);
+  };
+  if (clean) {
+    await expect(f.flow().merge("27")).resolves.toContain("Merged");
+    expect(f.writes.some((write) => write.path.endsWith("/merge"))).toBe(true);
+  } else {
+    await expect(f.flow().merge("27")).rejects.toThrow("Owner approval");
+    expect(f.writes.some((write) => write.path.endsWith("/merge"))).toBe(false);
+  }
+  f.done();
+});
+
+test.each(["head", "base", "worker"])("last recheck refuses %s movement", async (moved) => {
+  const f = fixture();
+  const thread = f.host.thread;
+  let reads = 0,
+    statuses = 0;
+  f.host.thread = async (ref, kind) => {
+    const item = await thread(ref, kind);
+    if (kind === "pr" && ++reads > 1) {
+      if (moved === "head") {
+        item.headRefOid = "d".repeat(40);
+      }
+      if (moved === "base") {
+        item.baseRefOid = "d".repeat(40);
+      }
+    }
+    return item;
+  };
+  f.deps.workers!.status = async () => (moved === "worker" && ++statuses > 1 ? "live" : "stopped");
+  await expect(f.flow().merge("27")).rejects.toThrow(
+    moved === "worker" ? "Worker restarted" : "moved during"
+  );
+  expect(f.writes.some((write) => write.path.endsWith("/merge"))).toBe(false);
+  f.done();
+});
+
+test("install replacing the pinned package cannot load or spawn the replacement mid-run", async () => {
+  const f = fixture();
+  const directory = join(f.root, "node_modules/@vworlds/vmethod");
+  mkdirSync(directory, { recursive: true });
+  const module = join(directory, "index.mjs");
+  writeFileSync(module, 'export const version = "old";');
+  const exec = f.deps.exec;
+  let replaced = false;
+  f.deps.exec = async (file, args, options) => {
+    if (file === "git" && args[0] === "merge") {
+      writeFileSync(module, 'throw new Error("mixed new version");');
+      replaced = true;
+    }
+    if (file === "sh") {
+      expect(replaced).toBe(true);
+      writeFileSync(module, 'throw new Error("installed replacement");');
+    }
+    return exec(file, args, options);
+  };
+  await expect(f.flow().merge("27")).resolves.toBe("Merged #27");
+  expect(readFileSync(module, "utf8")).toContain("installed replacement");
+  expect(f.events.at(-1)).toBe("sh -c npm ci");
+  f.done();
+});
+
+test("track override never changes the canonical main base for follow-up", async () => {
+  const f = fixture();
+  f.config.baseBranch = "track/session";
+  f.set({ base: "track/session" });
+  await f.flow().merge("27");
+  expect(f.touched.some((write) => write.id === "issue")).toBe(false);
+  expect(f.events.some((event) => event.includes("--ff-only"))).toBe(false);
   f.done();
 });
 

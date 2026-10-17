@@ -298,6 +298,22 @@ export class FakeBoard {
           data = { archiveProjectV2Item: { item: { id: arg.itemId } } };
           break;
         }
+        case "BoardContent": {
+          const card = this.cards.find((card) => card.contentId === variables.id);
+          data = {
+            node: card ? { __typename: card.kind, repository: { nameWithOwner: card.repo } } : null,
+          };
+          break;
+        }
+        case "BoardAdd": {
+          expect(arg.projectId).toBe("project");
+          const card = this.cards.find((card) => card.contentId === arg.contentId);
+          if (!card) {
+            return this.unknown(payload.query);
+          }
+          data = { addProjectV2ItemById: { item: { id: card.id } } };
+          break;
+        }
         case "BoardWorkflows":
           data = {
             node: {

@@ -12,6 +12,24 @@ import type { Migration } from "../../src/board/types.js";
 import { baseline, FakeBoard } from "./fake.js";
 
 let fake: FakeBoard;
+test("task-flow board adds are scoped, compatibility-guarded and replay-safe", async () => {
+  const board = setup();
+  board.stamp(1);
+  const own = board.card("own");
+  own.contentId = "node-own";
+  const foreign = board.card("foreign", "example/other");
+  foreign.contentId = "node-foreign";
+  const draft = board.card("draft");
+  draft.kind = "DraftIssue";
+  draft.contentId = "node-draft";
+  expect(await board.service().ensure("node-own")).toBe("own");
+  expect(await board.service().ensure("node-own")).toBe("own");
+  await expect(board.service().ensure("node-foreign")).rejects.toThrow("foreign or draft");
+  await expect(board.service().ensure("node-draft")).rejects.toThrow("foreign or draft");
+  expect(board.mutations.filter((name) => name === "BoardAdd")).toHaveLength(2);
+  board.stamp(2, 2);
+  await expect(board.service().ensure("node-own")).rejects.toThrow("INCOMPATIBLE");
+});
 test("Done cap ranks all repositories but archives only own cards outside the newest six", async () => {
   const board = setup();
   board.stamp(1);
