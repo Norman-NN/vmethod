@@ -95,7 +95,11 @@ export function privateLearning(record: ModelRecord, includeText = false): Model
   });
 }
 
-/** Server-only learning reads and fork writes; credentials never cross the typed operation seam. */
+/**
+ * Server-only learning reads and fork writes; credentials never cross the typed operation seam.
+ * Submissions use the fork dev parent/tree without workflow scope and require byte-identical
+ * project log and submitted notes on fork/central dev before creating submission objects.
+ */
 export class LearningsService {
   constructor(
     private root: string,
@@ -281,7 +285,10 @@ export class LearningsService {
     const notesPath = `learnings/notes/${name}.md`;
     const baseRef = object(await github.rest(`/repos/${central}/git/ref/heads/${base}`));
     const parent = sha(object(baseRef.object).sha);
-    const previous = (await this.content(central, modelPath, parent)) ?? "";
+    const centralLog = await this.contentBytes(central, modelPath, parent);
+    const centralNotes =
+      rawNotes === undefined ? undefined : await this.contentBytes(central, notesPath, parent);
+    const previous = centralLog?.toString("utf8") ?? "";
     const shared = modelRecords(previous);
     if (shared.some((record) => record.repo.toLowerCase() !== repo)) {
       throw new Error("Shared model log contains a foreign repository");
@@ -314,7 +321,7 @@ export class LearningsService {
         1
       );
     }
-    if (rawNotes !== undefined && (await this.content(central, notesPath, parent)) === rawNotes) {
+    if (rawNotes !== undefined && centralNotes?.toString("utf8") === rawNotes) {
       files.splice(
         files.findIndex((file) => file.path === notesPath),
         1
@@ -365,6 +372,19 @@ export class LearningsService {
     ) {
       throw new Error("Refusing an unrelated or unverified fork");
     }
+    const forkRef = object(await github.rest(`/repos/${forkName}/git/ref/heads/${base}`));
+    const forkParent = sha(object(forkRef.object).sha);
+    const expectedContents: [string, Buffer | undefined][] = [[modelPath, centralLog]];
+    if (rawNotes !== undefined) {
+      expectedContents.push([notesPath, centralNotes]);
+    }
+    for (const [path, content] of expectedContents) {
+      if (!isDeepStrictEqual(await this.contentBytes(forkName, path, forkParent), content)) {
+        throw new Error(
+          `fork dev is stale for ${path}; sync the fork in the GitHub web UI, then retry`
+        );
+      }
+    }
     const branch = `learnings/${owner}-${name}-${digest({ count, files }).slice(0, 24)}`;
     const refPath = `/repos/${forkName}/git/ref/heads/${branch}`;
     let head: string | undefined;
@@ -382,7 +402,7 @@ export class LearningsService {
         }
       }
       const comparison = object(
-        await github.rest(`/repos/${forkName}/compare/${parent}...${head}`)
+        await github.rest(`/repos/${forkName}/compare/${forkParent}...${head}`)
       );
       if (!Array.isArray(comparison.files) || comparison.files.length !== files.length) {
         throw new Error("Existing submission branch has unexpected changes");
@@ -403,21 +423,7 @@ export class LearningsService {
         })
       );
     } else {
-      try {
-        await github.rest(`/repos/${forkName}/merge-upstream`, "POST", { branch: base }, false);
-      } catch (error) {
-        throw new Error(
-          "Fork synchronization failed; reconcile the fork dev branch before submitting (no force update attempted)",
-          { cause: error }
-        );
-      }
-      const synchronized = object(await github.rest(`/repos/${forkName}/git/ref/heads/${base}`));
-      if (sha(object(synchronized.object).sha) !== parent) {
-        throw new Error(
-          "Fork dev does not match the pinned central dev after synchronization; reconcile or retry, never force-update"
-        );
-      }
-      const commit = object(await github.rest(`/repos/${central}/git/commits/${parent}`));
+      const commit = object(await github.rest(`/repos/${forkName}/git/commits/${forkParent}`));
       const tree = object(
         await github.rest(
           `/repos/${forkName}/git/trees`,
@@ -436,7 +442,7 @@ export class LearningsService {
           {
             message: "docs: share project learnings",
             tree: sha(tree.sha),
-            parents: [parent],
+            parents: [forkParent],
           },
           false
         )
@@ -497,6 +503,10 @@ export class LearningsService {
   }
 
   private async content(repo: string, path: string, ref: string): Promise<string | undefined> {
+    return (await this.contentBytes(repo, path, ref))?.toString("utf8");
+  }
+
+  private async contentBytes(repo: string, path: string, ref: string): Promise<Buffer | undefined> {
     let data;
     try {
       data = object(
@@ -516,7 +526,7 @@ export class LearningsService {
     ) {
       throw new Error("Invalid learning content response");
     }
-    return Buffer.from(data.content, "base64").toString("utf8");
+    return Buffer.from(data.content, "base64");
   }
 }
 

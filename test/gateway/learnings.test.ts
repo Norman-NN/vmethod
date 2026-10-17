@@ -23,6 +23,8 @@ const registry = [{ ...identity, role: "orchestrator", repos: [repo] }];
 const parent = recorded.ref.object.sha;
 const tree = recorded.tree.sha;
 const head = "c".repeat(40);
+const forkParent = "d".repeat(40);
+const forkTree = "e".repeat(40);
 const modelPath = "learnings/models/vworlds-vecs.jsonl";
 const central = "/repos/vworlds/vmethod";
 const fork = `/repos/${login}/vmethod`;
@@ -93,7 +95,10 @@ function setup(
     viewer?: unknown;
     shared?: string;
     privacy?: string;
-    sync?: "failed" | "diverged";
+    forkShared?: string;
+    forkNotes?: string;
+    sharedNotes?: string;
+    missingForkLog?: boolean;
   } = {}
 ) {
   const root = fixture();
@@ -109,7 +114,6 @@ function setup(
   };
   let forkCreated = !options.createFork;
   let forkPending = false;
-  let synced = false;
   let branch: string | undefined;
   let prCreated = false;
   let failPr = options.failPr ?? false;
@@ -141,10 +145,15 @@ function setup(
       } else if (path === `${central}/git/ref/heads/dev` && method === "GET") {
         data = structuredClone(recorded.ref);
       } else if (path === `${central}/contents/${modelPath}` && method === "GET") {
+        expect(url.searchParams.get("ref")).toBe(parent);
         data = contents(modelPath, shared);
       } else if (path === `${central}/contents/learnings/notes/vecs.md` && method === "GET") {
-        data = {};
-        status = 404;
+        expect(url.searchParams.get("ref")).toBe(parent);
+        data =
+          options.sharedNotes === undefined
+            ? {}
+            : contents("learnings/notes/vecs.md", options.sharedNotes);
+        status = options.sharedNotes === undefined ? 404 : 200;
       } else if (path === fork && method === "GET") {
         if (!forkCreated || forkPending) {
           data = {};
@@ -171,24 +180,10 @@ function setup(
           parent: recorded.repository,
         };
         status = 202;
-      } else if (path === `${fork}/merge-upstream` && method === "POST") {
-        expect(body).toEqual({ branch: "dev" });
-        if (options.sync === "failed") {
-          data = {};
-          status = 422;
-        } else {
-          synced = true;
-          data = {
-            message: "Successfully fetched and fast-forwarded from upstream.",
-            merge_type: "fast-forward",
-            base_branch: "vworlds:dev",
-          };
-        }
       } else if (path === `${fork}/git/ref/heads/dev` && method === "GET") {
-        expect(synced).toBe(true);
         data = {
           ...recorded.ref,
-          object: { ...recorded.ref.object, sha: options.sync === "diverged" ? head : parent },
+          object: { ...recorded.ref.object, sha: forkParent },
         };
       } else if (path.startsWith(`${fork}/git/ref/heads/learnings/`) && method === "GET") {
         if (branch) {
@@ -202,11 +197,10 @@ function setup(
           data = {};
           status = 404;
         }
-      } else if (path === `${central}/git/commits/${parent}` && method === "GET") {
-        data = { sha: parent, tree: { sha: tree } };
+      } else if (path === `${fork}/git/commits/${forkParent}` && method === "GET") {
+        data = { sha: forkParent, tree: { sha: forkTree } };
       } else if (path === `${fork}/git/trees` && method === "POST") {
-        expect(synced).toBe(true);
-        expect(body.base_tree).toBe(tree);
+        expect(body.base_tree).toBe(forkTree);
         for (const entry of body.tree as {
           path: string;
           content: string;
@@ -220,8 +214,8 @@ function setup(
         data = { ...recorded.tree, tree: [] };
         status = 201;
       } else if (path === `${fork}/git/commits` && method === "POST") {
-        expect(body.parents).toEqual([parent]);
-        data = { sha: head, tree: { sha: tree }, parents: [{ sha: parent }] };
+        expect(body.parents).toEqual([forkParent]);
+        data = { sha: head, tree: { sha: tree }, parents: [{ sha: forkParent }] };
         status = 201;
       } else if (path === `${fork}/git/refs` && method === "POST") {
         expect(body.sha).toBe(head);
@@ -229,13 +223,26 @@ function setup(
         data = { ...recorded.ref, ref: body.ref, object: { ...recorded.ref.object, sha: head } };
         status = 201;
       } else if (path.startsWith(`${fork}/contents/`) && method === "GET") {
-        expect(url.searchParams.get("ref")).toBe(head);
         const name = path.slice(`${fork}/contents/`.length);
-        if (!files.has(name)) {
-          throw new Error(`Unknown fork file ${name}`);
+        if (url.searchParams.get("ref") === forkParent) {
+          if (name === modelPath) {
+            data = options.missingForkLog ? {} : contents(name, options.forkShared ?? shared);
+            status = options.missingForkLog ? 404 : 200;
+          } else if (name === "learnings/notes/vecs.md") {
+            const notes = options.forkNotes ?? options.sharedNotes;
+            data = notes === undefined ? {} : contents(name, notes);
+            status = notes === undefined ? 404 : 200;
+          } else {
+            throw new Error(`Unknown fork dev file ${name}`);
+          }
+        } else {
+          expect(url.searchParams.get("ref")).toBe(head);
+          if (!files.has(name)) {
+            throw new Error(`Unknown fork file ${name}`);
+          }
+          data = contents(name, files.get(name)!);
         }
-        data = contents(name, files.get(name)!);
-      } else if (path === `${fork}/compare/${parent}...${head}` && method === "GET") {
+      } else if (path === `${fork}/compare/${forkParent}...${head}` && method === "GET") {
         data = { files: [...files.keys()].map((filename) => ({ filename, status: "modified" })) };
       } else if (path === `${central}/pulls` && method === "GET") {
         expect(url.searchParams.get("head")).toBe(`${login}:${branch}`);
@@ -377,9 +384,7 @@ test.each([true, false])(
     const payload = JSON.stringify(f.writes);
     expect(payload).not.toContain("PRIVATE-");
     expect(f.files.get(modelPath)).toContain('"caught_by":"ci"');
-    expect(f.requests.indexOf(`POST ${fork}/merge-upstream`)).toBeLessThan(
-      f.requests.indexOf(`GET ${fork}/git/ref/heads/dev`)
-    );
+    expect(f.requests).not.toContain(`POST ${fork}/merge-upstream`);
     expect(f.requests.indexOf(`GET ${fork}/git/ref/heads/dev`)).toBeLessThan(
       f.requests.indexOf(`POST ${fork}/git/trees`)
     );
@@ -410,17 +415,38 @@ test("lost PR response retries without duplicate branch/PR or prematurely advanc
   expect(f.unexpected).toEqual([]);
 }, 15000);
 
-test.each(["failed", "diverged"] as const)(
-  "fork sync %s stops before Git database or PR writes",
-  async (sync) => {
-    const f = setup({ sync });
-    await expect(f.service.command({ action: "submit" })).rejects.toThrow(/sync|synchron/i);
-    expect(f.writes.map((write) => write.path)).toEqual([`${fork}/merge-upstream`]);
+test.each(["log", "notes", "missing log", "empty notes"] as const)(
+  "stale fork %s stops before any write",
+  async (file) => {
+    const f = setup({
+      privacy: "public",
+      ...(file === "log" ? { forkShared: "\n" } : {}),
+      ...(file === "notes" ? { forkNotes: "older notes\n" } : {}),
+      ...(file === "missing log" ? { missingForkLog: true } : {}),
+      ...(file === "empty notes" ? { forkNotes: "" } : {}),
+    });
+    writeFileSync(join(f.root, "notes.md"), "New notes\n");
+    const path = file.includes("log") ? modelPath : "learnings/notes/vecs.md";
+    await expect(
+      f.service.command({ action: "submit", notes: join(f.root, "notes.md") })
+    ).rejects.toThrow(
+      `fork dev is stale for ${path}; sync the fork in the GitHub web UI, then retry`
+    );
+    expect(f.writes).toEqual([]);
     expect(existsSync(f.cursor)).toBe(false);
     expect(f.unexpected).toEqual([]);
   },
   15000
 );
+
+test("a behind fork with identical notes submits without synchronizing", async () => {
+  const f = setup({ privacy: "public", sharedNotes: "Old notes\n" });
+  const notes = join(f.root, "notes.md");
+  writeFileSync(notes, "New notes\n");
+  expect(await f.service.command({ action: "submit", notes })).toContain("Submitted 1 records");
+  expect(f.files.get("learnings/notes/vecs.md")).toBe("New notes\n");
+  expect(f.requests).not.toContain(`POST ${fork}/merge-upstream`);
+}, 15000);
 
 test("already-shared records reconcile without an empty PR and absent privacy fails before HTTP", async () => {
   const shared = JSON.stringify(privateLearning(record())) + "\n";

@@ -16,9 +16,13 @@ incoming submission authority. Only the owner changes these bindings; missing bi
 
 Submission creates or reuses your `vmethod` fork and creates a deterministic records
 branch using GitHub's Git database/ref operations.
-Before creating Git objects, submission synchronizes the fork's `dev` with central
-using `merge-upstream` and verifies its ref equals the pinned central head. A failed
-sync or diverged ref stops before Git-object/PR writes; no force-update is attempted.
+Submission never synchronizes or force-updates your fork. It uses the fork's own
+`dev` commit as parent and its tree as the base, so your token needs no `workflow`
+scope, even when central has newer workflows. The PR's merge-base diff contains
+only your learning changes when the fork is behind on other paths.
+Your project's model log (and notes file, when submitted) must be byte-identical
+on fork `dev` and central `dev`, including file presence. A mismatch stops before
+submission writes with `fork dev is stale for <path>; sync the fork in the GitHub web UI, then retry`.
 It opens a PR against
 `vworlds/vmethod:dev`, appending records to
 `learnings/models/<owner>-<repo>.jsonl`. Add public distilled notes with
