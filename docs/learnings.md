@@ -15,7 +15,11 @@ explicitly authorize your configured repository. Your local people file cannot g
 incoming submission authority. Only the owner changes these bindings; missing bindings deny.
 
 Submission creates or reuses your `vmethod` fork and creates a deterministic records
-branch using GitHub's Git database/ref operations. It opens a PR against
+branch using GitHub's Git database/ref operations.
+Before creating Git objects, submission synchronizes the fork's `dev` with central
+using `merge-upstream` and verifies its ref equals the pinned central head. A failed
+sync or diverged ref stops before Git-object/PR writes; no force-update is attempted.
+It opens a PR against
 `vworlds/vmethod:dev`, appending records to
 `learnings/models/<owner>-<repo>.jsonl`. Add public distilled notes with
 `--notes <file>`; they replace `learnings/notes/<repo>.md` in that submission.
@@ -56,13 +60,14 @@ review every owner-cleared text field before sending it.
 
 ## Read and compare
 
-| Command                                             | Result                                                                                                                                                                                   |
-| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `learnings show [<family>]`                         | Current family page (when selected) and general lessons from central `dev`, fenced as untrusted data. Offline or missing pages fall back to the snapshot embedded in the package bundle. |
-| `learnings report [--family f] [--kind k] [--json]` | Aggregate local `learnings/models/*.jsonl`, or the bundled records if that directory is absent. Missing inputs and malformed records fail visibly.                                       |
-| `suggest-model <issue>`                             | Existing model/gate recommendation plus the matching current learning page and lessons. Advice cannot override a model gate.                                                             |
+| Command                                             | Result                                                                                                                                                                                                          |
+| --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `learnings show [<family>]`                         | Current family page (when selected) and general lessons from central `dev`, fenced as untrusted data. Failed reads use the bundled snapshot; a successful read with no page explicitly reports central absence. |
+| `learnings report [--family f] [--kind k] [--json]` | Aggregate local `learnings/models/*.jsonl`, or the bundled records if that directory is absent. Missing inputs and malformed records fail visibly.                                                              |
+| `suggest-model <issue>`                             | Existing model/gate recommendation plus the matching current learning page and lessons. Advice cannot override a model gate.                                                                                    |
 
-Reports sum delivery rounds and final points. Rounds per point is `null`/`n/a` when
+Plain-text reports use readable grouped lists and two-decimal ratios; `--json`
+retains full numeric precision. Reports sum delivery rounds and final points. Rounds per point is `null`/`n/a` when
 the denominator is zero. Finding rates count deliveries containing each tag, not
 repeated findings on one delivery. `caughtBy` counts individual findings; outcome
 mix and switch reasons are counts. Switch reasons omit each delivery's initial

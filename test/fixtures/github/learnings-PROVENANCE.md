@@ -39,6 +39,9 @@ list derive from `pull`, retarget author, open/merged state, URL, and documented
 head/base metadata. List items explicitly omit `changed_files`; only PR detail
 checks depend on that field. Error 404 responses, asynchronous fork readiness,
 label-write replies, hostile content and dropped-response errors are simulated.
+The fork `merge-upstream` response (`message`, `merge_type`, `base_branch`) is a
+documented derived shape, not a recording. Sync failure (422) and a divergent
+post-sync ref are simulated; no Git database or PR writes may follow either.
 
 `test/gateway/learnings.test.ts` exercises these envelopes through the real
 `GitHubClient`, submission/show decoders, cursor persistence and central metadata

@@ -69,19 +69,6 @@ async function validateLearningPr(
       person.role === "orchestrator"
   );
   const fork = object(head.repo).full_name !== repo;
-  const known = people.some(
-    (person) =>
-      person.id === user.id &&
-      person.login.toLowerCase() === String(user.login).toLowerCase() &&
-      person.type === user.type &&
-      person.role !== "system"
-  );
-  if (fork && !known) {
-    throw new Error("Learning PR denied: unrecognized author");
-  }
-  if (label && fork && !author && !learningLabel) {
-    return "Not an authorized learning submitter; no label applied";
-  }
   const files: { filename: string; status: string; previous_filename?: string }[] = [];
   if (
     !Number.isSafeInteger(metadata.changed_files) ||

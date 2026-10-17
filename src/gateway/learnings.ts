@@ -133,19 +133,21 @@ export class LearningsService {
     for (const path of paths) {
       let content: string | undefined;
       let origin = `${central}:${base}`;
+      let unavailable = false;
       try {
         content = await this.content(central, path, base);
       } catch (error) {
+        unavailable = true;
         this.deps.report(
           `Learnings remote unavailable: ${(error as Error).message}; using bundled snapshot`
         );
       }
-      if (content === undefined) {
+      if (unavailable) {
         content = this.snapshot[path];
         origin = "bundled snapshot";
       }
       output.push(
-        `from ${origin} (${path})\n${untrusted(content ?? "No learning page available")}`
+        `from ${origin} (${path})\n${untrusted(content ?? (unavailable ? "No page in bundled snapshot; central read failed" : "No page on central dev"))}`
       );
     }
     return output.join("\n\n");
@@ -168,7 +170,7 @@ export class LearningsService {
     if (input.json) {
       return JSON.stringify(report, null, 2);
     }
-    return `Deliveries: ${report.deliveries}; rounds: ${report.rounds}; points: ${report.points}; rounds per point: ${report.roundsPerPoint ?? "n/a"}\n${JSON.stringify({ findingsRate: report.findingsRate, caughtBy: report.caughtBy, outcomes: report.outcomes, switchReasons: report.switchReasons, byFamily: report.byFamily, byKind: report.byKind }, null, 2)}`;
+    return plainReport(report);
   }
 
   private async submit(input: LearningInput): Promise<string> {
@@ -401,6 +403,20 @@ export class LearningsService {
         })
       );
     } else {
+      try {
+        await github.rest(`/repos/${forkName}/merge-upstream`, "POST", { branch: base }, false);
+      } catch (error) {
+        throw new Error(
+          "Fork synchronization failed; reconcile the fork dev branch before submitting (no force update attempted)",
+          { cause: error }
+        );
+      }
+      const synchronized = object(await github.rest(`/repos/${forkName}/git/ref/heads/${base}`));
+      if (sha(object(synchronized.object).sha) !== parent) {
+        throw new Error(
+          "Fork dev does not match the pinned central dev after synchronization; reconcile or retry, never force-update"
+        );
+      }
       const commit = object(await github.rest(`/repos/${central}/git/commits/${parent}`));
       const tree = object(
         await github.rest(
@@ -502,6 +518,39 @@ export class LearningsService {
     }
     return Buffer.from(data.content, "base64").toString("utf8");
   }
+}
+
+function plainReport(report: ReturnType<typeof learningReport>): string {
+  const ratio = (value: number | null) => (value === null ? "n/a" : value.toFixed(2));
+  const counts = (title: string, values: Record<string, number>, rates = false) => [
+    `${title}:`,
+    ...Object.entries(values)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, value]) => `  ${key}: ${rates ? ratio(value) : value}`),
+    ...(Object.keys(values).length ? [] : ["  none"]),
+  ];
+  const group = (value: typeof report | (typeof report.byFamily)[string]) => [
+    `Deliveries: ${value.deliveries}; rounds: ${value.rounds}; points: ${value.points}; rounds per point: ${ratio(value.roundsPerPoint)}`,
+    ...counts("Finding rates", value.findingsRate, true),
+    ...counts("Caught by", value.caughtBy),
+    ...counts("Outcomes", value.outcomes),
+    ...counts("Switch reasons", value.switchReasons),
+  ];
+  return [
+    ...group(report),
+    ...(
+      [
+        ["By family", report.byFamily],
+        ["By kind", report.byKind],
+      ] as const
+    ).flatMap(([title, groups]) => [
+      title,
+      ...Object.entries(groups).flatMap(([name, value]) => [
+        `  ${name}`,
+        ...group(value).map((line) => `    ${line}`),
+      ]),
+    ]),
+  ].join("\n");
 }
 
 function digest(value: unknown): string {

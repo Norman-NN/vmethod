@@ -93,6 +93,7 @@ function setup(
     viewer?: unknown;
     shared?: string;
     privacy?: string;
+    sync?: "failed" | "diverged";
   } = {}
 ) {
   const root = fixture();
@@ -108,6 +109,7 @@ function setup(
   };
   let forkCreated = !options.createFork;
   let forkPending = false;
+  let synced = false;
   let branch: string | undefined;
   let prCreated = false;
   let failPr = options.failPr ?? false;
@@ -169,6 +171,25 @@ function setup(
           parent: recorded.repository,
         };
         status = 202;
+      } else if (path === `${fork}/merge-upstream` && method === "POST") {
+        expect(body).toEqual({ branch: "dev" });
+        if (options.sync === "failed") {
+          data = {};
+          status = 422;
+        } else {
+          synced = true;
+          data = {
+            message: "Successfully fetched and fast-forwarded from upstream.",
+            merge_type: "fast-forward",
+            base_branch: "vworlds:dev",
+          };
+        }
+      } else if (path === `${fork}/git/ref/heads/dev` && method === "GET") {
+        expect(synced).toBe(true);
+        data = {
+          ...recorded.ref,
+          object: { ...recorded.ref.object, sha: options.sync === "diverged" ? head : parent },
+        };
       } else if (path.startsWith(`${fork}/git/ref/heads/learnings/`) && method === "GET") {
         if (branch) {
           expect(path).toBe(`${fork}/git/ref/heads/${branch}`);
@@ -184,6 +205,7 @@ function setup(
       } else if (path === `${central}/git/commits/${parent}` && method === "GET") {
         data = { sha: parent, tree: { sha: tree } };
       } else if (path === `${fork}/git/trees` && method === "POST") {
+        expect(synced).toBe(true);
         expect(body.base_tree).toBe(tree);
         for (const entry of body.tree as {
           path: string;
@@ -355,6 +377,12 @@ test.each([true, false])(
     const payload = JSON.stringify(f.writes);
     expect(payload).not.toContain("PRIVATE-");
     expect(f.files.get(modelPath)).toContain('"caught_by":"ci"');
+    expect(f.requests.indexOf(`POST ${fork}/merge-upstream`)).toBeLessThan(
+      f.requests.indexOf(`GET ${fork}/git/ref/heads/dev`)
+    );
+    expect(f.requests.indexOf(`GET ${fork}/git/ref/heads/dev`)).toBeLessThan(
+      f.requests.indexOf(`POST ${fork}/git/trees`)
+    );
     expect(f.writes.filter((write) => write.path.endsWith("/forks"))).toHaveLength(
       createFork ? 1 : 0
     );
@@ -381,6 +409,18 @@ test("lost PR response retries without duplicate branch/PR or prematurely advanc
   expect(f.writes.filter((write) => write.path.endsWith("/git/refs"))).toHaveLength(1);
   expect(f.unexpected).toEqual([]);
 }, 15000);
+
+test.each(["failed", "diverged"] as const)(
+  "fork sync %s stops before Git database or PR writes",
+  async (sync) => {
+    const f = setup({ sync });
+    await expect(f.service.command({ action: "submit" })).rejects.toThrow(/sync|synchron/i);
+    expect(f.writes.map((write) => write.path)).toEqual([`${fork}/merge-upstream`]);
+    expect(existsSync(f.cursor)).toBe(false);
+    expect(f.unexpected).toEqual([]);
+  },
+  15000
+);
 
 test("already-shared records reconcile without an empty PR and absent privacy fails before HTTP", async () => {
   const shared = JSON.stringify(privateLearning(record())) + "\n";
@@ -526,12 +566,20 @@ test("report reads local JSONL or the bundled records and fails for missing scan
   const snapshot = { "learnings/models/example.jsonl": JSON.stringify(record()) + "\n" };
   const service = new LearningsService(root, {}, {}, deps, noClient, snapshot);
   expect(JSON.parse(await service.command({ action: "report", json: true })).deliveries).toBe(1);
-  expect(await service.command({ action: "report" })).toContain("rounds per point: 0.5");
+  const text = await service.command({ action: "report" });
+  expect(text).toContain("rounds per point: 0.50");
+  expect(text).toContain("weak-tests: 1.00");
+  expect(text).toContain("By family");
+  expect(text).not.toContain('"deliveries"');
   mkdirSync(join(root, "learnings/models"), { recursive: true });
   await expect(service.command({ action: "report" })).rejects.toThrow("No model-log inputs");
   writeFileSync(
     join(root, "learnings/models/local.jsonl"),
-    JSON.stringify(record({ pr: 309, kind: "docs" }))
+    JSON.stringify(record({ pr: 309, kind: "docs", rounds: 3, points_final: 8 }))
+  );
+  expect(await service.command({ action: "report" })).toContain("rounds per point: 0.38");
+  expect(JSON.parse(await service.command({ action: "report", json: true })).roundsPerPoint).toBe(
+    0.375
   );
   expect(
     JSON.parse(await service.command({ action: "report", kind: "docs", json: true })).byKind.docs
@@ -585,6 +633,40 @@ test("show reads dev, fences hostile advice and falls back to the injected bundl
   await expect(service.command({ action: "show", family: "../../private" })).rejects.toThrow(
     "Invalid learning family"
   );
+}, 15000);
+
+test("a successful show read with no page reports central absence, not bundled fallback", async () => {
+  const config = { credentials: { githubToken: "TOKEN" }, gateway: { maxRetries: 0 } };
+  const deps: Dependencies = {
+    fetch: loudFetch(async (input) => {
+      const url = new URL(String(input));
+      expect(url.searchParams.get("ref")).toBe("dev");
+      if (url.pathname.endsWith("/models/sol.md")) {
+        return new Response("{}", { status: 404 });
+      }
+      expect(url.pathname).toBe(`${central}/contents/learnings/lessons.md`);
+      return new Response(JSON.stringify(recorded.lessons));
+    }),
+    exec: async () => {
+      throw new Error("Unexpected subprocess");
+    },
+    now: () => 0,
+    sleep: async () => {},
+    report: () => {},
+  };
+  const service = new LearningsService(
+    fixture(),
+    config,
+    {},
+    deps,
+    () => new GitHubClient(config, { TOKEN: "secret" }, deps),
+    { "learnings/models/sol.md": "Stale bundled advice" }
+  );
+  const result = await service.command({ action: "show", family: "sol" });
+  expect(result).toContain("No page on central dev");
+  expect(result).toContain("from vworlds/vmethod:dev (learnings/models/sol.md)");
+  expect(result).not.toContain("bundled snapshot");
+  expect(result).not.toContain("Stale bundled advice");
 }, 15000);
 
 test("CLI parses filters and per-record clearance; gateway denies worker writes before networking", async () => {
@@ -643,6 +725,7 @@ test.each([
   "renamed",
   "removed",
   "unknown",
+  "outsider-unrelated",
   "incomplete",
   "moved",
   "master",
@@ -652,6 +735,9 @@ test.each([
   "central check gates learning labels using trusted registry and complete metadata (%s)",
   async (scenario) => {
     const files = [{ filename: modelPath, status: "modified" }];
+    if (scenario === "outsider-unrelated") {
+      files[0].filename = "docs/example.md";
+    }
     if (["extra", "labelled-extra"].includes(scenario)) {
       files.push({ filename: "people.yaml", status: "modified" });
     }
@@ -672,7 +758,9 @@ test.each([
     const metadata = {
       ...recorded.pull,
       state: "open",
-      user: scenario === "unknown" ? { ...identity, id: 1 } : identity,
+      user: ["unknown", "outsider-unrelated"].includes(scenario)
+        ? { ...identity, id: 1 }
+        : identity,
       labels: scenario === "labelled-extra" ? [{ name: "learning" }] : [],
       changed_files: scenario === "incomplete" ? 2 : files.length,
       base: {
@@ -701,7 +789,6 @@ test.each([
           expect(url.searchParams.get("ref")).toBe(parent);
           data = contents("people.yaml", stringify(registry));
         } else if (path === `${central}/pulls/900/files`) {
-          expect(scenario).not.toBe("unknown");
           const page = Number(url.searchParams.get("page"));
           data = files
             .slice((page - 1) * 100, page * 100)
@@ -732,12 +819,16 @@ test.each([
     if (scenario === "valid") {
       expect(await checkLearningPr(github, 900, true)).toContain("authorized");
       expect(writes).toEqual([{ labels: ["learning"] }]);
-    } else if (scenario === "master") {
+    } else if (["master", "outsider-unrelated"].includes(scenario)) {
       expect(await checkLearningPr(github, 900, true)).toBe("Not a learning submission");
       expect(writes).toEqual([]);
+      expect(await checkLearningPr(github, 900)).toBe("Not a learning submission");
     } else {
       await expect(checkLearningPr(github, 900, true)).rejects.toThrow();
       expect(writes).toEqual(scenario === "labelled-extra" ? ["remove-learning"] : []);
+      if (scenario === "unknown") {
+        await expect(checkLearningPr(github, 900)).rejects.toThrow("denied");
+      }
     }
     if (scenario === "pagination") {
       expect(calls.filter((path) => path.endsWith("/files"))).toHaveLength(2);
