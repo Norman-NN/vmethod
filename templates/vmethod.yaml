@@ -7,6 +7,8 @@ releaseBranch: master
 # workerUser: example-worker
 # workerGroup: example-workers
 stateName: example-state
+# Import only these directories under the OS state root; tracks append -<track>.
+# legacyState: [vecs-watch]
 vmethod:
   repo: vworlds/vmethod # off disables methodology subscriptions
 watch:
