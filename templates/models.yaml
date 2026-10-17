@@ -10,6 +10,7 @@
   kind: opencode
   gate: owner
   tier: expensive
+# Claude families require credentials.workerGithubToken naming a provisioned worker token.
 - family: sonnet
   model: replace-with-installed-model-id
   kind: claude
