@@ -64,8 +64,18 @@ class GatewayServer {
   private workersClient?: WorkerService;
 
   /** Cache the promise too, so concurrent first calls share one viewer lookup. */
-  async authenticate(ctx: CallContext): Promise<void> {
+  async authenticate(ctx: CallContext, operation: keyof Operations): Promise<boolean> {
     const person = await (this.identity ??= tokenIdentity(this.github, this.filter));
+    // The CI-only learning validator retains its pinned-base registry and write gates.
+    // Neither an environment flag alone nor a system identity grants any other verb.
+    if (
+      person.role === "system" &&
+      operation === "learningCheck" &&
+      this.env.GITHUB_ACTIONS === "true" &&
+      ctx.taskPr === undefined
+    ) {
+      return true;
+    }
     if (person.role !== "orchestrator" && person.role !== "worker") {
       throw new Error(
         `Gateway token refused: ${person.login} (${person.role}) is not an orchestrator or worker identity`
@@ -81,6 +91,7 @@ class GatewayServer {
         `VMETHOD_ROLE=orchestrator refused: token belongs to ${person.login} (${person.role})`
       );
     }
+    return false;
   }
 
   private get workers(): WorkerService {
@@ -1495,7 +1506,8 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
         ctx?.role !== "orchestrator") ||
       (operation === "learningCheck" &&
         (input as Operations["learningCheck"]["input"]).label &&
-        ctx?.role !== "orchestrator")
+        ctx?.role !== "orchestrator" &&
+        env.GITHUB_ACTIONS !== "true")
     ) {
       throw new Error("Learning writes require orchestrator role");
     }
@@ -1506,7 +1518,15 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     ) {
       throw new Error("Gateway operation denied for client role");
     }
-    await server.authenticate(ctx);
+    const ciLearningIdentity = await server.authenticate(ctx, operation);
+    if (
+      operation === "learningCheck" &&
+      (input as Operations["learningCheck"]["input"]).label &&
+      ctx.role !== "orchestrator" &&
+      !ciLearningIdentity
+    ) {
+      throw new Error("Learning writes require orchestrator role");
+    }
     if (ctx.role === "worker" && ["post", "task", "waitReview", "waitChecks"].includes(operation)) {
       const target = reference((input as Operations["post"]["input"]).ref, config);
       if (

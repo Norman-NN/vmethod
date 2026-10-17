@@ -14,7 +14,10 @@ Invalid roles or task numbers are refused. Before dispatching an allowed operati
 the gateway queries the configured token's `viewer { databaseId login __typename }`
 and matches all three pins in `people.yaml`. The lookup is cached for the gateway's
 process lifetime, including concurrent first calls. Only pinned orchestrator and
-worker identities may operate the gateway. `VMETHOD_ROLE` may narrow an orchestrator
+worker identities may operate the general gateway. The sole exception permits a
+pinned system identity in Actions (`GITHUB_ACTIONS=true`, no task context) to call
+`learningCheck`, including its validated label write; see [Security](security.md).
+`VMETHOD_ROLE` may narrow an orchestrator
 to worker without a task, but a worker token claiming orchestrator is refused.
 Any task-scoped call (`VMETHOD_TASK_PR`) requires a worker identity, even if the
 requested role is orchestrator. A non-worker token reports

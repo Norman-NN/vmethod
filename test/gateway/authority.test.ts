@@ -8,7 +8,7 @@ import { createGateway } from "../../src/gateway/server.js";
 import { actor, fakeServer, people } from "./helpers.js";
 import { validProject } from "../helpers.js";
 
-function fixture(viewer: unknown) {
+function fixture(viewer: unknown, env: NodeJS.ProcessEnv = {}) {
   const root = validProject();
   writeFileSync(join(root, "people.yaml"), stringify(people));
   const fake = fakeServer([
@@ -20,7 +20,7 @@ function fixture(viewer: unknown) {
   ]);
   const gateway = createGateway(
     root,
-    { EXAMPLE_GITHUB_TOKEN: "fake-token", XDG_STATE_HOME: join(root, "state") },
+    { EXAMPLE_GITHUB_TOKEN: "fake-token", XDG_STATE_HOME: join(root, "state"), ...env },
     {
       fetch: fake.fetch,
       exec: async () => {
@@ -90,6 +90,71 @@ test("orchestrator may narrow to worker without a task; viewer is cached across 
   }
   expect(await f.gateway.call("learnings", { action: "report", json: true }, ctx)).toBe(calls[0]);
   await expect(f.gateway.call("watchMutes", {}, ctx)).rejects.toThrow("denied for client role");
+  f.done();
+}, 15000);
+
+test.each([undefined, "false", "true"])(
+  "system identities cannot set boards or create issues even in Actions (%s)",
+  async (GITHUB_ACTIONS) => {
+    const f = fixture(actor(3), { GITHUB_ACTIONS });
+    for (const [verb, args] of [
+      ["board", ["set", "3", "Status", "Done"]],
+      ["issue", ["create", "Title", "nonexistent.md"]],
+    ] as const) {
+      await expect(
+        gatewayVerb(f.gateway, verb, [...args], { VMETHOD_ROLE: "orchestrator" })
+      ).rejects.toThrow(
+        "Gateway token refused: github-actions[bot] (system) is not an orchestrator or worker identity"
+      );
+    }
+    f.done();
+  },
+  15000
+);
+
+test.each([undefined, "false", "TRUE"])(
+  "learningCheck refuses system credentials outside Actions (%s)",
+  async (GITHUB_ACTIONS) => {
+    const f = fixture(actor(3), { GITHUB_ACTIONS });
+    await expect(
+      f.gateway.call("learningCheck", { ref: "47" }, { role: "worker" })
+    ).rejects.toThrow(
+      "Gateway token refused: github-actions[bot] (system) is not an orchestrator or worker identity"
+    );
+    f.done();
+  },
+  15000
+);
+
+test.each([
+  { ...actor(3), databaseId: 999 },
+  { ...actor(3), login: "impostor[bot]" },
+  { ...actor(3), __typename: "User" },
+])(
+  "Actions flag cannot authenticate an unpinned system viewer: %j",
+  async (viewer) => {
+    const f = fixture(viewer, { GITHUB_ACTIONS: "true" });
+    await expect(
+      f.gateway.call("learningCheck", { ref: "47" }, { role: "worker" })
+    ).rejects.toThrow("Gateway token refused: identity is not pinned");
+    f.done();
+  },
+  15000
+);
+
+test("Actions exception does not authorize a system credential in a worker task context", async () => {
+  const f = fixture(actor(3), { GITHUB_ACTIONS: "true" });
+  await expect(
+    f.gateway.call("learningCheck", { ref: "47" }, { role: "worker", taskPr: 47 })
+  ).rejects.toThrow("Gateway token refused: github-actions[bot] (system)");
+  f.done();
+}, 15000);
+
+test("Actions flag cannot grant a worker identity the system-only label exception", async () => {
+  const f = fixture(actor(1), { GITHUB_ACTIONS: "true" });
+  await expect(
+    f.gateway.call("learningCheck", { ref: "47", label: true }, { role: "worker" })
+  ).rejects.toThrow("Learning writes require orchestrator role");
   f.done();
 }, 15000);
 

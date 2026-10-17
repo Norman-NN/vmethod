@@ -59,12 +59,20 @@ protect identity changes with owner review.
 
 Gateway authority comes from the configured token's viewer, matched against the
 numeric ID, login and account type in owner-approved `people.yaml`. Only pinned
-orchestrator and worker identities may call gateway operations. `VMETHOD_ROLE`
+orchestrator and worker identities may call general gateway operations. `VMETHOD_ROLE`
 defaults to worker and can only narrow authority: a worker token claiming
 orchestrator is refused. Task-scoped sessions (`VMETHOD_TASK_PR`) must actually
 hold a worker token; an orchestrator token there is refused, not silently downgraded.
 The first allowed operation authenticates once per process. Offline `version`,
 `check`, `config get` and `check-markdown` do not require identity.
+
+The sole CI exception accepts a fully pinned `system` viewer only for
+`learningCheck` (`learnings check-pr`, including `--label`) when
+`GITHUB_ACTIONS=true`, without a worker task context. It grants no other verbs:
+board and issue writes still refuse system credentials. Learning checks retain
+the base-code checkout and base-pinned registry rules; label writes happen only
+after submission validation. Setting the environment flag never substitutes for
+the pinned credential identity.
 
 Run `check --online` to report each configured GitHub credential's pinned login
 and role. It fails unless `credentials.githubToken` belongs to an orchestrator

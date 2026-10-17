@@ -6,7 +6,8 @@ import { getConfig } from "../../src/config.js";
 import { GitHubClient } from "../../src/gateway/client.js";
 import { createGateway } from "../../src/gateway/server.js";
 import { checkLearningPr } from "../../src/gateway/learning-check.js";
-import { fixtureServer } from "./helpers.js";
+import { actor, fixtureServer } from "./helpers.js";
+import { learningsVerb } from "../../src/cli/learnings.js";
 import recorded from "../fixtures/github/learning-47.json" with { type: "json" };
 import envelopes from "../fixtures/github/learnings-recorded.json" with { type: "json" };
 
@@ -68,6 +69,56 @@ test("unmodified PR 47 recording is now denied because it modifies the legacy se
   await expect(checkLearningPr(github, 47)).rejects.toThrow("denied");
   f.done();
 });
+
+test.each([false, true])(
+  "Actions system credential may validate learning submissions (label=%s)",
+  async (label) => {
+    const f = fixtureServer(
+      [
+        metadata(),
+        registry,
+        files(),
+        metadata(),
+        ...(label
+          ? [
+              {
+                path: `${prefix}/issues/47/labels`,
+                method: "POST",
+                body: { labels: ["learning"] },
+                status: 200,
+              },
+            ]
+          : []),
+      ],
+      actor(3)
+    );
+    writeFileSync(
+      join(f.root, "vmethod.yaml"),
+      stringify({ ...getConfig(f.root, {}), repo: "vworlds/vmethod", org: "vworlds" })
+    );
+    const env = { ...f.env, GITHUB_ACTIONS: "true" };
+    const gateway = createGateway(f.root, env, f.deps);
+    expect(
+      await learningsVerb(gateway, ["check-pr", "47", ...(label ? ["--label"] : [])], env)
+    ).toBe(`Learning PR #47: authorized${label ? "; learning label applied" : ""}`);
+    f.done();
+  },
+  15000
+);
+
+test("Actions system label writes still require a fully validated submission", async () => {
+  const f = fixtureServer([metadata(), registry, files(recorded.files), metadata()], actor(3));
+  writeFileSync(
+    join(f.root, "vmethod.yaml"),
+    stringify({ ...getConfig(f.root, {}), repo: "vworlds/vmethod", org: "vworlds" })
+  );
+  const env = { ...f.env, GITHUB_ACTIONS: "true" };
+  const gateway = createGateway(f.root, env, f.deps);
+  await expect(learningsVerb(gateway, ["check-pr", "47", "--label"], env)).rejects.toThrow(
+    "denied"
+  );
+  f.done();
+}, 15000);
 
 test.each([
   "green",
