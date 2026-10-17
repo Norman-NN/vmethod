@@ -135,10 +135,13 @@ try {
       break;
     }
     case "check": {
-      if (args.length) {
-        throw new Error("Usage: vmethod check (offline)");
+      if (args.length && (args.length !== 1 || args[0] !== "--defer-permissions")) {
+        throw new Error("Usage: vmethod check [--defer-permissions] (offline)");
       }
-      const result = check(root(), process.env);
+      const result = check(root(), process.env, {
+        deferPermissions: args.includes("--defer-permissions"),
+        version: __VERSION__,
+      });
       console.log(result.messages.length ? result.messages.join("\n") : "vmethod check: ok");
       process.exitCode = result.code;
       break;

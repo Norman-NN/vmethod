@@ -10,23 +10,24 @@ const mermaidPin = packageMetadata.peerDependencies.mermaid;
 const secretPattern =
   /(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|AKIA[A-Z0-9]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|:\/\/[^/\s:]+:[^/\s@]+@)/;
 
-function secretPaths(value: unknown, path = ""): string[] {
-  if (typeof value === "string") {
-    return secretPattern.test(value) ? [path] : [];
-  }
-  if (!value || typeof value !== "object") {
-    return [];
-  }
-  return Object.entries(value).flatMap(([key, child]) =>
-    secretPaths(child, path ? `${path}.${key}` : key)
-  );
-}
-
+/** Offline validation. Deferral only softens absent settings on the running prerelease;
+ * installed settings are always validated. CODEOWNERS gaps are advisory warnings.
+ * `version` is supplied by the bundled CLI, defaulting to source package metadata.
+ */
 export function check(
   root: string,
-  env: NodeJS.ProcessEnv = {}
+  env: NodeJS.ProcessEnv = {},
+  options: { deferPermissions?: boolean; version?: string } = {}
 ): { code: number; messages: string[] } {
   const messages: string[] = [];
+  const warnings: string[] = [];
+  const version = options.version ?? packageMetadata.version;
+  if (
+    options.deferPermissions &&
+    !/^\d+\.\d+\.\d+-[\da-z-]+(?:\.[\da-z-]+)*(?:\+[\da-z.-]+)?$/i.test(version)
+  ) {
+    return { code: 1, messages: ["--defer-permissions is only valid on a prerelease"] };
+  }
   if (env.VMETHOD_ROLE === "orchestrator") {
     for (const key of gitIdentityVariables) {
       if (!env[key]?.trim()) {
@@ -104,10 +105,91 @@ export function check(
         messages.push(`Permission deny rule missing: ${rule}`);
       }
     }
-  } catch {
-    messages.push(
-      "Install owner-approved .claude/settings.json from templates/claude-settings.json"
-    );
+  } catch (error) {
+    if (options.deferPermissions && (error as NodeJS.ErrnoException).code === "ENOENT") {
+      warnings.push(
+        `WARN permissions deferred (prerelease ${version}): .claude/settings.json not installed`
+      );
+    } else {
+      messages.push(
+        "Install owner-approved .claude/settings.json from templates/claude-settings.json"
+      );
+    }
   }
-  return { code: missing ? 2 : messages.length ? 1 : 0, messages };
+  warnings.push(...codeownersWarnings(root));
+  return { code: missing ? 2 : messages.length ? 1 : 0, messages: [...messages, ...warnings] };
+}
+
+function secretPaths(value: unknown, path = ""): string[] {
+  if (typeof value === "string") {
+    return secretPattern.test(value) ? [path] : [];
+  }
+  if (!value || typeof value !== "object") {
+    return [];
+  }
+  return Object.entries(value).flatMap(([key, child]) =>
+    secretPaths(child, path ? `${path}.${key}` : key)
+  );
+}
+
+function codeownersWarnings(root: string): string[] {
+  let contents = "";
+  // GitHub uses the first existing file in this order, not their union.
+  for (const path of [".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"]) {
+    try {
+      contents = readFileSync(join(root, path), "utf8");
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        return [`WARN CODEOWNERS: cannot read ${path}: ${(error as Error).message}`];
+      }
+    }
+  }
+  const entries = contents.split(/\r?\n/).flatMap((line) => {
+    const [pattern, ...owners] = line.split("#", 1)[0].trim().split(/\s+/);
+    // Negation and character ranges are unsupported by GitHub CODEOWNERS.
+    if (!pattern || /^[#!]/.test(pattern) || /[[\]\\]/.test(pattern)) {
+      return [];
+    }
+    return [
+      {
+        pattern: codeownersPattern(pattern),
+        owned: owners.some((owner) => /^@\S+$/.test(owner) || /^[^\s@]+@[^\s@]+$/.test(owner)),
+      },
+    ];
+  });
+  return ["vmethod.yaml", "people.yaml", ".claude/"].flatMap((path) => {
+    let owned = false;
+    for (const entry of entries) {
+      if (entry.pattern.test(path)) {
+        owned = entry.owned;
+      }
+    }
+    return owned ? [] : [`WARN CODEOWNERS: ${path} has no owner entry`];
+  });
+}
+
+function codeownersPattern(pattern: string): RegExp {
+  const anchored = pattern.startsWith("/") || pattern.replace(/\/$/, "").includes("/");
+  const glob = pattern.replace(/^\//, "").replace(/\/$/, "");
+  let expression = anchored ? "^" : "(?:^|/)";
+  for (let i = 0; i < glob.length; i++) {
+    const char = glob[i];
+    if (char === "*" && glob[i + 1] === "*") {
+      if (glob[i + 2] === "/") {
+        expression += "(?:.*/)?";
+        i += 2;
+      } else {
+        expression += ".*";
+        i++;
+      }
+    } else if (char === "*") {
+      expression += "[^/]*";
+    } else if (char === "?") {
+      expression += "[^/]";
+    } else {
+      expression += char.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    }
+  }
+  return new RegExp(expression + "(?:/|$)");
 }

@@ -1,4 +1,5 @@
 import { runChild } from "./child-process.js";
+import { buildSync } from "esbuild";
 import { copyFileSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve, join } from "node:path";
 import { beforeAll, expect, test } from "vitest";
@@ -12,6 +13,47 @@ beforeAll(() => {
   });
   expect(build.status, build.stderr).toBe(0);
 }, 5000);
+
+test("CLI uses its built version to gate explicit permission deferral", () => {
+  const root = validProject();
+  rmSync(join(root, ".claude/settings.json"));
+  for (const version of ["1.0.0-rc.2", "1.0.0"]) {
+    const cli = join(root, `vmethod-${version}.mjs`);
+    buildSync({
+      entryPoints: ["src/cli/main.ts"],
+      outfile: cli,
+      bundle: true,
+      platform: "node",
+      target: "node24",
+      format: "esm",
+      banner: {
+        js: 'import { createRequire as __createRequire } from "node:module"; const require = __createRequire(import.meta.url);',
+      },
+      define: {
+        __VERSION__: JSON.stringify(version),
+        __BOARD_VERSION__: "2",
+        __MIGRATIONS__: "[]",
+        __LEARNINGS__: "{}",
+      },
+    });
+    const run = (...args: string[]) =>
+      runChild(process.execPath, [cli, "check", ...args], {
+        cwd: root,
+        env: { VMETHOD_ROOT: root },
+        encoding: "utf8",
+        timeout: 3000,
+      });
+    const result = run("--defer-permissions");
+    expect(result.status, result.stderr).toBe(version.includes("-") ? 0 : 1);
+    expect(result.stdout).toContain(
+      version.includes("-")
+        ? `WARN permissions deferred (prerelease ${version}): .claude/settings.json not installed`
+        : "--defer-permissions is only valid on a prerelease"
+    );
+    expect(run().status).toBe(1);
+    expect(run("--unknown").status).toBe(1);
+  }
+}, 15000);
 
 test("packed consumer installs offline with real Mermaid and lowest-supported jsdom, without git/gh", () => {
   const map = JSON.parse(readFileSync("dist/vmethod.mjs.map", "utf8")) as {
@@ -103,7 +145,7 @@ test("built CLI initializes and checks the verbatim public vecs TSV registry off
   );
 }, 6000);
 
-test("CI self-check skips absent config and allows only missing owner settings", () => {
+test("CI self-check skips absent config and explicitly defers only missing owner settings", () => {
   const script = resolve("scripts/check-self.mjs");
   const run = (root: string) =>
     runChild(process.execPath, [script], {
@@ -125,7 +167,7 @@ test("CI self-check skips absent config and allows only missing owner settings",
   const ownerOnly = run(root);
   expect(ownerOnly.status, ownerOnly.stderr).toBe(0);
   expect(ownerOnly.stdout).toBe(
-    "Install owner-approved .claude/settings.json from templates/claude-settings.json\n"
+    "WARN permissions deferred (prerelease 0.0.0-dev): .claude/settings.json not installed\n"
   );
   writeFileSync(join(root, "people.yaml"), "invalid: config");
   expect(run(root).status).toBe(1);

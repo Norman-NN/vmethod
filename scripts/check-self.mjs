@@ -7,19 +7,17 @@ if (!existsSync("vmethod.yaml")) {
 } else {
   const result = spawnSync(
     process.execPath,
-    [fileURLToPath(new URL("../dist/vmethod.mjs", import.meta.url)), "check"],
+    [
+      fileURLToPath(new URL("../dist/vmethod.mjs", import.meta.url)),
+      "check",
+      "--defer-permissions",
+    ],
     { encoding: "utf8", env: { ...process.env, VMETHOD_ROOT: process.cwd() } }
   );
   process.stdout.write(result.stdout ?? "");
   process.stderr.write(result.stderr ?? "");
-  const ownerSettingsOnly =
-    !existsSync(".claude/settings.json") &&
-    result.status === 1 &&
-    result.stdout ===
-      "Install owner-approved .claude/settings.json from templates/claude-settings.json\n" &&
-    result.stderr === "";
   if (result.error) {
     console.error(result.error);
   }
-  process.exitCode = ownerSettingsOnly ? 0 : (result.status ?? 1);
+  process.exitCode = result.status ?? 1;
 }
