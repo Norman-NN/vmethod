@@ -737,6 +737,26 @@ test("status flags an OpenCode session title that differs from the project and P
 });
 
 const wake = "[orchestrator] ANSWER is on your PR; read it with vmethod read pr 31 and act.";
+
+test("merge status treats only missing records as stopped, not unknown recorded sessions", async () => {
+  const f = fixture([
+    ...start,
+    { path: "/api/session/active", data: {} },
+    { path: "/api/session/ses_fake", status: 404 },
+  ]);
+  expect(await f.service.mergeStatus(31)).toBe("unknown");
+  expect(await f.service.mergeStatus(31, true)).toBe("stopped");
+  await f.service.command(["start", "31"]);
+  expect(await f.service.mergeStatus(31, true)).toBe("unknown");
+  f.done();
+});
+
+test("merge status does not treat unreachable recorded sessions as stopped", async () => {
+  const f = fixture([...start, { path: "/api/session/active", status: 503 }]);
+  await f.service.command(["start", "31"]);
+  await expect(f.service.mergeStatus(31, true)).rejects.toThrow();
+  f.done();
+});
 const wakeRequest: Request = {
   path: "/api/session/ses_fake/prompt",
   method: "POST",

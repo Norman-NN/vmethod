@@ -652,11 +652,12 @@ export class WorkerService {
     const [providerID, ...id] = model.model.split("/");
     return { providerID, id: id.join("/") };
   }
-  async mergeStatus(pr: number): Promise<"live" | "stopped" | "unknown"> {
+  /** Only forMerge treats no recorded session as stopped; unknown recorded sessions still block. */
+  async mergeStatus(pr: number, forMerge = false): Promise<"live" | "stopped" | "unknown"> {
     return this.locked(pr, async () => {
       const record = this.read(pr);
       if (!record) {
-        return "unknown";
+        return forMerge ? "stopped" : "unknown";
       }
       const status = await this.status(record, false);
       return status.reason === "session unknown"
