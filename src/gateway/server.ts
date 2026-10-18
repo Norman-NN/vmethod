@@ -661,7 +661,8 @@ class GatewayServer {
   openTask: Handlers["openTask"] = async (input) => this.flow.open(input);
   reviewTask: Handlers["reviewTask"] = async (input) => this.flow.review(input);
   askIssue: Handlers["askIssue"] = async (input) => this.flow.ask(input.ref, input.file);
-  mergeTask: Handlers["mergeTask"] = async (input) => this.flow.merge(input.ref, input.mergeCommit);
+  mergeTask: Handlers["mergeTask"] = async (input) =>
+    this.flow.merge(input.ref, input.mergeCommit, input.carryApproval);
   linkTask: Handlers["linkTask"] = async (input) =>
     this.flow.link(input.ref, input.complete, input.unlink);
   releaseHold: Handlers["releaseHold"] = async (input) => this.flow.release(input.ref);

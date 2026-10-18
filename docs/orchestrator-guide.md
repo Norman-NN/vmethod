@@ -107,6 +107,18 @@ the worker. Record base-only changes after owner approval rather than implying a
 different head was reviewed. Emergency overrides must be explicit and logged and
 never replace review.
 
+Owner approval survives conflict fixes (owner rule, 2026-10-18). Do not ask for
+re-approval merely because the approved delivery needed conflicts resolved. Use
+`merge-task <pr> --carry-approval "<reason>"` after reviewing the resolution and
+certifying that it changes no behaviour. The gateway requires an earlier verified
+owner approval and only two-parent merges of the PR's base since that approval;
+it posts the approved/current SHAs, your reason and remerge-diff file list before
+the journaled merge. Green head CI, mergeability, worker-stop and current-base gates
+still apply. Any ordinary task commit requires fresh approval. If resolution
+changes behaviour or revamps the algorithm, re-ask the owner instead of carrying
+approval. The automatic clean-base exception remains unchanged; see
+[approval and testing](gateway.md#approval-and-testing).
+
 After merge, complete issue relations, board state, Done-6, grading, branch/worktree
 cleanup and main-checkout fast-forward. Reinstall dependencies when `postMerge.trigger`
 changes, using `postMerge.install`, **last**, after package-owned work finishes.

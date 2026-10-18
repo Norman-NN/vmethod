@@ -97,3 +97,33 @@ test("task-flow CLI routes typed inputs and rejects malformed options before tra
   }
   expect(calls).toEqual([]);
 });
+
+test("merge-task carries a nonempty certification reason and preserves merge mode", async () => {
+  const calls: unknown[] = [];
+  const transport: Transport = {
+    call: async (operation, input) => {
+      calls.push({ operation, input });
+      return "ok" as never;
+    },
+  };
+  await taskFlowVerb(
+    transport,
+    "merge-task",
+    ["27", "--carry-approval", "Conflict only", "--merge-commit"],
+    {}
+  );
+  expect(calls).toEqual([
+    {
+      operation: "mergeTask",
+      input: { ref: "27", mergeCommit: true, carryApproval: "Conflict only" },
+    },
+  ]);
+  for (const args of [
+    ["27", "--carry-approval"],
+    ["27", "--carry-approval", " "],
+    ["27", "--carry-approval", "why", "--carry-approval", "again"],
+  ]) {
+    await expect(taskFlowVerb(transport, "merge-task", args, {})).rejects.toThrow();
+  }
+  expect(calls).toHaveLength(1);
+});

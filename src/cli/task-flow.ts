@@ -79,12 +79,31 @@ export async function taskFlowVerb(
     );
   }
   if (verb === "merge-task") {
-    if (!args.length || args.length > 2 || (args[1] && args[1] !== "--merge-commit")) {
-      throw new Error("Usage: merge-task <pr> [--merge-commit]");
+    const usage = 'Usage: merge-task <pr> [--merge-commit] [--carry-approval "reason"]';
+    if (!args.length) {
+      throw new Error(usage);
+    }
+    let mergeCommit = false;
+    let carryApproval: string | undefined;
+    for (let i = 1; i < args.length; i++) {
+      if (args[i] === "--merge-commit" && !mergeCommit) {
+        mergeCommit = true;
+      } else if (args[i] === "--carry-approval" && carryApproval === undefined) {
+        carryApproval = args[++i];
+        if (
+          !carryApproval?.trim() ||
+          carryApproval.startsWith("--") ||
+          /[\r\n]/.test(carryApproval)
+        ) {
+          throw new Error(usage);
+        }
+      } else {
+        throw new Error(usage);
+      }
     }
     return transport.call(
       "mergeTask",
-      { ref: args[0], mergeCommit: args[1] === "--merge-commit" },
+      { ref: args[0], mergeCommit, ...(carryApproval !== undefined ? { carryApproval } : {}) },
       ctx
     );
   }

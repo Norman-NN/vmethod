@@ -31,13 +31,20 @@ test.each(
     "review approve",
     "merge-task",
   ].flatMap((verb) =>
-    ["self", "owner", ...(["review owner", "merge-task"].includes(verb) ? ["sibling"] : [])].map(
-      (identity) => ({ verb, identity })
-    )
+    [
+      "self",
+      "owner",
+      ...(["review owner", "merge-task"].includes(verb) ? ["sibling"] : []),
+    ].flatMap((identity) => [
+      { verb, identity, carryApproval: false },
+      ...(verb === "merge-task" && identity === "self"
+        ? [{ verb, identity, carryApproval: true }]
+        : []),
+    ])
   )
 )(
-  "$verb through real board/client writes then watch --once (identity=$identity)",
-  async ({ verb, identity }) => {
+  "$verb through real board/client writes then watch --once (identity=$identity, carry=$carryApproval)",
+  async ({ verb, identity, carryApproval }) => {
     const f = fixture();
     const w = new WatchFake();
     let sibling: WatchFake | undefined;
@@ -110,6 +117,27 @@ test.each(
           : w.deps.fetch(input, init);
       };
       f.deps.now = w.deps.now;
+      if (carryApproval) {
+        const old = "d".repeat(40);
+        f.host.approved = async (_ref, historical) => historical === old;
+        f.host.candidates = async () => [old];
+        const exec = f.deps.exec;
+        f.deps.exec = async (file, args, options) => {
+          if (
+            file === "git" &&
+            args.join(" ") === `rev-list --parents ${old}..${sha} --not ${baseSha}`
+          ) {
+            return `${sha} ${old} ${baseSha}`;
+          }
+          if (
+            file === "git" &&
+            args.join(" ") === `show --remerge-diff --format= --name-only -z ${sha}`
+          ) {
+            return "conflict.ts\0";
+          }
+          return exec(file, args, options);
+        };
+      }
       const github = new GitHubClient(f.config, f.env, f.deps);
       f.host.github = github;
       const board = new BoardService(f.config, github, f.deps);
@@ -123,7 +151,10 @@ test.each(
             return (await f.flow().review(input as Operations["reviewTask"]["input"])) as never;
           }
           if (operation === "mergeTask") {
-            return (await f.flow().merge((input as Operations["mergeTask"]["input"]).ref)) as never;
+            const merge = input as Operations["mergeTask"]["input"];
+            return (await f
+              .flow()
+              .merge(merge.ref, merge.mergeCommit, merge.carryApproval)) as never;
           }
           throw new Error(`Unexpected matrix operation ${operation}`);
         },
@@ -159,7 +190,12 @@ test.each(
       if (verb === "open-task") {
         await taskFlowVerb(transport, verb, ["8", "--model", "sol"], commandEnv);
       } else if (verb === "merge-task") {
-        await taskFlowVerb(transport, verb, ["27"], commandEnv);
+        await taskFlowVerb(
+          transport,
+          verb,
+          ["27", ...(carryApproval ? ["--carry-approval", "Conflict resolution only"] : [])],
+          commandEnv
+        );
       } else {
         const file = join(f.root, ".tmp", "review.md");
         mkdirSync(join(f.root, ".tmp"), { recursive: true });
@@ -1612,6 +1648,96 @@ test.each([true, false])("merge gateway recomputes clean base proof (clean=%s)",
   } else {
     await expect(f.flow().merge("27")).rejects.toThrow("Owner approval");
     expect(f.writes.some((write) => write.path.endsWith("/merge"))).toBe(false);
+  }
+  f.done();
+});
+
+test.each([
+  "merge",
+  "commit",
+  "no approval",
+  "red",
+  "base",
+  "worker",
+  "conflicting",
+  "head moved",
+  "comment failure",
+])("explicit approval carry: %s", async (scenario) => {
+  const f = fixture();
+  const old = "d".repeat(40);
+  f.host.approved = async (_ref, historical) => historical === old;
+  f.host.candidates = async () => (scenario === "no approval" ? [] : [old]);
+  const exec = f.deps.exec;
+  f.deps.exec = async (file, args, options) => {
+    if (file === "git" && args.join(" ") === `rev-list --parents ${old}..${sha} --not ${baseSha}`) {
+      return scenario === "commit" ? `${sha} ${old}` : `${sha} ${old} ${baseSha}`;
+    }
+    if (file === "git" && args[0] === "show") {
+      expect(args).toEqual(["show", "--remerge-diff", "--format=", "--name-only", "-z", sha]);
+      return "src/conflict.ts\0";
+    }
+    if (file === "git" && args.join(" ") === `merge-base --is-ancestor ${baseSha} ${baseSha}`) {
+      return "";
+    }
+    return exec(file, args, options);
+  };
+  if (scenario === "red") {
+    f.red();
+  }
+  if (scenario === "base") {
+    f.set({ fail: "base" });
+  }
+  if (scenario === "worker") {
+    f.set({ worker: "live" });
+  }
+  if (scenario === "comment failure") {
+    f.set({ fail: "/comments" });
+  }
+  if (["conflicting", "head moved"].includes(scenario)) {
+    const thread = f.host.thread;
+    let reads = 0;
+    f.host.thread = async (ref, kind) => {
+      const item = await thread(ref, kind);
+      if (kind === "pr") {
+        if (scenario === "conflicting") {
+          item.mergeable = "CONFLICTING";
+        }
+        if (++reads > 1 && scenario === "head moved") {
+          item.headRefOid = old;
+        }
+      }
+      return item;
+    };
+  }
+  if (scenario === "merge") {
+    await expect(
+      f.flow().merge("27", false, "Conflict resolution only; no behaviour change")
+    ).resolves.toBe("Merged #27");
+    const certification = f.writes.find((w) => w.path.endsWith("/comments"))!;
+    expect(certification.body.body).toContain(
+      `[orchestrator] APPROVAL CARRIED from ${old} to ${sha}: Conflict resolution only; no behaviour change`
+    );
+    expect(certification.body.body).toContain("src/conflict.ts");
+    expect(f.events.indexOf("POST /repos/example/project/issues/27/comments")).toBeLessThan(
+      f.events.indexOf("PUT /repos/example/project/pulls/27/merge")
+    );
+  } else {
+    await expect(f.flow().merge("27", false, "Conflict only")).rejects.toThrow(
+      scenario === "red"
+        ? "CI is not green"
+        : scenario === "base"
+          ? "Base moved"
+          : scenario === "worker"
+            ? "Stop the worker"
+            : scenario === "conflicting"
+              ? "conflicting"
+              : scenario === "head moved"
+                ? "moved during"
+                : scenario === "comment failure"
+                  ? "GitHub network request failed"
+                  : "cannot be carried"
+    );
+    expect(f.writes.some((w) => w.path.endsWith("/merge"))).toBe(false);
   }
   f.done();
 });

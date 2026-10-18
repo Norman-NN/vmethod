@@ -27,6 +27,14 @@ Develop an idea on an issue; build and check one delivery on a task PR.
    then use `merge-task` (vmethod 1.0, #8). Complete board, grading and checkout
    follow-up; act on newly unblocked work rather than waiting for another event.
 
+Approval survives base-merge conflict fixes without a new owner review. After
+checking that the resolution changes no behaviour, the orchestrator uses
+`merge-task <pr> --carry-approval "<reason>"` to certify the carry on the PR;
+only base-merge commits may follow the approved head. Behaviour changes or an
+algorithmic revamp require fresh owner approval, as do ordinary task commits.
+All other merge gates remain in force. See the
+[owner rule and merge procedure](orchestrator-guide.md#merge-and-release).
+
 An issue can have several deliveries. Only its last completed delivery closes it;
 earlier deliveries preserve the open issue relation. A delivery into an integration
 branch does not close the issue until the integration reaches `baseBranch`.
