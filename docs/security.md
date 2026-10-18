@@ -49,7 +49,15 @@ or narrowly allowlisted. Shell patterns are not an OS/network sandbox: aliases,
 interpreters, alternate clients and writable wrappers also require owner control.
 
 Check installed rules during adoption. Current offline `check` validates the Claude
-deny entries. Online validation through `check --online` (vmethod 1.0, #5)
+deny entries. With the owner's approval to defer installation during the pilot,
+use `check --defer-permissions` in CI. Only prereleases accept this switch
+(including `0.0.0-dev` and later prereleases beyond 1.0); stable versions reject it.
+Absent settings produce a visible warning on every run, not proof of protection.
+Installed settings are still validated and every other finding still fails.
+Agents never install or change their own permission rules to satisfy validation.
+`check` also warns when CODEOWNERS lacks entries for `vmethod.yaml`, `people.yaml`
+or `.claude/`; see the [adoption checklist](adoption.md) for owner review policy.
+Online validation through `check --online` (vmethod 1.0, #5)
 remains planned. Do not imply
 that a passing skeleton check proves those protections exist. Keep permission files
 and reviewed stubs owner-controlled;

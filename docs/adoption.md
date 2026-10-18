@@ -41,9 +41,20 @@ Adopt the pinned package in one reviewed change without copying shared methodolo
 - [ ] Ask the owner to install and review the [permission templates](../templates/README.md)
       for the active backend. Agents do not edit their own permissions. Audit
       effective overrides and ownership of stubs, not only JSON syntax.
+- [ ] Add `vmethod.yaml`, `people.yaml` and `.claude/` to the consumer's CODEOWNERS
+      with the owner as reviewer. `check` warns about missing entries. CODEOWNERS
+      only forces owner review when the branch ruleset requires code-owner review;
+      otherwise it requests review. Each project's owner chooses that policy
+      (vmethod's owner has not required reviews).
 - [ ] Install the release's exact Mermaid peer pin and required diagram-check peer
       dependencies. Run offline `check`; do not mistake skeleton validation for
       online identity, board or Markdown verification.
+      During the rc pilot, with owner-approved permission installation deferred,
+      use `npm exec --no -- vmethod check --defer-permissions` in CI. The switch is
+      visible in the adoption diff and warns on every run; it only softens absent
+      settings, never invalid installed settings or other findings. Remove it at
+      1.0 and have the owner install permissions: stable releases reject the switch.
+      Any later prerelease also accepts it; it is not limited to the 1.0 pilot.
 - [ ] Review `board status` and `board migrate --dry-run`, then apply `board migrate`
       (vmethod 1.0, #5). Coordinate shared-board consumers and Status automations.
       Run `check --online` (vmethod 1.0, #5) after migration; do not claim these
@@ -51,6 +62,9 @@ Adopt the pinned package in one reviewed change without copying shared methodolo
 - [ ] Exercise a task/review/merge cycle, owner button-merge follow-up, a track and
       a release with the project's hooks before considering rollout complete.
       Stop old watchers before starting the single reader for retained state.
+      For a `button-merge` event, the orchestrator runs `merge-task <n>` explicitly.
+      This replaces legacy Bash watchers' automatic follow-up (vecs#358): the same
+      end result, with one explicit step. See the [watch guide](orchestrator-guide.md#watch-without-wasting-budget).
 
 ## Every upgrade
 

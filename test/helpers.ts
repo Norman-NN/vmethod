@@ -21,6 +21,7 @@ export function validProject(): string {
   init(root, templates);
   mkdirSync(join(root, ".claude"));
   cpSync(join(templates, "claude-settings.json"), join(root, ".claude/settings.json"));
+  writeFileSync(join(root, "CODEOWNERS"), "* @owner\n");
   peer(root);
   return root;
 }
