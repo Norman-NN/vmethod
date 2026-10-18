@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
+import { assertEstimate } from "../board/estimate.js";
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -167,6 +168,7 @@ export class TaskFlow {
     );
   }
 
+  /** Open an isolated draft delivery, freezing only an on-scale opening issue Estimate. */
   async open(input: OpenTaskInput): Promise<string> {
     for (const value of [input.hold, input.part, input.ownerApproved]) {
       if (value !== undefined && typeof value !== "boolean") {
@@ -211,11 +213,11 @@ export class TaskFlow {
       const card = (await board.cards(snapshot.id)).find((card) => card.contentId === issue.id);
       hint = typeof card?.values.Model === "string" ? card.values.Model : undefined;
       const estimate = card?.values.Estimate;
-      if (typeof estimate === "number" && Number.isFinite(estimate) && estimate >= 0) {
-        pointsOpen = estimate;
-      } else {
+      if (estimate === undefined || estimate === null) {
         throw new Error("Issue must have an Estimate at opening");
       }
+      assertEstimate(estimate);
+      pointsOpen = estimate;
     }
     const models = loadYaml(this.root, "models") as {
       family: string;
