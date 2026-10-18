@@ -1170,6 +1170,7 @@ test.each(["busy recent", "idle", "busy aged", "boundary", "unreachable", "unkno
         ...f.comment("[orchestrator] CHANGES", 2),
         user: { login: "me", id: 999, type: "User" },
         created_at: f.iso(-35 * 60_000),
+        updated_at: f.iso(-35 * 60_000),
       },
     ];
     f.comments["example/project"] = [];
@@ -1211,6 +1212,128 @@ test.each(["busy recent", "idle", "busy aged", "boundary", "unreachable", "unkno
   }
 );
 
+test.each(["⛔", "🤖🚫", "🤖❓", "🤖📐", "🤖👍"])(
+  "initial non-working Progress %s is not SILENT without a protocol turn",
+  async (progress) => {
+    const f = setup();
+    f.task();
+    f.pulls[0].created_at = f.iso(-41 * 60_000);
+    f.cards[0].progress = { text: progress };
+    expect(await f.once(f.loop())).toEqual([]);
+  }
+);
+
+test.each(["worker", "owner", "unknown", "forged", "edited"])(
+  "%s reply after BLOCKED only resumes inactivity monitoring when verified",
+  async (reply) => {
+    const f = setup();
+    f.task();
+    const loop = f.loop();
+    await f.once(loop);
+    f.advance();
+    f.comment("[worker] BLOCKED");
+    await f.once(loop);
+    f.advance();
+    const comment = f.comment(
+      reply === "worker" ? "[worker] ACK" : "[orchestrator] ANSWER",
+      reply === "owner" ? 0 : 1
+    );
+    if (reply === "unknown") {
+      comment.user = { login: "stranger", id: 10000, type: "User" };
+    }
+    if (reply === "forged") {
+      comment.user = { login: "me", id: 10000, type: "User" };
+    }
+    if (reply === "edited") {
+      comment.user = { login: "me", id: 999, type: "User" };
+      comment.updated_at = f.iso(1);
+    }
+    await f.once(loop);
+    f.advance(41 * 60_000);
+    const events = [];
+    for (let i = 0; i < 6; i++) {
+      events.push(...(await f.once(loop)));
+    }
+    expect(events.map((event) => event.kind)).toEqual(
+      ["worker", "owner"].includes(reply) ? ["silent"] : []
+    );
+  }
+);
+
+test.each(["BLOCKED", "QUESTION", "READY FOR REVIEW (round 1)", "DESIGN", "HANDOFF"])(
+  "waiting after %s suppresses inactivity until ANSWER, including after restart",
+  async (tag) => {
+    const f = setup();
+    f.task();
+    f.worktree();
+    const issue = f.card(6, "In progress");
+    f.cards.push(issue);
+    f.staleWorker = { reason: "idle", active: false, issueCost: { issue: 6, usd: 1.25 } };
+    f.pulls[0].created_at = f.iso(-120 * 60_000);
+    const waiting = f.comment(`[worker] ${tag}`);
+    waiting.created_at = f.iso(-41 * 60_000);
+    waiting.updated_at = waiting.created_at;
+    const review = {
+      ...f.comment("[orchestrator] REVIEW round 1", 2),
+      user: { login: "me", id: 999, type: "User" },
+      created_at: f.iso(-60 * 60_000),
+      updated_at: f.iso(-60 * 60_000),
+    };
+    // Seed API order is newest first; an older review must not replace the wait.
+    f.history = [waiting, review];
+    f.commits = [{ commit: { committer: { date: f.iso(-40 * 60_000) } } }];
+    f.comments["example/project"] = [];
+    let loop = f.loop();
+    expect(await f.once(loop)).toEqual([]);
+    expect(f.writes.filter((write) => write.field === "Cost")).toEqual([
+      { itemId: issue.id, field: "Cost", value: 1.25 },
+    ]);
+    loop.close();
+    loop = f.loop();
+    expect(await f.once(loop)).toEqual([]);
+    expect(f.writes.filter((write) => write.field === "Cost")).toHaveLength(1);
+    f.advance();
+    const answer = f.comment("[orchestrator] ANSWER", 2);
+    answer.user = { login: "me", id: 999, type: "User" };
+    await f.once(loop);
+    f.advance(41 * 60_000);
+    // Recent worker transport activity suppresses STALE, not protocol silence.
+    f.staleWorker = { reason: "running", active: true, updated: f.clock };
+    const events = [];
+    for (let i = 0; i < 6; i++) {
+      events.push(...(await f.once(loop)));
+    }
+    expect(events.map((event) => event.kind)).toEqual(["silent"]);
+  }
+);
+
+test.each(["REVIEW round 1", "ANSWER", "AMENDMENT", "GO", "CHANGES"])(
+  "live waiting state suppresses STALE and SILENT until %s",
+  async (tag) => {
+    const f = setup();
+    f.task();
+    const loop = f.loop();
+    await f.once(loop);
+    f.advance();
+    const review = f.comment("[orchestrator] REVIEW round 1", 2);
+    review.user = { login: "me", id: 999, type: "User" };
+    await f.once(loop);
+    f.advance();
+    f.comment("[worker] BLOCKED");
+    await f.once(loop);
+    f.advance(41 * 60_000);
+    for (let i = 0; i < 6; i++) {
+      expect(await f.once(loop)).toEqual([]);
+    }
+    f.advance();
+    const reply = f.comment(`[orchestrator] ${tag}`, 2);
+    reply.user = { login: "me", id: 999, type: "User" };
+    await f.once(loop);
+    f.advance(41 * 60_000);
+    expect((await f.once(loop)).map((event) => event.kind)).toEqual(["stale"]);
+  }
+);
+
 test("STALE after my review and SILENT after inactivity are distinct, once per activity", async () => {
   const f = setup();
   f.task();
@@ -1220,6 +1343,7 @@ test("STALE after my review and SILENT after inactivity are distinct, once per a
       ...f.comment("[orchestrator] CHANGES", 2),
       user: { login: "me", id: 999, type: "User" },
       created_at: f.iso(-35 * 60_000),
+      updated_at: f.iso(-35 * 60_000),
     },
   ];
   f.comments["example/project"] = [];

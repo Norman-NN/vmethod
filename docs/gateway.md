@@ -375,6 +375,14 @@ never trigger it. Minor events accumulate in a quiet digest attached
 to the next wake. GraphQL errors wake immediately; three failed polls report
 WATCHER ERROR and back off. Failed Progress writes are reported and retried.
 
+SILENT and STALE monitor only turns where the worker is expected to act. A verified
+worker BLOCKED, QUESTION, READY FOR REVIEW, DESIGN or HANDOFF pauses these alerts
+until the worker posts again, an owner replies, or an orchestrator posts REVIEW,
+ANSWER, AMENDMENT or GO (legacy CHANGES also resumes monitoring). The newest
+unedited turn wins, including across restarts and initial comment backfill; unrelated
+commits and CI changes do not end a protocol wait. Without an observed protocol turn,
+SILENT requires working Progress. Edited or unverified tags cannot change this state.
+
 Before STALE wakes for an unanswered review, the watcher reads the recorded task's
 worker session through the worker client. A busy session updated within the last
 30 minutes stays quiet; idle workers or older/missing update times remain eligible.

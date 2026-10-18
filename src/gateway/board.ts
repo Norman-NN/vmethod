@@ -1,4 +1,5 @@
 import { parseDocument } from "yaml";
+import { assertEstimate } from "../board/estimate.js";
 import type { Config } from "../config.js";
 import { compatibility, readState } from "../board/readme.js";
 import { MigrationRunner } from "../board/runner.js";
@@ -389,6 +390,7 @@ export class BoardService implements BoardIO {
       }
     }
   }
+  /** Write a scoped card field; non-null issue Estimates must use the shared points scale. */
   async set(input: {
     itemId: string;
     field: "Status" | "Estimate" | "Model" | "Progress" | "Cost";
@@ -397,6 +399,9 @@ export class BoardService implements BoardIO {
   }): Promise<string> {
     if (!["Status", "Estimate", "Model", "Progress", "Cost"].includes(input.field)) {
       throw new Error("Unsupported board field");
+    }
+    if (input.field === "Estimate" && input.value !== null) {
+      assertEstimate(input.value);
     }
     const card = await this.item(input.itemId);
     this.scope(card);
@@ -424,7 +429,8 @@ export class BoardService implements BoardIO {
     return "Board field updated";
   }
   /** Set a single-select/number field by issue content ID on the configured board only.
-   * Status writes clear Progress; GitHubClient journals the successful mutations.
+   * Estimates must use the shared points scale. Status writes clear Progress;
+   * GitHubClient journals the successful mutations.
    */
   async setIssueField(contentId: string, name: string, value: string): Promise<string> {
     if (typeof name !== "string" || !name || typeof value !== "string" || !value.trim()) {
@@ -442,6 +448,9 @@ export class BoardService implements BoardIO {
     }
     this.scope(card);
     let parsed: string | number = value;
+    if (name === "Estimate") {
+      assertEstimate(value.trim() ? Number(value) : NaN);
+    }
     if (field.type === "number") {
       if (
         !/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(value) ||

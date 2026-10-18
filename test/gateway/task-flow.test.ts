@@ -831,7 +831,7 @@ test("expensive breakpoints tell workers to HANDOFF and end turn; unapproved exc
   f.done();
 });
 
-test.each([0, 0.5, 13])(
+test.each([0, 0.5, 1, 2, 3, 5, 8, 13, 20, 40, 100, 999])(
   "points_open freezes numeric issue estimate %s without estimating the PR",
   async (estimate) => {
     const f = fixture();
@@ -841,6 +841,19 @@ test.each([0, 0.5, 13])(
     expect(body.split("\n")[0]).toBe("# Task: feat: task (issue #8)");
     expect(body).toContain(`<!-- points_open: ${estimate} -->`);
     expect(f.touched.some((write) => write.field === "Estimate")).toBe(false);
+    f.done();
+  }
+);
+
+test.each([4, 1.5, -1, Infinity, NaN])(
+  "off-scale opening Estimate %s is refused before writes",
+  async (estimate) => {
+    const f = fixture();
+    f.cards[0].values.Estimate = estimate;
+    await expect(f.flow().open({ issue: "8", model: "sol" })).rejects.toThrow(
+      "0, 0.5, 1, 2, 3, 5, 8, 13, 20, 40, 100, 999"
+    );
+    expect(f.writes).toEqual([]);
     f.done();
   }
 );

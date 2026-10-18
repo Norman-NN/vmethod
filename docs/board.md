@@ -48,6 +48,10 @@ the initial estimate indefinitely.
 | 100    | Vision-sized, not a worker task                            |
 | 999    | Impossible as things stand; record the external constraint |
 
+Use only this scale. `board set` and `issue create --estimate` reject off-scale
+values and list the allowed points; `open-task` also refuses to freeze an off-scale
+opening Estimate. Clearing an issue Estimate remains distinct from assigning zero.
+
 ## Cost
 
 `Cost` is an issue-only number in USD at configured API prices, not subscription
