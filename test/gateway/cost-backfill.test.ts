@@ -19,7 +19,7 @@ test("prices recorded worker sessions using the recorded OpenCode session shape"
     JSON.stringify({
       pr: 41,
       repo: "vworlds/vmethod",
-      id: "ses_capture",
+      sessions: ["ses_capture"],
       model: { kind: "opencode", family: "sol" },
     })
   );
@@ -45,6 +45,7 @@ test("prices recorded worker sessions using the recorded OpenCode session shape"
   const result = await backfillCosts(deps);
   const rerun = await backfillCosts(deps);
   expect(result).toContain("#41: $");
+  expect(result).not.toContain("≥");
   expect(rerun).toContain("#41: $");
   expect(setCost).toHaveBeenCalledOnce();
   expect(setCost.mock.calls[0][0]).toBe(41);
@@ -95,7 +96,49 @@ test("dry-run reports unknown sessions without writing", async () => {
     { dryRun: true }
   );
   expect(result).toContain("#42: unknown");
+  expect(result).toContain("session not found on server");
   expect(setCost).not.toHaveBeenCalled();
+});
+
+test("explains unreachable and still-running sessions without repeating connection reports", async () => {
+  const root = mkdtempSync(join(tmpdir(), "vmethod-cost-"));
+  roots.push(root);
+  const workers = join(root, "state/vmethod/test/workers");
+  mkdirSync(workers, { recursive: true });
+  for (const pr of [46, 47, 48, 49]) {
+    writeFileSync(
+      join(workers, `${pr}.json`),
+      JSON.stringify({ pr, repo: "vworlds/vmethod", id: `ses_${pr}` })
+    );
+  }
+  const report = vi.fn();
+  const output = await backfillCosts({
+    root,
+    config: { repo: "vworlds/vmethod", stateName: "test" },
+    env: { XDG_STATE_HOME: join(root, "state") },
+    models: [],
+    readSession: async (id) => {
+      if (id === "ses_48") {
+        return { running: true, session: { tokens: {} } };
+      }
+      if (id === "ses_49") {
+        return {
+          session: {
+            model: { providerID: "unknown", id: "model" },
+            tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+          },
+          messages: [],
+        };
+      }
+      throw new Error("unavailable");
+    },
+    setCost: async () => undefined,
+    report,
+  });
+  expect(output).toContain("#46: unknown (opencode unreachable)");
+  expect(output).toContain("#48: unknown (session still running (ses_48))");
+  expect(output).toContain("#49: unknown (no price for unknown/model)");
+  expect(report).toHaveBeenCalledOnce();
 });
 
 test("discovers legacy worktree sessions and prices assistant messages by family", async () => {
@@ -104,6 +147,8 @@ test("discovers legacy worktree sessions and prices assistant messages by family
   const legacy = join(root, "state/old");
   mkdirSync(legacy, { recursive: true });
   writeFileSync(join(legacy, "job.worktrees_auto-43-test"), "ses_legacy\n");
+  mkdirSync(join(root, ".vmethod"));
+  writeFileSync(join(root, ".vmethod/model-log.jsonl"), JSON.stringify(logRecord(43)) + "\n");
   const messages = [
     {
       type: "assistant",
@@ -116,6 +161,7 @@ test("discovers legacy worktree sessions and prices assistant messages by family
       tokens: { input: 0, output: 1_000_000, reasoning: 0, cache: { read: 0, write: 0 } },
     },
   ];
+  const setCost = vi.fn(async () => undefined);
   const result = await backfillCosts({
     root,
     config: {
@@ -138,13 +184,57 @@ test("discovers legacy worktree sessions and prices assistant messages by family
       },
     ],
     readSession: async () => ({
-      session: { model: { providerID: "codexbal", id: "gpt-6.1-sol" } },
+      session: {
+        model: { providerID: "codexbal", id: "gpt-6.1-sol" },
+        tokens: { input: 1_000_000, output: 1_000_000, reasoning: 0, cache: { read: 0, write: 0 } },
+      },
+      messages,
+    }),
+    setCost,
+  });
+  expect(result).toContain("#43: ≥ $4.50 (legacy record, last session only)");
+  expect(setCost).toHaveBeenCalledWith(43, "≥ $4.50");
+  const log = JSON.parse(readFileSync(join(root, ".vmethod/model-log.jsonl"), "utf8"));
+  expect(log).toMatchObject({ costSource: "backfill-partial", costCoverage: "partial", usd: 4.5 });
+});
+
+test("reconciles the first 200 messages against cumulative session totals", async () => {
+  const root = mkdtempSync(join(tmpdir(), "vmethod-cost-"));
+  roots.push(root);
+  const workers = join(root, "state/vmethod/test/workers");
+  mkdirSync(workers, { recursive: true });
+  writeFileSync(
+    join(workers, "45.json"),
+    JSON.stringify({ pr: 45, repo: "vworlds/vmethod", sessions: ["ses_long"] })
+  );
+  mkdirSync(join(root, ".vmethod"));
+  writeFileSync(join(root, ".vmethod/model-log.jsonl"), JSON.stringify(logRecord(45)) + "\n");
+  const messages = Array.from({ length: 200 }, (_, index) => ({
+    type: "assistant",
+    id: `message-${index}`,
+    model: { providerID: "codexbal", id: "gpt-6.1-sol" },
+    tokens: { input: 1_000_000, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+  }));
+  const result = await backfillCosts({
+    root,
+    config: { repo: "vworlds/vmethod", stateName: "test" },
+    env: { XDG_STATE_HOME: join(root, "state") },
+    models: [
+      { family: "sol", model: "codexbal/gpt-6.1-sol", price: { input: 1, output: 1, cached: 1 } },
+    ],
+    readSession: async () => ({
+      session: {
+        model: { providerID: "codexbal", id: "gpt-6.1-sol" },
+        tokens: { input: 250_000_000, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      },
       messages,
     }),
     setCost: async () => undefined,
   });
-  expect(result).toContain("$4.50");
-  expect(result).toContain("partial: latest session only");
+  expect(result).toContain("#45: $250.00");
+  expect(result).toContain("partial message history; remainder priced at sol");
+  const log = JSON.parse(readFileSync(join(root, ".vmethod/model-log.jsonl"), "utf8"));
+  expect(log.usd).toBe(250);
 });
 
 test("fills missing model-log usd with backfill provenance", async () => {
@@ -211,3 +301,23 @@ test("fills missing model-log usd with backfill provenance", async () => {
     costCoverage: "complete",
   });
 });
+
+function logRecord(pr: number) {
+  return {
+    date: "2026-10-18",
+    repo: "vworlds/vmethod",
+    pr,
+    task: "task",
+    kind: "tooling",
+    segments: [{ family: "sol", model: "codexbal/gpt-6.1-sol", rounds: [1], why: "start" }],
+    points_open: 1,
+    points_final: 1,
+    rounds: 1,
+    round_causes: [],
+    outcome: "merged",
+    prompt_defects: [],
+    stalls: [],
+    findings: [],
+    notes: "",
+  };
+}

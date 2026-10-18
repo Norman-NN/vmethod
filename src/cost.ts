@@ -65,12 +65,12 @@ export function boardCost(usd: number | null): string | null {
   return usd === null ? null : `$${usd.toFixed(2)}`;
 }
 
-/** Parse board Cost text; malformed values stay unknown. */
+/** Parse board Cost text, stripping a lower-bound marker; malformed values stay unknown. */
 export function parseBoardCost(value: unknown): number | null {
-  if (typeof value !== "string" || !/^\$\d+(?:\.\d{2})$/.test(value)) {
+  if (typeof value !== "string" || !/^(?:≥ )?\$\d+(?:\.\d{2})$/.test(value)) {
     return null;
   }
-  const amount = Number(value.slice(1));
+  const amount = Number(value.replace(/^≥ /, "").slice(1));
   return Number.isFinite(amount) ? amount : null;
 }
 

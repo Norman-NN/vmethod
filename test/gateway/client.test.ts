@@ -17,10 +17,13 @@ test("cost lookup unwraps the recorded session and assistant-message envelopes",
     async (input) => {
       const path = new URL(String(input)).pathname + new URL(String(input)).search;
       requests.push(path);
+      if (path === "/api/session/active") {
+        return Response.json(recordedOpencode.active);
+      }
       if (path === "/api/session/ses_recorded") {
         return Response.json(recordedCostSession);
       }
-      if (path === "/api/session/ses_recorded/message?limit=100") {
+      if (path === "/api/session/ses_recorded/message?limit=200") {
         return Response.json(recordedCostMessage);
       }
       return Response.json({}, { status: 500 });
@@ -29,11 +32,13 @@ test("cost lookup unwraps the recorded session and assistant-message envelopes",
   const result = await client.costSession("ses_recorded");
   expect(requests).toEqual([
     "/api/session/ses_recorded",
-    "/api/session/ses_recorded/message?limit=100",
+    "/api/session/active",
+    "/api/session/ses_recorded/message?limit=200",
   ]);
   expect(result).toMatchObject({
     session: { tokens: { input: 118893 } },
     messages: expect.any(Array),
+    running: true,
   });
 });
 
@@ -48,6 +53,9 @@ test("cost lookup follows message cursor pages", async () => {
     async (input) => {
       const url = new URL(String(input));
       requests.push(url.pathname + url.search);
+      if (url.pathname === "/api/session/active") {
+        return Response.json(recordedOpencode.active);
+      }
       if (url.pathname === "/api/session/ses_recorded") {
         return Response.json(recordedCostSession);
       }
@@ -61,7 +69,7 @@ test("cost lookup follows message cursor pages", async () => {
     }
   );
   const result = await client.costSession("ses_recorded");
-  expect(requests).toContain("/api/session/ses_recorded/message?limit=100&cursor=older");
+  expect(requests).toContain("/api/session/ses_recorded/message?limit=200&cursor=older");
   expect(result).toMatchObject({ messages: [{ id: "newer" }, { id: "older" }] });
 });
 
