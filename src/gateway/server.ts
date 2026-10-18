@@ -22,9 +22,16 @@ import {
   restActor,
 } from "./queries.js";
 import { checkMarkdown, guardClosingKeywords } from "./markdown.js";
-import { inProcess, type Handlers, type Operations, type Transport } from "./transport.js";
+import {
+  inProcess,
+  type CallContext,
+  type Handlers,
+  type Operations,
+  type Transport,
+} from "./transport.js";
+import { tokenIdentity, tokenViewer } from "./identity.js";
 import { isOwnerApproved, isIssueOwnerApproved } from "./approval.js";
-import { TaskFlow } from "./task-flow.js";
+import { legacyIssueHeaders, TaskFlow } from "./task-flow.js";
 import { isTaskPrompt } from "./task-flow-types.js";
 import { GitTransport, taskBranch, validateBranch } from "./git.js";
 import { realpathSync } from "node:fs";
@@ -52,10 +59,42 @@ class GatewayServer {
   private readonly config: Config;
   private readonly filter: PeopleFilter;
   private readonly digest: Digest;
-  // Lazy: local digest reads and refused operations never need credentials.
+  // Lazy: offline CLI verbs never create or authenticate a gateway client.
   private client?: GitHubClient;
+  private identity?: Promise<ObjectData>;
   private boardClient?: BoardService;
   private workersClient?: WorkerService;
+
+  /** Cache the promise too, so concurrent first calls share one viewer lookup. */
+  async authenticate(ctx: CallContext, operation: keyof Operations): Promise<boolean> {
+    const viewer = await (this.identity ??= tokenViewer(this.github));
+    const actionsLearningCheck =
+      operation === "learningCheck" &&
+      this.env.GITHUB_ACTIONS === "true" &&
+      ctx.taskPr === undefined;
+    const person = tokenIdentity(viewer, this.filter, actionsLearningCheck);
+    // The CI-only learning validator retains its pinned-base registry and write gates.
+    // Neither an environment flag alone nor a system identity grants any other verb.
+    if (person.role === "system" && actionsLearningCheck) {
+      return true;
+    }
+    if (person.role !== "orchestrator" && person.role !== "worker") {
+      throw new Error(
+        `Gateway token refused: ${person.login} (${person.role}) is not an orchestrator or worker identity`
+      );
+    }
+    if (ctx.taskPr !== undefined && person.role !== "worker") {
+      throw new Error(
+        `worker session holds a non-worker token (${person.login}); fix the worker environment`
+      );
+    }
+    if (ctx.role === "orchestrator" && person.role !== "orchestrator") {
+      throw new Error(
+        `VMETHOD_ROLE=orchestrator refused: token belongs to ${person.login} (${person.role})`
+      );
+    }
+    return false;
+  }
 
   private get workers(): WorkerService {
     return (this.workersClient ??= new WorkerService(this.root, this.config, this.env, this.deps, {
@@ -273,6 +312,11 @@ class GatewayServer {
     if (header) {
       numbers.add(Number(header[1]));
     }
+    if (!numbers.size) {
+      for (const issue of legacyIssueHeaders(body)) {
+        numbers.add(issue);
+      }
+    }
     if (numbers.size > 1) {
       throw new Error("Task PR has ambiguous linked issues");
     }
@@ -367,7 +411,7 @@ class GatewayServer {
     const viewer = object(
       object(await client.graphql(`query WorkerIdentity { viewer { ${actorFields} } }`)).viewer
     );
-    if (this.filter.identity(viewer)?.role !== "worker") {
+    if (this.filter.identity(viewer, false)?.role !== "worker") {
       throw new Error(
         "Configured Claude GitHub identity is not a pinned worker; refusing orchestrator identity"
       );
@@ -1519,14 +1563,15 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     dropped: ["orchestrator"],
     ownerApproved: ["orchestrator"],
   } as const satisfies Record<keyof Operations, readonly ("worker" | "orchestrator")[]>;
-  return inProcess(handlers, (operation, input, ctx) => {
+  return inProcess(handlers, async (operation, input, ctx) => {
     if (
       (operation === "learnings" &&
         (input as Operations["learnings"]["input"]).action === "submit" &&
         ctx?.role !== "orchestrator") ||
       (operation === "learningCheck" &&
         (input as Operations["learningCheck"]["input"]).label &&
-        ctx?.role !== "orchestrator")
+        ctx?.role !== "orchestrator" &&
+        env.GITHUB_ACTIONS !== "true")
     ) {
       throw new Error("Learning writes require orchestrator role");
     }
@@ -1538,6 +1583,15 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
       throw new Error(
         "Gateway operation denied for client role; check VMETHOD_ROLE and VMETHOD_TASK_PR in the command prefix"
       );
+    }
+    const ciLearningIdentity = await server.authenticate(ctx, operation);
+    if (
+      operation === "learningCheck" &&
+      (input as Operations["learningCheck"]["input"]).label &&
+      ctx.role !== "orchestrator" &&
+      !ciLearningIdentity
+    ) {
+      throw new Error("Learning writes require orchestrator role");
     }
     if (ctx.role === "worker" && ["post", "task", "waitReview", "waitChecks"].includes(operation)) {
       const target = reference((input as Operations["post"]["input"]).ref, config);

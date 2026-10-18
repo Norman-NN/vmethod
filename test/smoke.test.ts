@@ -149,6 +149,61 @@ test("built CLI initializes and checks the verbatim public vecs TSV registry off
   );
 }, 6000);
 
+test("offline CLI verbs need no identity while check --online reports missing credentials", () => {
+  const root = validProject();
+  const cli = resolve("dist/vmethod.mjs");
+  for (const args of [["version"], ["check"], ["config", "get", "repo"]]) {
+    const result = runChild(process.execPath, [cli, ...args], {
+      cwd: root,
+      env: { VMETHOD_ROOT: root },
+      encoding: "utf8",
+      timeout: 3000,
+    });
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+  }
+  const online = runChild(process.execPath, [cli, "check", "--online"], {
+    cwd: root,
+    env: { VMETHOD_ROOT: root },
+    encoding: "utf8",
+    timeout: 3000,
+  });
+  expect(online.status, online.stderr).toBe(1);
+  expect(online.stdout).toContain("credentials.githubToken: Missing configured GitHub token");
+  expect(online.stdout).toContain("credentials.workerGithubToken: Missing configured GitHub token");
+}, 15000);
+
+test("online checking composes with prerelease permission deferral and preserves CODEOWNERS warnings", () => {
+  const root = validProject();
+  const cli = resolve("dist/vmethod.mjs");
+  rmSync(join(root, ".claude/settings.json"));
+  rmSync(join(root, "CODEOWNERS"));
+  const run = (args: string[]) =>
+    runChild(process.execPath, [cli, "check", ...args], {
+      cwd: root,
+      env: { VMETHOD_ROOT: root },
+      encoding: "utf8",
+      timeout: 3000,
+    });
+  for (const args of [
+    ["--online", "--defer-permissions"],
+    ["--defer-permissions", "--online"],
+  ]) {
+    const result = run(args);
+    expect(result.status, result.stderr).toBe(1);
+    expect(result.stdout).toContain("WARN permissions deferred");
+    expect(result.stdout).toContain("CODEOWNERS");
+    expect(result.stdout).toContain("credentials.githubToken: Missing configured GitHub token");
+    expect(result.stdout).not.toContain("Install owner-approved");
+    expect(result.stderr).toBe("");
+  }
+  for (const flag of ["--online", "--defer-permissions"]) {
+    const result = run([flag, flag]);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("Usage: vmethod check [--online] [--defer-permissions]");
+    expect(result.stdout).toBe("");
+  }
+}, 15000);
+
 test("CI self-check skips absent config and explicitly defers only missing owner settings", () => {
   const script = resolve("scripts/check-self.mjs");
   const run = (root: string) =>

@@ -118,7 +118,7 @@ export function inProcess(
     operation: K,
     input: Operations[K]["input"],
     ctx: CallContext
-  ) => void
+  ) => void | Promise<void>
 ): Transport {
   return {
     async call<K extends keyof Operations>(
@@ -126,7 +126,7 @@ export function inProcess(
       input: Operations[K]["input"],
       ctx: CallContext
     ): Promise<Operations[K]["output"]> {
-      authorize(operation, input, ctx);
+      await authorize(operation, input, ctx);
       return (
         handlers[operation] as (
           input: Operations[K]["input"],

@@ -5,6 +5,7 @@ import { stringify } from "yaml";
 import { expect, test, vi } from "vitest";
 import { createGateway } from "../../src/gateway/server.js";
 import recordedFields from "../fixtures/github/board-fields.json" with { type: "json" };
+import legacyRecords from "../fixtures/legacy-workers/records.json" with { type: "json" };
 import type { Dependencies } from "../../src/gateway/client.js";
 import { object } from "../../src/gateway/people.js";
 import { validProject } from "../helpers.js";
@@ -126,6 +127,10 @@ function fixture(prefix?: string, legacy = false) {
         if (query.includes("query WorkerIdentity")) {
           expect(object(init?.headers).authorization).toBe("Bearer worker-token");
           return Response.json({ data: { viewer } });
+        }
+        if (query === "query GatewayIdentity { viewer { databaseId login __typename } }") {
+          expect(object(init?.headers).authorization).toBe("Bearer orchestrator-token");
+          return Response.json({ data: { viewer: actor(2) } });
         }
         expect(object(init?.headers).authorization).toBe("Bearer orchestrator-token");
         if (query.includes("query BoardProject")) {
@@ -482,6 +487,111 @@ test("partial task headers still identify the issue for worker dispatch", async 
   f.done();
 });
 
+function legacyAdoptionFixture(body = legacyRecords.spacerocksPrHeader) {
+  const f = fixture();
+  f.pr.body = body.replaceAll("#342", "#9").replaceAll("346-rogue-looter", "9-task");
+  const configPath = join(f.root, "vmethod.yaml");
+  writeFileSync(
+    configPath,
+    readFileSync(configPath, "utf8") + "\nlegacyWorkers: [spacerocks-orchestrator/workers]\n"
+  );
+  const directory = join(f.env.XDG_STATE_HOME, "spacerocks-orchestrator/workers");
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(join(directory, "31.json"), JSON.stringify({ id: "ses_test" }));
+  f.transport = createGateway(f.root, f.env, f.deps);
+  return {
+    ...f,
+    record: () =>
+      JSON.parse(
+        readFileSync(join(f.env.XDG_STATE_HOME, "vmethod/example-state/workers/31.json"), "utf8")
+      ),
+  };
+}
+
+test.each([
+  legacyRecords.spacerocksPrHeader,
+  "> **Agent task for #342.** Branch `346-rogue-looter`, base `dev`.",
+  "Closes #342.",
+])(
+  "legacy adoption snapshots the linked issue's Estimate and preserves provenance through grade: %s",
+  async (body) => {
+    const f = legacyAdoptionFixture(body);
+    expect(await f.transport.call("worker", { args: ["adopt", "--from-legacy"] }, f.ctx)).toContain(
+      "Adopted ses_test for #31"
+    );
+    expect(f.record()).toMatchObject({
+      issue: 9,
+      points_open: 13,
+      segments: [{ why: "legacy snapshot at adoption" }],
+    });
+    // Later issue edits must not rewrite the opening snapshot or its provenance.
+    f.issue.projectItems = {
+      nodes: [
+        {
+          id: "CARD9",
+          project: { number: 1, owner: { login: "example" } },
+          fieldValues: {
+            nodes: [{ field: { name: "Estimate" }, number: 5 }],
+            pageInfo: { hasNextPage: false },
+          },
+        },
+      ],
+      pageInfo: { hasNextPage: false },
+    };
+    f.pr.state = "MERGED";
+    f.pr.merged = true;
+    await f.transport.call("grade", { ref: "31", points: 20 }, f.ctx);
+    const log = JSON.parse(readFileSync(join(f.root, ".vmethod/model-log.jsonl"), "utf8"));
+    expect(log).toMatchObject({
+      points_open: 13,
+      points_final: 20,
+      segments: [{ why: "legacy snapshot at adoption" }],
+    });
+    f.done();
+  }
+);
+
+test("legacy adoption reports a missing linked issue Estimate without saving or reaching opencode", async () => {
+  const f = legacyAdoptionFixture();
+  f.issue.projectItems = { nodes: [], pageInfo: { hasNextPage: false } };
+  expect(await f.transport.call("worker", { args: ["adopt", "--from-legacy"] }, f.ctx)).toContain(
+    "linked issue #9 has no Estimate; estimate it, then rerun"
+  );
+  expect(() => f.record()).toThrow();
+  expect(f.requests.join("\n")).not.toContain("opencode.invalid");
+  expect(f.mutations).toEqual([]);
+  f.done();
+});
+
+test("explicit adoption still requires an opening snapshot even for a legacy relation with a board Estimate", async () => {
+  const f = legacyAdoptionFixture();
+  await expect(
+    f.transport.call("worker", { args: ["adopt", "31", "ses_test"] }, f.ctx)
+  ).rejects.toThrow("opening Estimate");
+  expect(() => f.record()).toThrow();
+  expect(f.requests.join("\n")).not.toContain("opencode.invalid");
+  f.done();
+});
+
+test("legacy adoption retains an existing opening snapshot instead of using the current Estimate", async () => {
+  const f = legacyAdoptionFixture(legacyRecords.spacerocksPrHeader + "\n<!-- points_open: 8 -->\n");
+  expect(await f.transport.call("worker", { args: ["adopt", "--from-legacy"] }, f.ctx)).toContain(
+    "Adopted"
+  );
+  expect(f.record()).toMatchObject({ points_open: 8, segments: [{ why: "adopt" }] });
+  f.done();
+});
+
+test("legacy worker metadata refuses ambiguous fallback issue relations", async () => {
+  const f = legacyAdoptionFixture("Agent task for #9\nCloses #10.\n");
+  expect(await f.transport.call("worker", { args: ["adopt", "--from-legacy"] }, f.ctx)).toContain(
+    "ambiguous linked issues"
+  );
+  expect(() => f.record()).toThrow();
+  expect(f.requests.join("\n")).not.toContain("opencode.invalid");
+  f.done();
+});
+
 test.each([
   ["adopt", "31", "ses_test"],
   ["adopt", "--from-legacy"],
@@ -589,6 +699,17 @@ test("gateway verifies worker token identity and launches Claude with no orchest
       },
     })
   );
+  expect(f.requests.join("\n")).not.toContain("opencode.invalid");
+  f.done();
+});
+
+test("Claude worker start refuses a missing worker credential before launch", async () => {
+  const f = fixture();
+  f.env.EXAMPLE_WORKER_GITHUB_TOKEN = "";
+  await expect(
+    f.transport.call("worker", { args: ["start", "31", "--model", "sonnet"] }, f.ctx)
+  ).rejects.toThrow("Claude workers require credentials.workerGithubToken");
+  expect(f.deps.processes!.launch).not.toHaveBeenCalled();
   expect(f.requests.join("\n")).not.toContain("opencode.invalid");
   f.done();
 });
