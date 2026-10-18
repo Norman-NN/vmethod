@@ -25,10 +25,10 @@ owner approval. Only [verified identity and role](security.md) confer authority.
 
 The scripts keep assignee and Progress together: worker READY (`🤖👍`), QUESTION
 (`🤖❓`) and BLOCKED (`🤖🚫`) hand the turn to the orchestrator. OWNER REVIEW
-(`👤🔍`) and OWNER QUESTION (`👤❓`) hand it to the owner and mirror that wait on
-the linked issue. REVIEW and ANSWER return to working (`🤖🔨`), In progress,
+(`👤🔍`) and OWNER QUESTION (`👤❓`) hand it to the owner on the PR only.
+Linked issues stay In review without owner assignment or Progress. REVIEW and ANSWER return to working (`🤖🔨`), In progress,
 without management assignees. Owner replies and current-head reviews return to
-the orchestrator (`🧭🔍`); the issue's owner mirror clears. Orchestrator APPROVED
+the orchestrator (`🧭🔍`). Orchestrator APPROVED
 leaves verification/merge follow-up with the orchestrator, not an unassigned review.
 
 Replies include a separate `in reply to <comment-url>` line after the first line.

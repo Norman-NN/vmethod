@@ -203,7 +203,9 @@ changes. Its `expect` lists only the fields vmethod owns, with their exact optio
   blocked 🤖🚫, ready 🤖👍, verifying 🧭🔍, owner-review 👤🔍, owner-question 👤❓, conflict 💥,
   silent ⏳, permission 🔑, failed 🪫, idle 💤. A round is `🔁` plus keycap digits, and red CI is
   🔴. The stuck states are silent, permission, failed, idle and conflict. vecs and SpaceRocks
-  have identical tables today.
+  have identical tables today. Owner states and assignment appear only where the
+  action belongs: on the task PR, not its linked issues. Linked issues stay In review
+  without an owner mirror; standalone issue questions still use 👤❓.
 - **Policy:** Done keeps the 6 most recently closed cards across repos; each repo archives only
   its own cards.
 

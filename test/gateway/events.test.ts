@@ -33,6 +33,34 @@ import { GitHubClient } from "../../src/gateway/client.js";
 import ownerReviews from "../fixtures/github/owner-reviews.json" with { type: "json" };
 import orchestratorReviews from "../fixtures/github/orchestrator-reviews.json" with { type: "json" };
 
+test.each(["assignment", "progress", "both"])(
+  "watcher clears stale owner %s on linked issues without moving Status",
+  async (stale) => {
+    const f = setup();
+    f.task();
+    f.pulls[0].body = '<!-- vmethod-task {"issues":[6]} -->';
+    f.cards[0].progress = { text: "👤🔍" };
+    object(f.cards[0].content).assignees = { nodes: [{ login: "owner" }] };
+    f.cards.push(f.card(6, "In review"));
+    if (stale !== "assignment") {
+      f.cards[1].progress = { text: "👤❓" };
+    }
+    if (stale !== "progress") {
+      object(f.cards[1].content).assignees = { nodes: [{ login: "owner" }] };
+    }
+    const loop = f.loop();
+    await f.tick(loop);
+    expect(object(f.cards[1].progress).text ?? "").toBe("");
+    expect(object(object(f.cards[1].content).assignees).nodes).toEqual([]);
+    expect(object(f.cards[1].status).name).toBe("In review");
+    expect(object(f.cards[0].progress).text).toBe("👤🔍");
+    f.advance();
+    await f.tick(loop);
+    expect(object(object(f.cards[1].content).assignees).nodes).toEqual([]);
+    expect(f.reports).toEqual([]);
+  }
+);
+
 test("clearing an owner mirror retries an assignment failure without losing the mirror", async () => {
   const f = setup();
   f.task();
@@ -40,8 +68,9 @@ test("clearing an owner mirror retries an assignment failure without losing the 
   f.cards[0].progress = { text: "👤❓" };
   object(f.cards[0].content).assignees = { nodes: [{ login: "owner" }] };
   f.cards.push(f.card(6, "In progress"));
+  f.cards[1].progress = { text: "👤❓" };
+  object(f.cards[1].content).assignees = { nodes: [{ login: "owner" }] };
   const loop = f.loop();
-  await f.once(loop);
   const fetch = f.deps.fetch;
   f.deps.fetch = async (input, init) => {
     if (String(input).endsWith("/issues/6/assignees") && init?.method === "DELETE") {
@@ -112,8 +141,8 @@ test.each(["READY", "QUESTION", "BLOCKED"])(
     f.cards.push(f.card(6, "In progress"));
     const loop = f.loop();
     await f.tick(loop);
-    expect(object(f.cards[1].progress).text).toBe("👤❓");
-    expect(object(object(f.cards[1].content).assignees).nodes).toEqual([{ login: "owner" }]);
+    expect(object(f.cards[1].progress).text ?? "").toBe("");
+    expect(object(object(f.cards[1].content).assignees).nodes).toEqual([]);
     f.advance();
     f.comment(`[worker] ${tag} (round 2)`);
     await f.tick(loop);
@@ -121,7 +150,7 @@ test.each(["READY", "QUESTION", "BLOCKED"])(
     expect(object(pr.progress).text).toContain(
       tag === "READY" ? "🤖👍" : tag === "QUESTION" ? "🤖❓" : "🤖🚫"
     );
-    expect(object(f.cards[1].progress).text).toBeNull();
+    expect(object(f.cards[1].progress).text ?? "").toBe("");
     expect(object(object(f.cards[1].content).assignees).nodes).toEqual([]);
     expect(f.reports).toEqual([]);
   }
@@ -165,7 +194,7 @@ test.each(["reply", "issue reply", "approval"])(
     await f.tick(loop);
     expect(object(pr.progress).text).toContain("🧭🔍");
     expect(object(object(pr.content).assignees).nodes).toEqual([{ login: "peer" }]);
-    expect(object(f.cards[1].progress).text).toBeNull();
+    expect(object(f.cards[1].progress).text ?? "").toBe("");
     expect(object(object(f.cards[1].content).assignees).nodes).toEqual([]);
     expect(f.reports).toEqual([]);
   }

@@ -90,6 +90,7 @@ test.each(
         w.pulls = [
           {
             number: 27,
+            body: '<!-- vmethod-task {"issues":[8]} -->',
             head: { ref: "8-task", sha },
             base: { ref: "dev" },
             created_at: w.iso(),
@@ -214,12 +215,8 @@ test.each(
         expect(object(object(prCard.content).assignees).nodes).toEqual(
           ownerTurn ? [{ login: "owner" }] : verb === "review approve" ? [{ login: "me" }] : []
         );
-        expect(object(object(issueCard.content).assignees).nodes).toEqual(
-          ownerTurn ? [{ login: "owner" }] : []
-        );
-        expect(object(issueCard.progress).text).toBe(
-          ownerTurn ? (verb === "review ask" ? "👤❓" : "👤🔍") : null
-        );
+        expect(object(object(issueCard.content).assignees).nodes).toEqual([]);
+        expect(object(issueCard.progress).text).toBeNull();
         expect(object(prCard.progress).text ?? "").toBe(
           verb === "review changes"
             ? "🤖🔨 🔁1️⃣"
@@ -659,7 +656,7 @@ test.each([
   { outcome: "ask", draft: true },
   { outcome: "approve", draft: false },
 ] as const)(
-  "review %s sets draft state and mirrors the owner's turn on the issue",
+  "review %s sets draft state and keeps the owner's turn only on the PR",
   async ({ outcome, draft }) => {
     const f = fixture();
     f.set({ isDraft: !draft });
@@ -671,11 +668,15 @@ test.each([
       expect(f.touched).toContainEqual(
         expect.objectContaining({
           id: "issue",
-          field: "Progress",
-          value: outcome === "ask" ? "👤❓" : "👤🔍",
+          field: "Status",
+          value: "In review",
+          progress: null,
         })
       );
-      expect(f.writes).toContainEqual({
+      expect(f.touched).toContainEqual(
+        expect.objectContaining({ id: "pr", progress: outcome === "ask" ? "👤❓" : "👤🔍" })
+      );
+      expect(f.writes).not.toContainEqual({
         path: "/repos/example/project/issues/8/assignees",
         body: { assignees: ["owner"] },
       });

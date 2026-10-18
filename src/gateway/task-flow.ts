@@ -595,8 +595,8 @@ export class TaskFlow {
     for (const number of taskIssueNumbers(String(item.body)) ?? []) {
       const issue = await this.host.thread(String(number), "issue");
       const owner = input.outcome === "owner" || input.outcome === "ask";
-      await this.turn(String(number), owner ? "owner" : null);
-      await this.card(issue, owner ? undefined : "In progress", owner ? progress : null);
+      await this.turn(String(number), null);
+      await this.card(issue, owner ? "In review" : "In progress", null);
     }
     return `Posted ${heading} on #${input.ref}`;
   }

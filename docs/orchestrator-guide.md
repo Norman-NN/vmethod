@@ -32,9 +32,10 @@ workers only implement agreed specs.
 
 Ask owner questions only with `vmethod review <pr> ask .tmp/question.md`.
 For an issue without an open task PR, use `vmethod ask <issue> .tmp/question.md`.
-These commands post OWNER QUESTION, assign the owner and set `👤❓`; a PR wait
-also appears on its linked issue. A question asked in chat is not tracked.
-Never leave an In review card unassigned: the assignee is exactly whose move it
+These commands post OWNER QUESTION, assign the owner and set `👤❓` only where
+the answer belongs. A PR wait leaves linked issues In review without owner
+assignment or Progress; follow Development to the PR. A question asked in chat is not tracked.
+Except for linked task issues, never leave an In review card unassigned: the assignee is exactly whose move it
 is. Review commands and the watcher maintain this invariant and report ambiguous
 or mismatched board state rather than relying on your memory.
 
