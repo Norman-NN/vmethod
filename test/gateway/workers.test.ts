@@ -954,7 +954,11 @@ test("model gate refuses before mutation; switch keeps id and grade writes issue
   f.meta.state = "MERGED";
   f.meta.merged = true;
   vi.mocked(f.hooks.submitLearnings!).mockRejectedValueOnce(new Error("Submission unavailable"));
-  await expect(f.service.grade(31, 20)).rejects.toThrow("Submission unavailable");
+  const stagedSummary = await f.service.grade(31, 20);
+  expect(stagedSummary).toContain("Graded PR #31: issue #9 Estimate 20");
+  expect(stagedSummary).toContain(
+    "\nlearnings submit failed: Submission unavailable; the record is staged locally, rerun vmethod learnings submit"
+  );
   expect(f.record().finalized).toBe(true);
   expect(f.record().gradePosted).toBe(true);
   expect(f.hooks.setEstimate).toHaveBeenCalledWith(9, 20);

@@ -177,7 +177,8 @@ and automatically submits through the [learning pipeline](learnings.md#submit-de
 including private reduction. New grades append immutable files to the project's
 one open learning PR; after merge, the next grade opens a fresh PR. Do not commit
 the staging log or merge from this command: the vmethod orchestrator reviews and
-merges learning PRs. Submission failures preserve the grade locally; retry `grade`
+merges learning PRs. Submission failures do not fail the saved grade: its summary
+includes a warning and retry guidance. Retry `grade`
 or `learnings submit` after addressing the error.
 
 ## Watch without wasting budget

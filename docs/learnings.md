@@ -67,7 +67,9 @@ also recover a branch created before a PR write. An exclusive `learnings.lock`
 prevents concurrent submissions. Remove a stale lock only after confirming no
 submission is running.
 
-If submission fails, the grade and its local record remain saved. Retry `grade`
+If submission fails, `grade` still succeeds and returns its summary plus a
+`learnings submit failed` warning with retry guidance; the grade and its local
+record remain saved. Retry `grade`
 for that delivery or `learnings submit` after addressing the reported error;
 the local record, pending PR files and merged records prevent duplicate deliveries.
 

@@ -1029,8 +1029,13 @@ export class WorkerService {
         session.gradePosted = true;
         this.save(session);
       }
-      const submission = await this.hooks.submitLearnings?.();
-      return [summary, submission].filter(Boolean).join("\n");
+      try {
+        const submission = await this.hooks.submitLearnings?.();
+        return [summary, submission].filter(Boolean).join("\n");
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return `${summary}\nlearnings submit failed: ${message}; the record is staged locally, rerun vmethod learnings submit`;
+      }
     });
   }
   async suggest(issue: number): Promise<string> {
