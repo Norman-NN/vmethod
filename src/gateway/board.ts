@@ -333,7 +333,10 @@ export class BoardService implements BoardIO {
     return {
       ...card,
       values: Object.fromEntries(
-        ["Status", "Estimate", "Model", "Progress"].map((name) => [name, card.values[name] ?? null])
+        ["Status", "Estimate", "Model", "Progress", "Cost"].map((name) => [
+          name,
+          card.values[name] ?? null,
+        ])
       ),
     };
   }
@@ -388,17 +391,17 @@ export class BoardService implements BoardIO {
   }
   async set(input: {
     itemId: string;
-    field: "Status" | "Estimate" | "Model" | "Progress";
+    field: "Status" | "Estimate" | "Model" | "Progress" | "Cost";
     value: string | number | null;
     progress?: string | null;
   }): Promise<string> {
-    if (!["Status", "Estimate", "Model", "Progress"].includes(input.field)) {
+    if (!["Status", "Estimate", "Model", "Progress", "Cost"].includes(input.field)) {
       throw new Error("Unsupported board field");
     }
     const card = await this.item(input.itemId);
     this.scope(card);
-    if (input.field === "Estimate" && card.kind === "PullRequest") {
-      throw new Error("Never set Estimate on a PR");
+    if (["Estimate", "Cost"].includes(input.field) && card.kind === "PullRequest") {
+      throw new Error(`Never set ${input.field} on a PR`);
     }
     if (input.field === "Status" && input.progress === undefined) {
       throw new Error("Status writes require Progress");

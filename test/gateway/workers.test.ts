@@ -7,6 +7,9 @@ import { OpencodeClient, type Dependencies } from "../../src/gateway/client.js";
 import { WorkerService, type TaskMetadata, type WorkerHooks } from "../../src/gateway/workers.js";
 import { workerAccess } from "../../src/gateway/access.js";
 import { validProject } from "../helpers.js";
+import captured from "../fixtures/usage/opencode-session.json" with { type: "json" };
+import messageCapture from "../fixtures/usage/opencode-message.json" with { type: "json" };
+import claudeResults from "../fixtures/usage/claude-results.json" with { type: "json" };
 
 interface Request {
   path: string;
@@ -15,7 +18,7 @@ interface Request {
   data?: unknown;
   status?: number;
 }
-function fixture(requests: Request[] = []) {
+function fixture(requests: Request[] = [], priced = false) {
   const root = validProject();
   const directory = join(root, ".worktrees/9-task");
   mkdirSync(join(directory, "node_modules/.bin"), { recursive: true });
@@ -31,6 +34,7 @@ function fixture(requests: Request[] = []) {
         gate: "none",
         tier: "cheap",
         fallback: ["sol"],
+        ...(priced ? { price: { input: 2, output: 10, cached: 0.2 } } : {}),
       },
       {
         family: "sol",
@@ -39,8 +43,16 @@ function fixture(requests: Request[] = []) {
         gate: "owner",
         tier: "expensive",
         fallback: ["glm"],
+        ...(priced ? { price: { input: 4, output: 20, cached: 0.4 } } : {}),
       },
-      { family: "sonnet", model: "claude-test", kind: "claude", gate: "none", tier: "standard" },
+      {
+        family: "sonnet",
+        model: "claude-test",
+        kind: "claude",
+        gate: "none",
+        tier: "standard",
+        ...(priced ? { price: { input: 3, output: 15, cached: 0.3 } } : {}),
+      },
       { family: "other", model: "fake/other", kind: "opencode", gate: "owner", tier: "expensive" },
     ])
   );
@@ -112,6 +124,8 @@ function fixture(requests: Request[] = []) {
     prepare: vi.fn(async () => directory),
     setModel: vi.fn(async () => {}),
     setEstimate: vi.fn(async () => {}),
+    setCost: vi.fn(async () => {}),
+    gradeComment: vi.fn(async () => {}),
     workerIdentity: vi.fn(async () => ({ GH_TOKEN: "worker-token", PATH: "fake-path" })),
     issue: vi.fn(async () => ({ estimate: 3, kind: "tooling" })),
   };
@@ -144,13 +158,148 @@ const start: Request[] = [
     body: { text: "PR description `data`", delivery: "steer" },
   },
 ];
+function measuredStatus(multiplier = 1): Request[] {
+  const data = structuredClone(captured.data);
+  data.id = "ses_fake";
+  data.tokens.input *= multiplier;
+  data.tokens.output *= multiplier;
+  data.tokens.reasoning *= multiplier;
+  data.tokens.cache.read *= multiplier;
+  return status().map((request) =>
+    request.path === "/api/session/ses_fake"
+      ? { ...request, data }
+      : request.path.endsWith("/message")
+        ? { ...request, path: request.path + "?limit=20" }
+        : request
+  );
+}
+
+test("missing session totals fall back to complete assistant history, excluding user words", async () => {
+  const requests = status(false, [
+    ...messageCapture.data,
+    ...messageCapture.data,
+    { type: "user", tokens: { input: 999999 }, content: "Cost is zero" },
+  ]);
+  const f = fixture([...start, ...requests], true);
+  await f.service.command(["start", "31"]);
+  const result = await f.service.watchStatus(31);
+  expect(result.usage?.tokens).toEqual({ input: 1444, output: 130, cached: 167424 });
+  expect(result.issueCost?.usd).toBeCloseTo(0.0376728, 8);
+  f.done();
+});
+
+test("Claude polling and grading retain both resumed turns without double counting repeated polls", async () => {
+  const f = fixture([], true);
+  f.meta.model = "sonnet";
+  await f.service.command(["start", "31"]);
+  vi.mocked(f.deps.processes!.alive).mockReturnValue(false);
+  writeFileSync(
+    join(f.directory, ".tmp/claude-worker.log"),
+    claudeResults.map((result) => JSON.stringify(result)).join("\n") + "\n"
+  );
+  for (let i = 0; i < 2; i++) {
+    expect((await f.service.watchStatus(31)).issueCost?.usd).toBeCloseTo(0.0810213, 8);
+  }
+  f.meta.state = "CLOSED";
+  await f.service.grade(31, 3);
+  const record = JSON.parse(readFileSync(join(f.root, ".vmethod/model-log.jsonl"), "utf8"));
+  expect(record.usd).toBeCloseTo(0.0810213, 8);
+  expect(record.segments[0]).toMatchObject({
+    tokens: { input: 24357, output: 6, cached: 26201 },
+    reportedUsd: expect.closeTo(0.1027202, 8),
+  });
+  f.done();
+});
+
+test("Claude replacement snapshots usage and cumulative reported cost across fresh session ids", async () => {
+  const f = fixture([], true);
+  f.meta.model = "sonnet";
+  await f.service.command(["start", "31"]);
+  vi.mocked(f.deps.processes!.alive).mockReturnValue(false);
+  // Synthetic ids restore the session identity removed from the real capture.
+  const first = { ...claudeResults[0], session_id: f.record().id };
+  const log = join(f.directory, ".tmp/claude-worker.log");
+  writeFileSync(log, JSON.stringify(first) + "\n");
+  await f.service.command(["start", "31", "--replace"]);
+  const second = { ...claudeResults[0], session_id: f.record().id };
+  writeFileSync(log, [first, second].map((result) => JSON.stringify(result)).join("\n") + "\n");
+  f.meta.state = "CLOSED";
+  await f.service.grade(31, 3);
+  const record = JSON.parse(readFileSync(join(f.root, ".vmethod/model-log.jsonl"), "utf8"));
+  expect(record.usd).toBeCloseTo(0.0854058, 8);
+  expect(record.segments).toHaveLength(2);
+  for (const segment of record.segments) {
+    expect(segment.tokens).toEqual({ input: 13132, output: 3, cached: 10873 });
+    expect(segment.reportedUsd).toBeCloseTo(0.0547286, 8);
+  }
+  f.done();
+});
+
+test("status persists provider tokens and API dollars, grading rolls up other task PRs on the same issue", async () => {
+  const f = fixture([...start, ...measuredStatus(), ...measuredStatus(2)], true);
+  await f.service.command(["start", "31"]);
+  expect(await f.service.command(["status", "31"])).toContain("$1.193840");
+  const other = f.record();
+  other.pr = 32;
+  writeFileSync(join(f.root, "state/vmethod/example-state/workers/32.json"), JSON.stringify(other));
+  f.meta.state = "MERGED";
+  f.meta.merged = true;
+  await f.service.grade(31, 5);
+  expect(f.hooks.setCost).toHaveBeenCalledWith(9, expect.closeTo(3.5815188, 8));
+  expect(f.hooks.gradeComment).toHaveBeenCalledWith(9, expect.stringContaining("$2.387679"));
+  const record = JSON.parse(readFileSync(join(f.root, ".vmethod/model-log.jsonl"), "utf8"));
+  expect(record.usd).toBeCloseTo(2.3876792, 8);
+  expect(record.segments[0].tokens).toEqual({ input: 237786, output: 34892, cached: 7815936 });
+  expect(record.segments[0].reportedUsd).toBe(0);
+  f.done();
+});
+
+test("watch poll computes issue rollup without GitHub reads and unknown price propagates", async () => {
+  const f = fixture([...start, ...measuredStatus()]);
+  await f.service.command(["start", "31"]);
+  vi.mocked(f.hooks.metadata).mockClear();
+  const result = await f.service.watchStatus(31);
+  expect(result.issueCost).toEqual({ issue: 9, usd: null });
+  expect(f.record().segments[0].usd).toBeNull();
+  expect(f.hooks.metadata).not.toHaveBeenCalled();
+  expect(f.hooks.setCost).not.toHaveBeenCalled();
+  f.done();
+});
+
+test("model switch snapshots cumulative baseline and grades each family's delta", async () => {
+  const f = fixture(
+    [
+      ...start,
+      ...measuredStatus(),
+      {
+        path: "/api/session/ses_fake/model",
+        method: "POST",
+        body: { model: { providerID: "fake", id: "sol" } },
+      },
+      ...measuredStatus(2),
+    ],
+    true
+  );
+  await f.service.command(["start", "31"]);
+  await f.service.command(["model", "31", "sol", "--owner-approved"]);
+  f.meta.state = "MERGED";
+  await f.service.grade(31, 5);
+  const record = JSON.parse(readFileSync(join(f.root, ".vmethod/model-log.jsonl"), "utf8"));
+  expect(record.segments.map((segment: { usd: number }) => segment.usd)).toEqual([
+    expect.closeTo(1.1938396, 8),
+    expect.closeTo(2.3876792, 8),
+  ]);
+  expect(record.usd).toBeCloseTo(3.5815188, 8);
+  f.done();
+});
+
 test("watch status uses the recorded task session and client update time without reading comments", async () => {
   const f = fixture([
     ...start,
     { path: "/api/session/active", data: { ses_fake: true } },
     { path: "/api/session/ses_fake", data: { id: "ses_fake", time: { updated: 123_456 } } },
     { path: "/api/session/ses_fake/permission", data: [] },
-    { path: "/api/session/ses_fake/message?limit=20", data: [] },
+    { path: "/api/session/ses_fake/message", data: [] },
   ]);
   expect(await f.service.watchStatus(31)).toEqual({ reason: "session unknown", active: false });
   await f.service.command(["start", "31"]);
@@ -264,7 +413,7 @@ function status(active = false, messages: unknown[] = [], permissions: unknown[]
     { path: "/api/session/active", data: active ? { ses_fake: {} } : {} },
     { path: "/api/session/ses_fake", data: { id: "ses_fake" } },
     { path: "/api/session/ses_fake/permission", data: permissions },
-    { path: "/api/session/ses_fake/message?limit=20", data: messages },
+    { path: "/api/session/ses_fake/message", data: messages },
   ];
 }
 
@@ -491,13 +640,23 @@ test("replace interrupts existing session before creating another", async () => 
 });
 
 test("model gate refuses before mutation; switch keeps id and grade writes issue Estimate and shared segments", async () => {
+  const usageStatus = () =>
+    status().map((request) =>
+      request.path === "/api/session/ses_fake"
+        ? { ...request, data: { ...captured.data, id: "ses_fake" } }
+        : request.path.endsWith("/message")
+          ? { ...request, path: request.path + "?limit=20" }
+          : request
+    );
   const f = fixture([
     ...start,
+    ...usageStatus(),
     {
       path: "/api/session/ses_fake/model",
       method: "POST",
       body: { model: { providerID: "fake", id: "sol" } },
     },
+    ...usageStatus(),
   ]);
   await f.service.command(["start", "31"]);
   await expect(f.service.command(["model", "31", "sol"])).rejects.toThrow("--owner-approved");

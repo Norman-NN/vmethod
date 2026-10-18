@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { addTokens, opencodeUsage, zeroTokens, type Usage } from "../cost.js";
 import type { Config } from "../config.js";
 import type { ProcessRuntime } from "./claude.js";
 import type { WorkerFilesystem } from "./access.js";
@@ -533,10 +534,11 @@ export class OpencodeClient {
         deadline
       )
     ).data;
+    let usage = opencodeUsage(session);
     const messages = object(
       await this.request(
         "GET",
-        `/api/session/${encodeURIComponent(id)}/message?limit=20`,
+        `/api/session/${encodeURIComponent(id)}/message${usage ? "?limit=20" : ""}`,
         undefined,
         deadline
       )
@@ -545,7 +547,23 @@ export class OpencodeClient {
       throw new Error("Invalid opencode status response");
     }
     const latest = messages.map(object).find((m) => m.type === "idle");
+    if (!usage) {
+      const measured = messages
+        .map(object)
+        .filter((m) => m.type === "assistant")
+        .map((message) => opencodeUsage(message))
+        .filter((u) => u !== undefined);
+      if (measured.length) {
+        usage = opencodeUsage(session, {
+          tokens: measured.reduce((sum, u) => addTokens(sum, u.tokens), zeroTokens()),
+          ...(measured.every((u) => u.reportedUsd !== undefined)
+            ? { reportedUsd: measured.reduce((sum, u) => sum + u.reportedUsd!, 0) }
+            : {}),
+        });
+      }
+    }
     const detail = {
+      ...(usage ? { usage } : {}),
       title: typeof session.title === "string" ? session.title : undefined,
       directory,
       inputTokens:
@@ -595,6 +613,10 @@ export interface WorkerSessionStatus {
   outputTokens?: number;
   updated?: number;
   permissions?: number;
+  /** Cumulative provider usage for this session, never inferred from message text. */
+  usage?: Usage;
+  /** All locally tracked deliveries for the originating issue, for the existing board poll. */
+  issueCost?: { issue: number; usd: number | null };
 }
 
 export function classifyTurn(turn: ObjectData): WorkerSessionStatus {

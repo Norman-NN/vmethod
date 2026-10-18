@@ -714,6 +714,16 @@ test("private text clearance selects a delivery, never unrestricted fields or gl
     })
   );
   expect(JSON.stringify(reduced)).not.toContain("PRIVATE-");
+  const cost = { tokens: { input: 10, output: 20, cached: 30 }, usd: 1.5, reportedUsd: 0 };
+  const numeric = privateLearning(
+    record({
+      usd: 1.5,
+      segments: [{ family: "sol", model: "PRIVATE-MODEL", rounds: [1], why: "start", ...cost }],
+    })
+  );
+  expect(numeric.usd).toBe(1.5);
+  expect(numeric.segments[0]).toMatchObject(cost);
+  expect(JSON.stringify(numeric)).not.toContain("PRIVATE-");
 }, 15000);
 
 test("public submissions preserve narrative and notes; invalid notes stop before writes", async () => {
@@ -762,6 +772,9 @@ test("report groups mixed-model deliveries fairly, counts tag rates and handles 
   expect(report.byFamily.glm.deliveries).toBe(1);
   expect(learningReport([first, second], "glm", "tooling").deliveries).toBe(1);
   expect(learningReport([second]).roundsPerPoint).toBeNull();
+  expect(report.usd).toBeNull();
+  expect(report.usdPerPoint).toBeNull();
+  expect(learningReport([second]).usdPerPoint).toBeNull();
   expect(learningReport([], "missing").deliveries).toBe(0);
 }, 15000);
 
@@ -815,9 +828,24 @@ test("report reads local JSONL or the bundled records and fails for missing scan
   await expect(service.command({ action: "report" })).rejects.toThrow("No model-log inputs");
   writeFileSync(
     join(root, "learnings/models/local.jsonl"),
-    JSON.stringify(record({ pr: 309, kind: "docs", rounds: 3, points_final: 8 }))
+    JSON.stringify(
+      record({
+        pr: 309,
+        kind: "docs",
+        rounds: 3,
+        points_final: 8,
+        usd: 1.6,
+        segments: [{ family: "sol", model: "PRIVATE-MODEL", rounds: [1], why: "start", usd: 1.6 }],
+      })
+    )
   );
   expect(await service.command({ action: "report" })).toContain("rounds per point: 0.38");
+  expect(await service.command({ action: "report" })).toContain(
+    "USD: 1.60; USD per estimate point: 0.20"
+  );
+  const costs = JSON.parse(await service.command({ action: "report", json: true }));
+  expect(costs.byFamily.sol.usdPerPoint).toBe(0.2);
+  expect(costs.byKind.docs.usdPerPoint).toBe(0.2);
   expect(JSON.parse(await service.command({ action: "report", json: true })).roundsPerPoint).toBe(
     0.375
   );

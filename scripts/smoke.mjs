@@ -95,7 +95,10 @@ export function smoke() {
       join(consumer, ".claude/settings.json")
     );
     const output = run(cli, ["check"], consumer, env);
-    if (!output.includes("vmethod check: ok")) {
+    const expectedWarnings = ["sol", "astra", "sonnet", "glm", "big-pickle"]
+      .map((family) => `WARN models.yaml: ${family} has no price; delivery usd is null`)
+      .join("\n");
+    if (output.trim() !== expectedWarnings) {
       throw new Error(`Unexpected check output: ${output}`);
     }
     copyFileSync(join(repo, "test/fixtures/diagram.md"), join(consumer, "diagram.md"));

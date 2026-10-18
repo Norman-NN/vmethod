@@ -38,9 +38,14 @@ test("consumer examples initialize valid configs without installing agent routin
   copyFileSync(join(templates, ".claude/settings.json"), join(root, ".claude/settings.json"));
   expect(check(root)).toEqual({
     code: 0,
-    messages: ["vmethod.yaml", "people.yaml", ".claude/"].map(
-      (path) => `WARN CODEOWNERS: ${path} has no owner entry`
-    ),
+    messages: [
+      ...["sol", "astra", "sonnet", "glm", "big-pickle"].map(
+        (family) => `WARN models.yaml: ${family} has no price; delivery usd is null`
+      ),
+      ...["vmethod.yaml", "people.yaml", ".claude/"].map(
+        (path) => `WARN CODEOWNERS: ${path} has no owner entry`
+      ),
+    ],
   });
   expect(init(root, templates)).toEqual([]);
 }, 15000);

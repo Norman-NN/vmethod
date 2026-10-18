@@ -1,4 +1,14 @@
 import { randomUUID } from "node:crypto";
+import {
+  addTokens,
+  claudeUsage,
+  dollars,
+  sumUsd,
+  usageDelta,
+  zeroTokens,
+  type Price,
+  type Usage,
+} from "../cost.js";
 import { modelRecord } from "../learnings.js";
 import {
   accessSync,
@@ -33,6 +43,7 @@ interface Model {
   gate: "none" | "owner";
   tier: "expensive" | "standard" | "cheap";
   fallback?: string[];
+  price?: Price;
 }
 interface Segment {
   family: string;
@@ -40,6 +51,9 @@ interface Segment {
   rounds: number[];
   why: string;
   at: string;
+  baseline?: Usage;
+  usage?: Usage;
+  usd?: number | null;
 }
 interface Session {
   version: 1;
@@ -54,6 +68,8 @@ interface Session {
   process?: ProcessIdentity;
   interrupted?: boolean;
   logOffset?: number;
+  finalized?: boolean;
+  gradePosted?: boolean;
 }
 export interface TaskMetadata {
   pr: number;
@@ -76,6 +92,10 @@ export interface WorkerHooks {
   prepare(pr: number): Promise<string>;
   setModel(pr: number, family: string): Promise<void>;
   setEstimate(issue: number, points: number): Promise<void>;
+  /** Grade-time issue-only rollup; null clears the board number rather than inventing zero. */
+  setCost?(issue: number, usd: number | null): Promise<void>;
+  /** Post the validated GRADE summary on the originating issue. */
+  gradeComment?(issue: number, text: string): Promise<void>;
   workerIdentity(): Promise<NodeJS.ProcessEnv>;
   issue(ref: number): Promise<{ estimate?: number; kind: string }>;
 }
@@ -257,6 +277,29 @@ export class WorkerService {
     if (status.error) {
       status.error = this.redact(status.error);
     }
+    if (record.model.kind === "claude") {
+      status.usage = claudeUsage(
+        this.claudeLog(record).map((line) => {
+          try {
+            return JSON.parse(line);
+          } catch {
+            return {};
+          }
+        })
+      );
+    }
+    if (status.usage && !record.finalized) {
+      const segment = record.segments.at(-1)!;
+      segment.usage = usageDelta(
+        status.usage,
+        segment.baseline ?? { tokens: zeroTokens(), reportedUsd: 0 }
+      );
+      segment.usd = dollars(
+        segment.usage.tokens,
+        this.models.find((m) => m.family === segment.family)?.price
+      );
+      this.save(record);
+    }
     return status;
   }
   private render(record: Session, status: WorkerSessionStatus): string {
@@ -266,7 +309,15 @@ export class WorkerService {
       ? `\nQUOTA ${record.model.family}; fallback: ${fallback.join(" → ") || "none configured"} (owner decision; not switched)`
       : "";
     const details = ` | ${record.model.family} | ${JSON.stringify(status.directory ?? record.directory)}${status.title ? ` | ${JSON.stringify(status.title)}` : ""}${status.inputTokens === undefined ? "" : ` | tokens in ${status.inputTokens} out ${status.outputTokens ?? 0}`}${status.updated === undefined ? "" : ` | updated ${status.updated}`}${status.permissions ? ` | ${status.permissions} permission request(s)` : ""}`;
-    return `#${record.pr} ${record.id} ${status.reason}${details}${status.error ? ` ${untrusted(status.error)}` : ""}${advice}`;
+    const tokens = record.segments.reduce(
+      (sum, segment) => addTokens(sum, segment.usage?.tokens ?? zeroTokens()),
+      zeroTokens()
+    );
+    const usd = sumUsd(record.segments.map((segment) => segment.usd));
+    const tokenText = record.segments.some((segment) => !segment.usage)
+      ? "unknown"
+      : `input ${tokens.input} output ${tokens.output} cached ${tokens.cached}`;
+    return `#${record.pr} ${record.id} ${status.reason}${details} | tokens ${tokenText} | USD ${usd === null ? "unknown" : `$${usd.toFixed(6)}`}${status.error ? ` ${untrusted(status.error)}` : ""}${advice}`;
   }
   private claudeLog(record: Session): string[] {
     const file = join(record.directory, ".tmp/claude-worker.log");
@@ -396,8 +447,10 @@ export class WorkerService {
       if (rest.length) {
         throw new Error("Usage: worker status [pr]");
       }
-      const record = this.read(pr);
-      return record ? this.render(record, await this.status(record)) : `#${pr} session unknown`;
+      return this.locked(pr, async () => {
+        const record = this.read(pr);
+        return record ? this.render(record, await this.status(record)) : `#${pr} session unknown`;
+      });
     }
     return this.locked(pr, async () => {
       if (verb === "start") {
@@ -446,6 +499,10 @@ export class WorkerService {
           throw new Error("Stop the Claude turn before switching model");
         }
         const meta = await this.hooks.metadata(pr);
+        const boundary = await this.status(record, false);
+        if (!boundary.usage) {
+          throw new Error("Cannot switch model without provider usage baseline");
+        }
         if (model.kind === "opencode") {
           await this.client().request("POST", `${path}/model`, { model: this.apiModel(model) });
         }
@@ -456,6 +513,7 @@ export class WorkerService {
           rounds: [this.round(meta)],
           why,
           at: new Date(this.deps.now()).toISOString(),
+          baseline: boundary.usage,
         });
         this.save(record);
         await this.hooks.setModel(pr, model.family);
@@ -551,21 +609,37 @@ export class WorkerService {
     return { providerID, id: id.join("/") };
   }
   async mergeStatus(pr: number): Promise<"live" | "stopped" | "unknown"> {
-    const record = this.read(pr);
-    if (!record) {
-      return "unknown";
-    }
-    const status = await this.status(record, false);
-    return status.reason === "session unknown"
-      ? "unknown"
-      : status.active || status.reason === "permission-wait"
-        ? "live"
-        : "stopped";
+    return this.locked(pr, async () => {
+      const record = this.read(pr);
+      if (!record) {
+        return "unknown";
+      }
+      const status = await this.status(record, false);
+      return status.reason === "session unknown"
+        ? "unknown"
+        : status.active || status.reason === "permission-wait"
+          ? "live"
+          : "stopped";
+    });
   }
-  /** Read the recorded task session's activity without fetching GitHub comments. */
+  /** Collect activity/usage and issue cost from recorded task history, without GitHub reads. */
   async watchStatus(pr: number): Promise<WorkerSessionStatus> {
-    const record = this.read(pr);
-    return record ? this.status(record, false) : { reason: "session unknown", active: false };
+    return this.locked(pr, async () => {
+      const record = this.read(pr);
+      if (!record) {
+        return { reason: "session unknown", active: false };
+      }
+      const status = await this.status(record, false);
+      status.issueCost = { issue: record.issue, usd: this.issueCost(record.issue) };
+      return status;
+    });
+  }
+  private issueCost(issue: number): number | null {
+    const records = readdirSync(this.state)
+      .filter((file) => /^\d+\.json$/.test(file))
+      .map((file) => this.read(Number(file.slice(0, -5)))!)
+      .filter((record) => record.issue === issue);
+    return sumUsd(records.flatMap((record) => record.segments.map((segment) => segment.usd)));
   }
   async resume(pr: number, text: string): Promise<void> {
     await this.locked(pr, async () => {
@@ -780,6 +854,19 @@ export class WorkerService {
           rounds: [this.round(meta)],
           why: unknown ? "resume" : replace ? "owner-request" : "start",
           at: new Date(this.deps.now()).toISOString(),
+          ...(model.kind === "claude" && previous
+            ? {
+                baseline: claudeUsage(
+                  this.claudeLog(previous).map((line) => {
+                    try {
+                      return JSON.parse(line);
+                    } catch {
+                      return {};
+                    }
+                  })
+                ),
+              }
+            : {}),
         },
       ],
     };
@@ -808,6 +895,9 @@ export class WorkerService {
       if (!session || session.issue !== meta.issue) {
         throw new Error("Cannot grade: missing or mismatched delivery session history");
       }
+      if (!session.finalized) {
+        await this.status(session, false);
+      }
       points ??= meta.estimate;
       if (points === undefined || ![0, 0.5, 1, 2, 3, 5, 8, 13, 20, 40, 100, 999].includes(points)) {
         throw new Error("Invalid final Estimate");
@@ -818,12 +908,16 @@ export class WorkerService {
         pr,
         task: meta.title,
         kind: meta.kind,
-        segments: session.segments.map(({ family, model, rounds, why }) => ({
+        segments: session.segments.map(({ family, model, rounds, why, usage, usd }) => ({
           family,
           model,
           rounds,
           why,
+          tokens: usage?.tokens ?? null,
+          usd: usd ?? null,
+          ...(usage?.reportedUsd === undefined ? {} : { reportedUsd: usage.reportedUsd }),
         })),
+        usd: sumUsd(session.segments.map((segment) => segment.usd)),
         points_open: session.points_open,
         points_final: points,
         rounds: this.round(meta),
@@ -854,7 +948,16 @@ export class WorkerService {
         mkdirSync(join(this.root, ".vmethod"), { recursive: true });
         appendFileSync(file, JSON.stringify(record) + "\n");
       }
-      return `Graded PR #${pr}: issue #${meta.issue} Estimate ${points}`;
+      session.finalized = true;
+      this.save(session);
+      await this.hooks.setCost?.(meta.issue, this.issueCost(meta.issue));
+      const summary = `Graded PR #${pr}: issue #${meta.issue} Estimate ${points}; USD ${record.usd === null ? "unknown" : `$${record.usd.toFixed(6)}`}`;
+      if (!session.gradePosted) {
+        await this.hooks.gradeComment?.(meta.issue, `[orchestrator] GRADE\n\n${summary}`);
+        session.gradePosted = true;
+        this.save(session);
+      }
+      return summary;
     });
   }
   async suggest(issue: number): Promise<string> {

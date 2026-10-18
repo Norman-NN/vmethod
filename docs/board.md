@@ -48,6 +48,19 @@ the initial estimate indefinitely.
 | 100    | Vision-sized, not a worker task                            |
 | 999    | Impossible as things stand; record the external constraint |
 
+## Cost
+
+`Cost` is an issue-only number in USD at configured API prices, not subscription
+charges. The existing worker poll updates it from all locally tracked task PRs for
+the issue, including partial deliveries; `grade` sets the final rollup. Unknown
+usage or missing prices clear the field rather than writing zero. Keep worker
+state for previous deliveries so the rollup retains their costs.
+
+Expand-only migration `0003` adds this field without changing existing cards or
+raising minimum compatibility, including on shared boards. Run the normal board
+migration before enabling cost writes. See [cost accounting](learnings.md#worker-cost-and-model-log-migration)
+for configuration, provider mappings and report semantics.
+
 ## Model
 
 On an issue, Model is an optional, evidence-backed hint, not an estimate-to-model

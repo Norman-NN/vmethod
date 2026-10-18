@@ -1,4 +1,7 @@
 # Replace ids with installed models. Family names must match board options.
+# Add API USD per million tokens for each family (including subscriptions):
+# price: { input: <rate>, output: <rate>, cached: <rate> }
+# Missing prices warn and leave cost unknown; do not enter zero as a placeholder.
 - family: sol
   model: example/replace-me
   kind: opencode

@@ -138,6 +138,35 @@ test("a worker idle without reply reports once per stop and again after recovery
   expect(f.reports).toEqual([]);
 });
 
+test("existing worker poll writes rolled-up Cost to the issue, deduplicates and clears unknown values", async () => {
+  const f = setup();
+  f.task();
+  f.worktree();
+  const issue = f.card(6, "In progress");
+  f.cards.push(issue);
+  f.staleWorker = { reason: "running", active: true, issueCost: { issue: 6, usd: 1.25 } };
+  const loop = f.loop();
+  await f.once(loop);
+  expect(f.writes.filter((write) => write.field === "Cost")).toEqual([
+    { itemId: issue.id, field: "Cost", value: 1.25 },
+  ]);
+  for (let i = 0; i < 6; i++) {
+    await f.once(loop);
+  }
+  expect(f.writes.filter((write) => write.field === "Cost")).toHaveLength(1);
+  f.staleWorker = { reason: "running", active: true, issueCost: { issue: 6, usd: null } };
+  for (let i = 0; i < 6; i++) {
+    await f.once(loop);
+  }
+  expect(f.writes.filter((write) => write.field === "Cost")).toHaveLength(2);
+  expect(f.writes.filter((write) => write.field === "Cost").at(-1)).toEqual({
+    itemId: issue.id,
+    field: "Cost",
+    value: null,
+  });
+  expect(f.reports).toEqual([]);
+});
+
 test("idle after an unanswered amendment reports stopped without reply using observed comments", async () => {
   const f = setup();
   f.task();

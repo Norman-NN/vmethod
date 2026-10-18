@@ -64,6 +64,13 @@ export function check(
           messages.push("people.yaml: duplicate id or login");
         }
       }
+      if (kind === "models") {
+        for (const model of value as { family: string; price?: unknown }[]) {
+          if (!model.price) {
+            warnings.push(`WARN models.yaml: ${model.family} has no price; delivery usd is null`);
+          }
+        }
+      }
     } catch (error) {
       messages.push((error as Error).message);
     }

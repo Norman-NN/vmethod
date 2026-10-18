@@ -15,7 +15,7 @@ test("migration 0002 expands the Progress table without contracting version-1 ca
   board.stamp(1, 1);
   const card = board.card();
   const before = structuredClone(card);
-  const migrations = loadMigrations();
+  const migrations = loadMigrations().slice(0, 2);
   const result = await board.service(migrations).migrate({});
   expect(result.state.version).toBe(2);
   expect(result.state.minCompatible).toBe(1);
@@ -36,5 +36,21 @@ test("migration 0002 expands the Progress table without contracting version-1 ca
   expect(parseProgress(before.values.Progress)).toEqual(
     parseProgress(before.values.Progress, oldStates)
   );
+  board.done();
+});
+
+test("migration 0003 adds numeric issue Cost without changing shared cards or compatibility", async () => {
+  const board = new FakeBoard();
+  board.stamp(2, 1);
+  const before = structuredClone(board.card());
+  const migrations = loadMigrations();
+  expect(migrations[2].up).toEqual([{ op: "add_field", field: "Cost", type: "number" }]);
+  const result = await board.service(migrations).migrate({});
+  expect(result.state.version).toBe(3);
+  expect(result.state.minCompatible).toBe(1);
+  expect(result.drift).toEqual([]);
+  expect(board.fields.find((field) => field.name === "Cost")?.type).toBe("number");
+  expect(board.cards).toEqual([before]);
+  expect(() => compatibility(readState(board.readme), 1, () => {})).not.toThrow();
   board.done();
 });

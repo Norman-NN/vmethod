@@ -46,7 +46,7 @@ export interface Operations {
   boardSet: {
     input: {
       itemId: string;
-      field: "Status" | "Estimate" | "Model" | "Progress";
+      field: "Status" | "Estimate" | "Model" | "Progress" | "Cost";
       value: string | number | null;
       progress?: string | null;
     };

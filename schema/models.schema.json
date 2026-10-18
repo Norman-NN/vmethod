@@ -9,6 +9,16 @@
     "properties": {
       "family": { "type": "string" },
       "model": { "type": "string", "minLength": 1 },
+      "price": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["input", "output", "cached"],
+        "properties": {
+          "input": { "type": "number", "minimum": 0 },
+          "output": { "type": "number", "minimum": 0 },
+          "cached": { "type": "number", "minimum": 0 }
+        }
+      },
       "kind": { "enum": ["opencode", "claude"] },
       "gate": { "enum": ["none", "owner"] },
       "fallback": {

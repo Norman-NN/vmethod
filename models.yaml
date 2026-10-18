@@ -1,4 +1,6 @@
 # Worker model families for vmethod. Family names must match the board's Model options.
+# Configure verified API USD/million rates as price: { input: n, output: n, cached: n }.
+# Until rates are supplied, check warns and delivery costs remain unknown (not free).
 - family: sol
   tier: standard
   model: codexbal/gpt-6.1-sol
