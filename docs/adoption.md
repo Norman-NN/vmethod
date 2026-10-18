@@ -15,6 +15,11 @@ Adopt the pinned package in one reviewed change without copying shared methodolo
       `branches`, `board`, `checks`, `postMerge`, `changelog` and `credentials` from
       local settings as appropriate. Preserve existing state names and markers so
       watchers do not replay old events. Credentials are env names, not values.
+- [ ] Check `branches.worktreePrefix` (default `"auto-"`) against your worker
+      directory convention. Use `""` for intentional unprefixed directories.
+      Existing unprefixed task directories are looked up without renaming them when
+      the prefixed path is absent; new worktrees use the configured prefix.
+      See [worker worktree configuration](package.md#worker-worktree-configuration).
 - [ ] Set `board.repos` to **every** repository sharing the board. Set
       `learningsPrivacy` before any submission. Keep concrete paths, hosts, commands
       and domain rules local. Port behavioral differences into reviewed project hooks.

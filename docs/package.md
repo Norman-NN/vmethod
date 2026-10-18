@@ -24,6 +24,24 @@ See [gateway commands](gateway.md#commands) for orchestrator-only `issue create`
 `issue close` and `board set` housekeeping, and
 [task flow](gateway.md#task-flow-commands) for structured full/partial deliveries.
 
+## Worker worktree configuration
+
+Worker preparation, adoption, status and watching share the directory resolver in
+`src/gateway/worker-path.ts`. Configure these keys under `branches`:
+
+| Key              | Default              | Meaning                                                                                           |
+| ---------------- | -------------------- | ------------------------------------------------------------------------------------------------- |
+| `mainCheckout`   | Gateway project root | Base directory for relative worktree roots.                                                       |
+| `worktreeRoot`   | `.worktrees`         | Parent directory for task and orchestrator worktrees.                                             |
+| `worktreePrefix` | `"auto-"`            | Worker directory prefix; set `""` for unprefixed worker directories. Path separators are refused. |
+
+New worker worktrees use `<worktreeRoot>/<worktreePrefix><branch>`. Existing
+unprefixed `<worktreeRoot>/<branch>` directories remain a read-only lookup fallback
+when the prefixed directory is absent: lookup never renames or migrates them.
+Normal task preparation can reuse that existing worktree. Orchestrator worktrees
+such as `orchestrator-review` do not use this prefix. Status reads preserve the
+recorded session/directory binding rather than silently attaching it to a new tree.
+
 ## Environment mapping
 
 `board.number` maps to `VMETHOD_BOARD_NUMBER`, `baseBranch` to `VMETHOD_BASE_BRANCH`, etc.

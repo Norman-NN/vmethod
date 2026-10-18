@@ -116,6 +116,7 @@ function fixture(requests: Request[] = []) {
     issue: vi.fn(async () => ({ estimate: 3, kind: "tooling" })),
   };
   const config = getConfig(root, {});
+  (config.branches as Record<string, unknown>).mainCheckout = root;
   const service = new WorkerService(root, config, env, deps, hooks);
   return {
     root,
