@@ -10,6 +10,7 @@ import type { Card } from "../../src/board/types.js";
 import { validProject } from "../helpers.js";
 import { people, sha } from "./helpers.js";
 import legacyBodies from "../fixtures/github/legacy-task-bodies.json" with { type: "json" };
+import closingReferences from "../fixtures/github/task-closing-references.json" with { type: "json" };
 import { BoardService } from "../../src/gateway/board.js";
 import { WatchFake } from "./watch-fake.js";
 import { writeState } from "../../src/board/readme.js";
@@ -896,6 +897,67 @@ test("same-repository closing references take precedence over legacy headers", a
   });
   await f.flow().merge("27");
   expect(f.events).toContain("read issue 8");
+  f.done();
+});
+
+test("recorded native closing connection decodes through GraphQL and completes only its linked issue", async () => {
+  const f = fixture();
+  const recording = structuredClone(closingReferences);
+  recording.repository.pullRequest.closingIssuesReferences.nodes[0].repository.nameWithOwner =
+    String(f.config.repo);
+  f.set({ state: "MERGED", body: "Legacy prompt without a structured relation", issueNumber: 342 });
+  const fetch = f.deps.fetch;
+  let reads = 0;
+  f.deps.fetch = async (input, init) => {
+    if (String(input) === "https://api.github.com/graphql") {
+      const payload = object(JSON.parse(String(init?.body)));
+      expect(parse(String(payload.query)).definitions).toHaveLength(1);
+      expect(payload.variables).toEqual({ owner: "vworlds", repo: "spacerocks", pr: 346 });
+      reads++;
+      return Response.json({ data: recording });
+    }
+    return fetch(input, init);
+  };
+  const thread = f.host.thread;
+  f.host.thread = async (ref, kind) => {
+    const item = await thread(ref, kind);
+    if (kind !== "pr") {
+      return item;
+    }
+    const decoded = object(
+      await f.host.github.graphql(
+        `query TaskLinkRecording($owner: String!, $repo: String!, $pr: Int!) {
+        repository(owner: $owner, name: $repo) {
+          pullRequest(number: $pr) {
+            number
+            closingIssuesReferences(first: 100) {
+              nodes { number repository { nameWithOwner } }
+              pageInfo { hasNextPage }
+            }
+          }
+        }
+      }`,
+        { owner: "vworlds", repo: "spacerocks", pr: 346 }
+      )
+    );
+    return {
+      ...item,
+      closingIssuesReferences: object(object(decoded.repository).pullRequest)
+        .closingIssuesReferences,
+    };
+  };
+  await f.flow().merge("27");
+  expect(reads).toBe(1);
+  expect(f.writes.filter((w) => w.body.state === "closed")).toEqual([
+    {
+      path: "/repos/example/project/issues/342",
+      body: { state: "closed", state_reason: "completed" },
+    },
+  ]);
+  expect(f.touched).toContainEqual(
+    expect.objectContaining({ id: "issue", field: "Status", value: "Done" })
+  );
+  expect(f.events).not.toContain("read issue 8");
   f.done();
 });
 

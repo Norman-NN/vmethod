@@ -1,5 +1,22 @@
 # GitHub board field regression
 
+## Native closing references (PR #73)
+
+`task-closing-references.json` records the gateway query supplied by vimescmd in
+PR #73's authenticated answer on 2026-10-18, against `vworlds/spacerocks` PR #346.
+That PR has a real closing-keyword body reference to issue #342. The query selects
+`repository.pullRequest.number` and `closingIssuesReferences(first: 100)` with
+`nodes { number repository { nameWithOwner } }` and `pageInfo { hasNextPage }`.
+Only the gateway-added `attribution` key is removed; all selected wire values and
+types are unchanged. The original capture is ignored under `.tmp/captures/`.
+
+The task-flow regression renames only the linked repository to `example/project`
+to match its isolated configured scope, then returns the capture through the real
+GitHub GraphQL client and consumes its connection in merge follow-up. It verifies
+the issue close payload and board Done write, with unexpected calls rejected.
+This records GitHub's actual linked-issue shape, not a vmethod live write; the
+orchestrator owns vmethod backfill and board confirmation after merge.
+
 ## Watch action projections (PR #56)
 
 `watch-actions.json` projects the gateway-filtered captures supplied by vimescmd
