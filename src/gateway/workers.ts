@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { estimateScale } from "../board/estimate.js";
 import { modelRecord } from "../learnings.js";
 import {
   accessSync,
@@ -880,7 +881,7 @@ export class WorkerService {
         throw new Error("Cannot grade: missing or mismatched delivery session history");
       }
       points ??= meta.estimate;
-      if (points === undefined || ![0, 0.5, 1, 2, 3, 5, 8, 13, 20, 40, 100, 999].includes(points)) {
+      if (points === undefined || !estimateScale.includes(points)) {
         throw new Error("Invalid final Estimate");
       }
       const record = {

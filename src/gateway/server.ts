@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { assertEstimate } from "../board/estimate.js";
 import { getConfig, loadYaml, type Config } from "../config.js";
 import { workerWorktree } from "./worker-path.js";
 import { GitHubClient, type Dependencies } from "./client.js";
@@ -494,7 +495,8 @@ class GatewayServer {
   };
 
   /** Create an own-repository issue from checked content and ensure readable configured-board
-   * membership. Optional estimate/status use the shared board field writer; labels may repeat.
+   * membership. Optional estimate/status use the shared board field writer; estimates must
+   * use the shared points scale and labels may repeat.
    * Board follow-up failures identify the created issue so callers do not create a duplicate.
    */
   issueCreate: Handlers["issueCreate"] = async ({ title, file, labels = [], estimate, status }) => {
@@ -507,11 +509,8 @@ class GatewayServer {
     ) {
       throw new Error("Invalid issue title or labels");
     }
-    if (
-      estimate !== undefined &&
-      (typeof estimate !== "number" || !Number.isFinite(estimate) || estimate < 0)
-    ) {
-      throw new Error("Estimate must be a finite nonnegative number");
+    if (estimate !== undefined) {
+      assertEstimate(estimate);
     }
     if (status !== undefined && (typeof status !== "string" || !status.trim())) {
       throw new Error("Invalid issue status");

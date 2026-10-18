@@ -188,7 +188,7 @@ test("issue create waits for board listing lag and applies optional estimate/sta
             projectId: recording.id,
             itemId: card.id,
             fieldId: recording.fields.nodes.find((f) => f.name === "Estimate")!.id,
-            value: { number: 2.5 },
+            value: { number: 0.5 },
           },
         });
       },
@@ -223,7 +223,7 @@ test("issue create waits for board listing lag and applies optional estimate/sta
     await gatewayVerb(
       f.transport,
       "issue",
-      ["create", "Title", file, "--estimate", "2.5", "--status", "In progress"],
+      ["create", "Title", file, "--estimate", "0.5", "--status", "In progress"],
       { VMETHOD_ROLE: "orchestrator" }
     )
   ).toBe("Created issue #37");
@@ -232,8 +232,9 @@ test("issue create waits for board listing lag and applies optional estimate/sta
 }, 15000);
 
 test.each([
-  ["Estimate", "NaN", "finite numeric"],
-  ["Estimate", "1e999", "finite numeric"],
+  ["Estimate", "NaN", "Estimate must be one of"],
+  ["Estimate", "1e999", "Estimate must be one of"],
+  ["Estimate", "4", "0, 0.5, 1, 2, 3, 5, 8, 13, 20, 40, 100, 999"],
   ["Status", "Missing option", "Unknown Status option"],
   ["Progress", "text", "single-select or number"],
   ["Missing", "1", "single-select or number"],
@@ -250,9 +251,11 @@ test.each([
       graph({ node: { ...acceptedIssue(), id: contentId } }),
       ...reads,
     ]);
-    await expect(f.transport.call("boardSetIssue", { ref: "39", field, value })).rejects.toThrow(
-      message
-    );
+    await expect(
+      gatewayVerb(f.transport, "board", ["set", value === "4" ? "1" : "39", field, value], {
+        VMETHOD_ROLE: "orchestrator",
+      })
+    ).rejects.toThrow(message);
     f.done();
   },
   15000
@@ -458,13 +461,13 @@ test("issue create bounds board visibility waiting and identifies the issue with
   f.done();
 }, 15000);
 
-test.each([NaN, Infinity, -1])(
+test.each([NaN, Infinity, -1, 4, 1.5])(
   "issue create rejects invalid estimate %s before networking",
   async (estimate) => {
     const f = fixtureServer([]);
     await expect(
       f.transport.call("issueCreate", { title: "Title", file: "missing", estimate })
-    ).rejects.toThrow("finite nonnegative");
+    ).rejects.toThrow("0, 0.5, 1, 2, 3, 5, 8, 13, 20, 40, 100, 999");
     f.done();
   }
 );
@@ -494,7 +497,7 @@ test.each(["Estimate", "Status"])(
   "board set %s decodes recordings, writes exact values and records Status moves",
   async (field) => {
     const card = boardRecording.items.nodes[0];
-    const value = field === "Estimate" ? "2.5" : "Done";
+    const value = field === "Estimate" ? "0.5" : "Done";
     const progressId = boardRecording.fields.nodes.find((f) => f.name === "Progress")!.id;
     const fieldId = boardRecording.fields.nodes.find((f) => f.name === field)!.id;
     const f = fixtureServer([
@@ -509,7 +512,7 @@ test.each(["Estimate", "Status"])(
             projectId: boardRecording.id,
             itemId: card.id,
             fieldId,
-            value: field === "Estimate" ? { number: 2.5 } : { singleSelectOptionId: "e807513c" },
+            value: field === "Estimate" ? { number: 0.5 } : { singleSelectOptionId: "e807513c" },
           };
           expect(variables).toEqual(
             field === "Status"

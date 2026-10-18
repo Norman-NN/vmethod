@@ -450,6 +450,22 @@ test("card writes enforce content repo scope, Status+Progress, PR Estimate polic
   expect(board.cards).toEqual([foreign]);
 });
 
+test.each([4, 1.5, -1, Infinity, NaN])(
+  "board Estimate %s is rejected without mutations",
+  async (value) => {
+    const board = setup();
+    board.stamp(1);
+    const card = board.card();
+    await expect(
+      board.service().set({ itemId: card.id, field: "Estimate", value })
+    ).rejects.toThrow("0, 0.5, 1, 2, 3, 5, 8, 13, 20, 40, 100, 999");
+    await expect(
+      board.service().setIssueField(card.contentId!, "Estimate", String(value))
+    ).rejects.toThrow("0, 0.5, 1, 2, 3, 5, 8, 13, 20, 40, 100, 999");
+    expect(board.mutations).toEqual([]);
+  }
+);
+
 test("new operations use the same orchestrator policy and board CLI transport seam", async () => {
   const board = setup();
   const root = validProject();
