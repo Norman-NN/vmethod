@@ -28,6 +28,143 @@ import { people } from "./helpers.js";
 import recordedActions from "../fixtures/github/watch-actions.json" with { type: "json" };
 import { GitHubClient } from "../../src/gateway/client.js";
 
+test("a closed card held in Backlog across three polls is noted only once", async () => {
+  const f = setup();
+  f.task();
+  const loop = f.loop();
+  await f.once(loop);
+  const card = f.card();
+  object(card.content).state = "CLOSED";
+  f.cards.push(card);
+  const notes: string[] = [];
+  for (let i = 0; i < 3; i++) {
+    f.advance();
+    f.comment("Wake to flush the quiet digest", 0);
+    const events = await f.once(loop);
+    notes.push(...events.flatMap((event) => event.quiet ?? []));
+  }
+  expect(notes.filter((line) => line.includes("NOTE #6 (ISSUE): new card → Backlog"))).toHaveLength(
+    1
+  );
+  expect(f.reports).toEqual([]);
+});
+
+test("a closed Done card absent from the listing is noted once after reappearing in Backlog", async () => {
+  const f = setup();
+  f.task();
+  const card = f.card(6, "Done");
+  object(card.content).state = "CLOSED";
+  f.cards.push(card);
+  const loop = f.loop();
+  await f.once(loop);
+  f.cards.pop();
+  f.advance();
+  await f.once(loop);
+  object(card.status).name = "Backlog";
+  f.cards.push(card);
+  const notes: string[] = [];
+  for (let i = 0; i < 3; i++) {
+    f.advance();
+    f.comment("Wake to flush the quiet digest", 0);
+    notes.push(...(await f.once(loop)).flatMap((event) => event.quiet ?? []));
+  }
+  expect(notes.filter((line) => line.includes("NOTE #6 (ISSUE): new card → Backlog"))).toHaveLength(
+    1
+  );
+  expect(f.reports).toEqual([]);
+});
+
+test.each(["auto-", "", "legacy"])(
+  "worker stops use the configured path (%s), deduplicate failures and allow recovery STALE",
+  async (prefix) => {
+    const f = setup();
+    f.config.branches = { worktreePrefix: prefix === "legacy" ? "auto-" : prefix };
+    f.task();
+    const directory = join(f.root, ".worktrees", `${prefix === "legacy" ? "" : prefix}6-watch`);
+    mkdirSync(directory, { recursive: true });
+    f.staleWorker = { reason: "provider-error", active: false, updated: f.clock, error: "first" };
+    const loop = f.loop();
+    const first = await f.once(loop);
+    expect(first.map((event) => event.kind)).toEqual(["worker"]);
+    expect(first[0].line).toContain("its turn failed");
+    expect(first[0].line).toContain(directory);
+    f.advance();
+    const review = f.comment("[orchestrator] CHANGES round 1", 2);
+    review.user = { login: "me", id: 999, type: "User" };
+    await f.once(loop);
+    f.advance(31 * 60_000);
+    expect(await f.once(loop)).toEqual([]);
+    // A new failed turn must report even if its error text is identical.
+    f.staleWorker = { reason: "provider-error", active: false, updated: f.clock, error: "first" };
+    const failures = [];
+    for (let i = 0; i < 6; i++) {
+      failures.push(...(await f.once(loop)));
+    }
+    expect(failures.filter((event) => event.kind === "worker")).toHaveLength(1);
+    f.advance();
+    f.staleWorker = { reason: "running", active: true, updated: f.clock };
+    const nextReview = f.comment("[orchestrator] CHANGES round 2", 2);
+    nextReview.user = { login: "me", id: 999, type: "User" };
+    await f.once(loop);
+    f.advance(31 * 60_000);
+    f.staleWorker = { reason: "idle", active: false, updated: f.clock };
+    expect((await f.once(loop)).map((event) => event.kind)).toEqual(["stale"]);
+    expect(f.reports).toEqual([]);
+  }
+);
+
+test("a worker idle without reply reports once per stop and again after recovery", async () => {
+  const f = setup();
+  f.task();
+  f.worktree();
+  f.staleWorker = { reason: "idle without reply", active: false, updated: f.clock };
+  const loop = f.loop();
+  const first = await f.once(loop);
+  expect(first.map((event) => event.kind)).toEqual(["worker"]);
+  expect(first[0].line).toContain("stopped without reply; send it a nudge");
+  for (let i = 0; i < 6; i++) {
+    expect(await f.once(loop)).toEqual([]);
+  }
+  f.staleWorker = { reason: "running", active: true, updated: f.clock };
+  for (let i = 0; i < 6; i++) {
+    expect(await f.once(loop)).toEqual([]);
+  }
+  f.staleWorker = { reason: "idle without reply", active: false, updated: f.clock };
+  const stops = [];
+  for (let i = 0; i < 6; i++) {
+    stops.push(...(await f.once(loop)));
+  }
+  expect(stops.map((event) => event.kind)).toEqual(["worker"]);
+  expect(f.reports).toEqual([]);
+});
+
+test("idle after an unanswered amendment reports stopped without reply using observed comments", async () => {
+  const f = setup();
+  f.task();
+  f.worktree();
+  f.staleWorker = { reason: "running", active: true, updated: f.clock };
+  const loop = f.loop();
+  await f.once(loop);
+  f.advance();
+  const prompt = f.comment("[orchestrator] AMENDMENT 3", 2);
+  prompt.user = { login: "me", id: 999, type: "User" };
+  await f.once(loop);
+  f.staleWorker = { reason: "idle", active: false, updated: f.clock };
+  const events = [];
+  for (let i = 0; i < 6; i++) {
+    events.push(...(await f.once(loop)));
+  }
+  expect(events.map((event) => event.kind)).toEqual(["worker"]);
+  expect(events[0].line).toContain("stopped without reply; send it a nudge");
+  f.advance();
+  f.comment("[worker] ACK");
+  await f.once(loop);
+  for (let i = 0; i < 6; i++) {
+    expect(await f.once(loop)).toEqual([]);
+  }
+  expect(f.reports).toEqual([]);
+});
+
 test("an older in-flight board listing cannot turn a completed Done write into Done → In review", async () => {
   const f = setup();
   f.cards = [f.card(24, "In review", "PullRequest")];

@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createHash } from "node:crypto";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import type { Config } from "../config.js";
 import { parseProgress, renderProgress, revivedProgressStates } from "../board/progress.js";
 import { readState } from "../board/readme.js";
@@ -31,6 +31,7 @@ import { stateRoot, type Digest } from "./digest.js";
 import { object, type ObjectData, type PeopleFilter, type Person } from "./people.js";
 import { repoOf, restActor, actorFields } from "./queries.js";
 import { WriteJournal } from "./write-journal.js";
+import { workerWorktree } from "./worker-path.js";
 import { resolveSession, type ResolvedSession, type SessionInput } from "./watch-scope.js";
 export { resolveSession, type ResolvedSession, type SessionInput } from "./watch-scope.js";
 
@@ -303,7 +304,7 @@ export class EventLoop {
   private readonly org: string;
   private readonly subscriptions: string[];
   private readonly taskBranch: RegExp;
-  private readonly worktreeRoot: string;
+  private readonly cycleWorkers = new Map<number, WorkerSessionStatus>();
   private readonly reserve: number;
   private readonly preview: boolean;
   private readonly boardEnabled: boolean;
@@ -368,7 +369,6 @@ export class EventLoop {
     this.taskBranch = new RegExp(
       `^(?:${escaped.replace(/<number>/g, "\\d+").replace(/<slug>/g, "[A-Za-z0-9._-]+")}|${(str(branches.packPrefix) || "pack/").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`
     );
-    this.worktreeRoot = str(branches.worktreeRoot) || ".worktrees";
     const reserve = object(config.gateway).reserve;
     this.reserve = typeof reserve === "number" ? reserve : 100;
     this.preview = object(config.watch).preview === true;
@@ -1075,6 +1075,7 @@ export class EventLoop {
     this.cycle++;
     this.cycleStale.clear();
     this.cycleOwnMoves.clear();
+    this.cycleWorkers.clear();
     let ok = true;
     if (this.me === null) {
       ok = await this.step("own identity", async () => {
@@ -1273,9 +1274,13 @@ export class EventLoop {
       atomicWrite(join(this.dir, `head-${pr.number}`), `${pr.sha}\n`);
       this.touchActivity(pr.number, pr.created);
     }
-    if (this.firstRun && !this.marked(`seeded-${pr.number}`)) {
+    if (
+      (this.firstRun && !this.marked(`seeded-${pr.number}`)) ||
+      !this.marked(`worker-prompts-seeded-${pr.number}`)
+    ) {
       await this.seedPrComments(pr);
       this.mark(`seeded-${pr.number}`);
+      this.mark(`worker-prompts-seeded-${pr.number}`);
     }
     const oldHead = this.readMarker(`head-${pr.number}`);
     if (oldHead !== pr.sha) {
@@ -1315,8 +1320,16 @@ export class EventLoop {
     ) {
       let unreachable: boolean;
       try {
-        const worker = await this.host.workerStatus(pr.number);
+        const worker = await this.readWorkerStatus(pr.number);
         unreachable = worker.reason === "session unknown";
+        const stop = this.workerStop(pr.number, worker);
+        if (
+          stop.state === "failed" &&
+          this.readMarker(`worker-stop-${pr.number}`) === this.stopKey(stop, worker.updated)
+        ) {
+          this.cycleStale.add(pr.number);
+          return;
+        }
         if (
           worker.active &&
           typeof worker.updated === "number" &&
@@ -1357,6 +1370,7 @@ export class EventLoop {
       this.touchActivity(pr.number, created);
       if (this.isSelf(comment)) {
         const first = str(comment.body).split(/\r?\n/)[0];
+        this.rememberWorkerPrompt(pr.number, first, created, str(comment.html_url));
         if (/^\[orchestrator\] (?:CHANGES|ANSWER|GO)\b/.test(first)) {
           if (created >= (this.readReview(pr.number)?.at ?? "")) {
             this.writeReview(pr.number, { at: created, id: str(comment.html_url) });
@@ -1499,6 +1513,8 @@ export class EventLoop {
       `activity-${number}`,
       `review-${number}`,
       `seeded-${number}`,
+      `worker-prompt-${number}`,
+      `worker-prompts-seeded-${number}`,
     ]) {
       remove(join(this.dir, name));
     }
@@ -1603,6 +1619,7 @@ export class EventLoop {
       // Only the watching orchestrator's own comments are skipped; matched by id.
       if (taskPr) {
         this.touchActivity(number, created);
+        this.rememberWorkerPrompt(number, firstLine, created, url);
         if (/^\[orchestrator\] (?:CHANGES|ANSWER|GO)\b/.test(firstLine)) {
           this.writeReview(number, { at: created, id: url });
         }
@@ -2361,6 +2378,52 @@ export class EventLoop {
 
   // ---------------------------------------------------------------- workers and budget
 
+  private async readWorkerStatus(number: number): Promise<WorkerSessionStatus> {
+    const cached = this.cycleWorkers.get(number);
+    if (cached) {
+      return cached;
+    }
+    const status = await this.host.workerStatus(number);
+    this.cycleWorkers.set(number, status);
+    return status;
+  }
+
+  private workerStop(number: number, status: WorkerSessionStatus): WorkerStatus {
+    if (status.reason === "provider-error" || status.reason === "quota") {
+      return { state: "failed", detail: status.error };
+    }
+    if (status.reason === "permission-wait") {
+      return { state: "permission" };
+    }
+    const prompt = object(safeJson(this.readMarker(`worker-prompt-${number}`)));
+    const review = this.readReview(number);
+    const at = str(prompt.at) || review?.at;
+    const activity = this.activityAt(number);
+    if (
+      status.reason === "idle without reply" ||
+      (status.reason === "idle" && at && activity && activity <= at)
+    ) {
+      return { state: "idle", detail: str(prompt.id) || review?.id };
+    }
+    return { state: "other" };
+  }
+
+  private stopKey(status: WorkerStatus, updated?: number): string {
+    return status.state === "other"
+      ? ""
+      : JSON.stringify([status.state, key(status.detail ?? ""), updated ?? null]);
+  }
+
+  private rememberWorkerPrompt(number: number, firstLine: string, at: string, id: string): void {
+    if (!firstLine.startsWith("[orchestrator] ")) {
+      return;
+    }
+    const previous = object(safeJson(this.readMarker(`worker-prompt-${number}`)));
+    if (at >= str(previous.at)) {
+      this.writeMarker(`worker-prompt-${number}`, JSON.stringify({ at, id }));
+    }
+  }
+
   private workerClient(): OpencodeClient | null {
     if (this.opencode) {
       return this.opencode;
@@ -2411,24 +2474,29 @@ export class EventLoop {
       if (!pr.branch) {
         continue;
       }
-      const dir = resolve(this.host.root, this.worktreeRoot, `auto-${pr.branch}`);
+      const dir = workerWorktree(this.host.root, this.host.config, pr.branch);
       if (!existsSync(dir)) {
         continue;
       }
       let status: WorkerStatus;
-      const client = this.workerClient();
-      if (!client) {
-        continue;
-      }
+      let updated: number | undefined;
       try {
-        status = await client.status(dir);
+        const recorded = await this.readWorkerStatus(pr.number);
+        status = this.workerStop(pr.number, recorded);
+        updated = recorded.updated;
+        if (recorded.reason === "session unknown") {
+          const client = this.workerClient();
+          if (!client) {
+            continue;
+          }
+          status = await client.status(dir);
+        }
       } catch (error) {
         failures.push(error as Error);
         continue;
       }
       const stopPath = join(this.dir, `worker-stop-${pr.number}`);
-      const stop =
-        status.state === "other" ? "" : JSON.stringify([status.state, status.detail ?? ""]);
+      const stop = this.stopKey(status, updated);
       const previous = this.readMarker(`worker-stop-${pr.number}`);
       if (stop === previous) {
         continue;
@@ -2459,6 +2527,13 @@ export class EventLoop {
             if: ["working", "silent", "idle", "permission"],
           });
         }
+      } else if (status.state === "idle") {
+        this.emit(
+          `w-${pr.number}@${this.host.deps.now()}`,
+          "worker",
+          `WORKER #${pr.number} (${pr.branch}): stopped without reply; send it a nudge ${url}`
+        );
+        this.queueProgress(pr.number, { state: "idle", if: ["working", "silent"] });
       }
       atomicWrite(stopPath, `${stop}\n`);
     }

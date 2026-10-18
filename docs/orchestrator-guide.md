@@ -151,6 +151,10 @@ watching continuously and re-arm the watch on every expiry, including quiet ones
 so changes to the methodology and your own cards always reach you. Follow
 [tooling budget rules](tooling-rules.md).
 
+A `button-merge` event (`PR #n MERGED by <owner>: run merge-task`) is an action
+item, not information: run `merge-task <n>`. The event repeats until merge follow-up
+is complete. The watcher itself never writes that follow-up.
+
 When several orchestrator sessions share one account, an item's author no longer
 identifies the session that owns it. Ask the owning session before acting rather
 than inferring ownership from the account. Sessions sharing an account **must have

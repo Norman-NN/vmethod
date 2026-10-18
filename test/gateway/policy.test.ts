@@ -26,6 +26,17 @@ test("workers cannot call orchestrator-only operations, even with a taskPr", asy
   fixture.done();
 }, 15000);
 
+test("missing worker command context names both environment variables before target networking", async () => {
+  const fixture = fixtureServer([]);
+  await expect(gatewayVerb(fixture.gateway, "post", ["3", "must-not-read"], {})).rejects.toThrow(
+    /own taskPr.*VMETHOD_ROLE.*VMETHOD_TASK_PR/
+  );
+  await expect(
+    fixture.gateway.call("read", { kind: "pr", ref: "3" }, undefined as unknown as CallContext)
+  ).rejects.toThrow(/denied for client role.*VMETHOD_ROLE.*VMETHOD_TASK_PR/);
+  fixture.done();
+}, 15000);
+
 test("worker posting requires its own taskPr before reading files or target networking", async () => {
   const fixture = fixtureServer([]);
   for (const taskPr of [undefined, 0, -1, 1.5, NaN, 4]) {

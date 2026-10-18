@@ -88,6 +88,7 @@ export function smoke() {
     if (!initOutput.includes("Owner: install templates/claude-settings.json")) {
       throw new Error("Init omitted owner permission instructions");
     }
+    writeFileSync(join(consumer, "CODEOWNERS"), "* @owner\n");
     mkdirSync(join(consumer, ".claude"), { recursive: true });
     copyFileSync(
       join(consumer, "node_modules/@vworlds/vmethod/templates/claude-settings.json"),

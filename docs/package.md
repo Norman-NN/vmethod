@@ -9,7 +9,7 @@ Run `npm ci` in every worktree, then `npm exec --no -- vmethod <verb>`; never us
 
 - `version`: published package version, bundled board version and running Node version.
 - `config get <dotted.key>`: YAML 1.2 config after validated environment overrides.
-- `check`: offline config, people, models, Mermaid pin, permissions and secret checks. Exit 0 means OK, 1 findings, 2 missing dependency (takes precedence). No GitHub identity resolution is attempted offline; numeric ids must already be owner-approved.
+- `check [--defer-permissions]`: offline config, people, models, Mermaid pin, permissions and secret checks. Exit 0 means no blocking findings, 1 findings, 2 missing dependency (takes precedence). No GitHub identity resolution is attempted offline; numeric ids must already be owner-approved. The switch is accepted only on a prerelease, including dev builds and later prereleases: absent `.claude/settings.json` prints `WARN permissions deferred (prerelease <version>): .claude/settings.json not installed` on every run instead of failing. Installed settings and all other findings are still validated. Stable versions reject the switch with exit 1. CODEOWNERS gaps for `vmethod.yaml`, `people.yaml` and `.claude/` warn without failing; the first existing `.github/CODEOWNERS`, root `CODEOWNERS` or `docs/CODEOWNERS` is used, with last matching entries taking precedence. See [adoption](adoption.md) for the owner-approved pilot path and review policy.
 - `init [--dry-run]`: write absent config files and registered compatibility stubs. Only stubs with an exact `# vmethod stub` line can be updated. Config files are never overwritten. Stubs use `VMETHOD_ROOT` first, then git repository discovery; set `VMETHOD_ROOT` for copied build contexts without `.git`. Permission installation remains the owner's responsibility: copy `templates/claude-settings.json` to `.claude/settings.json`.
 - `learnings submit|show|report`: authorized add-only fork submissions, latest advice/evidence with offline fallback, and model-log aggregates. See [shared learnings](learnings.md) for arguments, privacy and central/pending deduplication.
 
@@ -23,6 +23,24 @@ See [CI and integration commands](gateway.md#ci-and-integration-commands) for
 See [gateway commands](gateway.md#commands) for orchestrator-only `issue create`,
 `issue close` and `board set` housekeeping, and
 [task flow](gateway.md#task-flow-commands) for structured full/partial deliveries.
+
+## Worker worktree configuration
+
+Worker preparation, adoption, status and watching share the directory resolver in
+`src/gateway/worker-path.ts`. Configure these keys under `branches`:
+
+| Key              | Default              | Meaning                                                                                           |
+| ---------------- | -------------------- | ------------------------------------------------------------------------------------------------- |
+| `mainCheckout`   | Gateway project root | Base directory for relative worktree roots.                                                       |
+| `worktreeRoot`   | `.worktrees`         | Parent directory for task and orchestrator worktrees.                                             |
+| `worktreePrefix` | `"auto-"`            | Worker directory prefix; set `""` for unprefixed worker directories. Path separators are refused. |
+
+New worker worktrees use `<worktreeRoot>/<worktreePrefix><branch>`. Existing
+unprefixed `<worktreeRoot>/<branch>` directories remain a read-only lookup fallback
+when the prefixed directory is absent: lookup never renames or migrates them.
+Normal task preparation can reuse that existing worktree. Orchestrator worktrees
+such as `orchestrator-review` do not use this prefix. Status reads preserve the
+recorded session/directory binding rather than silently attaching it to a new tree.
 
 ## Environment mapping
 
@@ -48,7 +66,7 @@ Board-writing verbs honour `board.enabled: false`.
 
 Run format:check, lint, typecheck, test, build, smoke and knip. Tests and smoke create consumer projects under `os.tmpdir()`, outside the repo, so they cannot inherit its dependencies or config. They run offline and have explicit timeouts. Real Mermaid Markdown checks cover jsdom majors 24 and 27; the packed-tarball consumer installs jsdom 24 with peer validation enabled. Run `npm ci` first to populate npm's cache for the offline smoke install. Only Node is on PATH during CLI smoke checks.
 
-CI also runs `vmethod check` against this repo's config, allowing only the missing owner-installed `.claude/settings.json` finding. It skips cleanly if `vmethod.yaml` is absent.
+CI also runs `vmethod check --defer-permissions` against this repo's config, using the same explicit prerelease deferral as consumers, without filtering output or special-casing exit codes. It skips cleanly if `vmethod.yaml` is absent. Stable releases require removing the switch and owner-installed permissions.
 
 Every PR adds `changes/unreleased/<number>.md` with `kind: breaking`, `feature` or `fix`, a blank line and a description. The next release PR collects previously released fragments into `CHANGELOG.md` and removes them from `unreleased`.
 

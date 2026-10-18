@@ -5,6 +5,26 @@ import { configValue, getConfig, loadYaml } from "../src/config.js";
 import { validProject } from "./helpers.js";
 import { check } from "../src/check.js";
 
+test.each([undefined, "auto-", ""])(
+  "worker worktree prefix accepts %j and defaults to auto-",
+  (prefix) => {
+    const root = validProject();
+    const file = join(root, "vmethod.yaml");
+    if (prefix !== undefined) {
+      writeFileSync(
+        file,
+        readFileSync(file, "utf8").replace(
+          "branches:",
+          `branches:\n  worktreePrefix: ${JSON.stringify(prefix)}`
+        )
+      );
+    }
+    expect((getConfig(root, {}).branches as Record<string, unknown>).worktreePrefix).toBe(
+      prefix ?? "auto-"
+    );
+  }
+);
+
 test.each([undefined, "premium", "expensive", "standard", "cheap"])(
   "models require an explicit valid tier (%s)",
   (tier) => {

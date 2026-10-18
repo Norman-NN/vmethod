@@ -92,8 +92,9 @@ export class WatchFake {
   boardSnapshot: ObjectData[] | null = null;
   writeActor = { login: "me", id: 999, type: "User" };
   viewer = { login: "me", id: 999 };
-  staleWorker: WorkerSessionStatus | Error = { reason: "idle", active: false };
+  staleWorker: WorkerSessionStatus | Error = { reason: "session unknown", active: false };
   staleWorkerReads: number[] = [];
+  workerStatus?: (pr: number) => Promise<WorkerSessionStatus>;
   watchPeople = people;
   fields: ObjectData[] = structuredClone(recordedBoard.fields.nodes);
   enableWrites = false;
@@ -363,6 +364,11 @@ export class WatchFake {
             }
             const content = object(card.content);
             const suffix = match[3];
+            if (!suffix && match[1] === "pulls" && init?.method === "PATCH") {
+              expect(typeof body.body).toBe("string");
+              content.body = body.body;
+              return new Response(JSON.stringify({ number, node_id: content.id, body: body.body }));
+            }
             if (suffix === "comments" && init?.method === "POST") {
               const comment = {
                 user: this.writeActor,
@@ -451,11 +457,13 @@ export class WatchFake {
             response = this.comments["vworlds/vmethod"];
           } else if (
             route === "/repos/example/project/pulls/24" ||
+            route === "/repos/example/project/pulls/31" ||
             (this.enableWrites && /^\/repos\/example\/project\/pulls\/27$/.test(route))
           ) {
             response = this.pulls.length ? { mergeable: this.mergeable } : this.gone;
           } else if (
             route === "/repos/example/project/pulls/24/commits" ||
+            route === "/repos/example/project/pulls/31/commits" ||
             (this.enableWrites && route === "/repos/example/project/pulls/27/commits")
           ) {
             response = this.commits;
@@ -466,6 +474,7 @@ export class WatchFake {
             response = { check_runs: this.checks };
           } else if (
             route === "/repos/example/project/issues/24/comments" ||
+            route === "/repos/example/project/issues/31/comments" ||
             (this.enableWrites && route === "/repos/example/project/issues/27/comments")
           ) {
             response = this.history;
@@ -617,6 +626,9 @@ export class WatchFake {
         github: new GitHubClient(this.config, this.env, this.deps),
         workerStatus: async (pr) => {
           this.staleWorkerReads.push(pr);
+          if (this.workerStatus) {
+            return this.workerStatus(pr);
+          }
           if (this.staleWorker instanceof Error) {
             throw this.staleWorker;
           }

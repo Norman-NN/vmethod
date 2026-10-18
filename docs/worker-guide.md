@@ -21,6 +21,27 @@ One session owns the worktree: resume it rather than launching a second worker t
 Run `npm ci` in each worktree before using the pinned tools. Invoke the local bin
 through `npm exec --no -- vmethod`, never a downloading fallback.
 
+### Commands
+
+Every vmethod command needs this prefix outside a task worktree; a 'denied for client role' or 'own taskPr'
+error means the prefix is missing. Replace `<n>` with your assigned task PR number,
+not the issue number. `open-task` fills it in for you in the task prompt.
+
+In a linked task worktree, the CLI and generated `scripts/agent/*.sh` stubs infer
+worker context when neither environment variable is set. For example, you can run
+`scripts/agent/pr-comment.sh <n> .tmp/ack.md` without a prefix. Inference resolves
+the exact branch to one accepted open same-repository task PR; it never parses a
+branch number or grants orchestrator context. The result is cached under `.tmp/`,
+keyed by branch and head SHA. An explicit variable always wins and disables inference.
+If no unique task is found, the CLI reports that you must use the fallback prefix.
+
+```sh
+VMETHOD_ROLE=worker VMETHOD_TASK_PR=<n> npm exec --no -- vmethod read-pr <n>
+VMETHOD_ROLE=worker VMETHOD_TASK_PR=<n> npm exec --no -- vmethod pr-comment <n> .tmp/<file>.md
+VMETHOD_ROLE=worker VMETHOD_TASK_PR=<n> npm exec --no -- vmethod push
+VMETHOD_ROLE=worker VMETHOD_TASK_PR=<n> npm exec --no -- vmethod wait-checks <n>
+```
+
 Keep scratch code, prompts, failure logs and generated reports in ignored `.tmp/`.
 Never commit test reports, screenshots, coverage, logs, build output or other
 artefacts. Use a free non-default server port, stop only processes you started and

@@ -260,8 +260,9 @@ export class TaskFlow {
         : resolve(dirname(fileURLToPath(import.meta.url)), "../templates/task-pr.md"),
       "utf8"
     );
-    const body =
+    const renderBody = (taskPr: string): string =>
       template
+        .replaceAll("<task PR number>", taskPr)
         .replaceAll(
           "<delivery title>",
           `${title}${input.issue ? ` (${input.part ? "part of " : ""}issue #${input.issue})` : ""}`
@@ -317,6 +318,7 @@ export class TaskFlow {
         ? "\nAt each defined breakpoint post `[worker] HANDOFF` with what is done, uncommitted files and remaining mechanical steps, then end your turn.\n"
         : "") +
       `\n<!-- vmethod-task ${JSON.stringify({ issues: issue ? [Number(input.issue)] : [], ...(input.part ? { part: true } : {}) })} -->\n`;
+    const body = renderBody("<task PR number>");
     await checkMarkdown(this.root, body);
     guardClosingKeywords(body);
     if (input.unapproved && issue) {
@@ -351,6 +353,20 @@ export class TaskFlow {
     );
     const ref = String(created.number);
     this.number(ref);
+    // GitHub assigns the task PR number on creation, independently of the issue number.
+    const finalBody = renderBody(ref);
+    await checkMarkdown(this.root, finalBody);
+    guardClosingKeywords(finalBody);
+    try {
+      await this.host.github.rest(this.path(ref, "pulls"), "PATCH", { body: finalBody }, false);
+    } catch (error) {
+      throw new Error(
+        `Created draft PR #${ref}, but command rendering failed; inspect it before retrying open-task`,
+        {
+          cause: error,
+        }
+      );
+    }
     const pr = { id: created.node_id };
     if (this.config.track) {
       await this.host.github.rest(`${this.path(ref)}/labels`, "POST", {

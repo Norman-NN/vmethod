@@ -4,6 +4,8 @@ import type { SessionInput, WatchEvent } from "./events.js";
 import type { LearningInput } from "./learnings.js";
 
 export interface Operations {
+  /** Resolve one accepted open task PR with this exact same-repository head branch, or null. */
+  resolveTask: { input: { branch: string }; output: number | null };
   learnings: { input: LearningInput; output: string };
   learningCheck: { input: { ref: string; label?: boolean }; output: string };
   issueCreate: {

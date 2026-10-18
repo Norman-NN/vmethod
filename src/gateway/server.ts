@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { getConfig, loadYaml, type Config } from "../config.js";
+import { workerWorktree } from "./worker-path.js";
 import { GitHubClient, type Dependencies } from "./client.js";
 import { Digest } from "./digest.js";
 import {
@@ -31,6 +32,7 @@ import {
 import { tokenIdentity, tokenViewer } from "./identity.js";
 import { isOwnerApproved, isIssueOwnerApproved } from "./approval.js";
 import { TaskFlow } from "./task-flow.js";
+import { isTaskPrompt } from "./task-flow-types.js";
 import { GitTransport, taskBranch, validateBranch } from "./git.js";
 import { realpathSync } from "node:fs";
 import { matchesGlob, resolve } from "node:path";
@@ -99,12 +101,7 @@ class GatewayServer {
       metadata: (pr) => this.workerMetadata(pr),
       prepare: async (pr) => {
         const task = await this.task({ ref: String(pr) }, { role: "orchestrator" });
-        const branches = object(this.config.branches);
-        const directory = resolve(
-          String(branches.mainCheckout ?? this.root),
-          String(branches.worktreeRoot ?? ".worktrees"),
-          task.branch
-        );
+        const directory = workerWorktree(this.root, this.config, task.branch);
         // Keep dependency installation/dirty-tree guards in the existing preparation path.
         if (!existsSync(directory)) {
           await startTask(
@@ -192,15 +189,7 @@ class GatewayServer {
   workerAccess: Handlers["workerAccess"] = async ({ directory }, ctx) => {
     if (ctx.role === "worker") {
       const task = await this.task({ ref: String(ctx.taskPr) }, ctx);
-      const branches = object(this.config.branches);
-      if (
-        resolve(directory) !==
-        resolve(
-          String(branches.mainCheckout ?? this.root),
-          String(branches.worktreeRoot ?? ".worktrees"),
-          task.branch
-        )
-      ) {
+      if (resolve(directory) !== workerWorktree(this.root, this.config, task.branch)) {
         throw new Error("Worker access requires its own worktree");
       }
     }
@@ -1023,6 +1012,60 @@ class GatewayServer {
     return `Posted to ${target.link}`;
   };
 
+  resolveTask: Handlers["resolveTask"] = async ({ branch }) => {
+    validateBranch(branch);
+    const repo = String(this.config.repo);
+    const owner = repo.split("/")[0];
+    const listed = await this.github.rest(
+      `/repos/${repo}/pulls?state=open&head=${encodeURIComponent(`${owner}:${branch}`)}&per_page=100`
+    );
+    if (!Array.isArray(listed)) {
+      throw new Error("Missing pull request list");
+    }
+    // Do not guess between several results, even if only one would pass identity filtering.
+    if (listed.length !== 1) {
+      return null;
+    }
+    const candidate = object(listed[0]);
+    const head = object(candidate.head);
+    if (
+      candidate.state !== "open" ||
+      head.ref !== branch ||
+      String(object(head.repo).full_name).toLowerCase() !== repo.toLowerCase() ||
+      !Number.isSafeInteger(candidate.number) ||
+      Number(candidate.number) < 1
+    ) {
+      return null;
+    }
+    const ref = String(candidate.number);
+    const link = reference(ref, this.config).link;
+    if (!this.filter.accept({ author: restActor(candidate.user) }, owner, link)) {
+      return null;
+    }
+    const meta = await this.thread(ref, "pr");
+    if (!meta.person) {
+      return null;
+    }
+    const current = await this.node(
+      String(meta.item.id),
+      "body state headRefName headRepository { nameWithOwner }",
+      "PullRequest"
+    );
+    if (
+      !this.filter.accept(current, repoOf(current).owner, link) ||
+      current.state !== "OPEN" ||
+      current.headRefName !== branch ||
+      String(object(current.headRepository).nameWithOwner).toLowerCase() !== repo.toLowerCase()
+    ) {
+      return null;
+    }
+    const body = String(current.body ?? "");
+    if (!isTaskPrompt(body)) {
+      return null;
+    }
+    return Number(ref);
+  };
+
   task: Handlers["task"] = async ({ ref, fetch }) => {
     const { item, person } = await this.thread(ref, "pr");
     if (!person) {
@@ -1426,6 +1469,7 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
   const server = new GatewayServer(root, env, deps);
   const config = getConfig(root, env);
   const handlers: Handlers = {
+    resolveTask: server.resolveTask,
     learnings: server.learnings,
     learningCheck: server.learningCheck,
     issueCreate: server.issueCreate,
@@ -1493,6 +1537,7 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     read: ["worker", "orchestrator"],
     post: ["worker", "orchestrator"],
     push: ["worker", "orchestrator"],
+    resolveTask: ["worker", "orchestrator"],
     task: ["worker", "orchestrator"],
     waitReview: ["worker", "orchestrator"],
     ghRead: ["orchestrator"],
@@ -1516,7 +1561,9 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
       !Object.hasOwn(policy, operation) ||
       !(policy[operation] as readonly string[]).includes(ctx.role)
     ) {
-      throw new Error("Gateway operation denied for client role");
+      throw new Error(
+        "Gateway operation denied for client role; check VMETHOD_ROLE and VMETHOD_TASK_PR in the command prefix"
+      );
     }
     const ciLearningIdentity = await server.authenticate(ctx, operation);
     if (
@@ -1535,7 +1582,9 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
         target.number !== ctx.taskPr ||
         target.repo.toLowerCase() !== String(config.repo).toLowerCase()
       ) {
-        throw new Error("Worker may post only to its own taskPr in the configured repository");
+        throw new Error(
+          "Worker may post only to its own taskPr in the configured repository; use VMETHOD_ROLE=worker VMETHOD_TASK_PR=<assigned PR number> on every vmethod command"
+        );
       }
     }
   });
