@@ -1033,7 +1033,7 @@ export class TaskFlow {
         const local = this.git(main);
         if (
           (await local.run("rev-parse", "--abbrev-ref", "HEAD")).trim() !== base ||
-          (await local.run("status", "--porcelain")).trim()
+          (await local.run("status", "--porcelain", "--untracked-files=no")).trim()
         ) {
           throw new Error(
             "Main checkout must be clean and on baseBranch; retry follow-up after fixing it"

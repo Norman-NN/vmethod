@@ -482,7 +482,7 @@ function fixture() {
       if (args.join(" ") === "rev-parse --abbrev-ref HEAD") {
         return "dev";
       }
-      if (args.join(" ") === "status --porcelain") {
+      if (args.join(" ") === "status --porcelain --untracked-files=no") {
         return dirty ? " M package-lock.json" : "";
       }
       if (args.join(" ") === "rev-parse HEAD") {
