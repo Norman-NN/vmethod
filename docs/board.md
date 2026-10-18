@@ -27,6 +27,11 @@ its issue; see [protocol transitions](protocol.md). Use `board set` only for
 explicit housekeeping with validated Progress, not as a substitute for the
 [tracked owner-question commands](orchestrator-guide.md).
 
+`board status` lists cards whose open/closed state disagrees with Status. Use
+`board status --fix` to move closed cards to Done and open cards out of Done to
+Backlog, clearing stale Progress as it reconciles each card. Closing an issue also
+moves its card to Done and clears its assignee.
+
 ## Estimate belongs to the issue
 
 Every issue gets an Estimate **in Backlog**, before the owner takes work into Ready.

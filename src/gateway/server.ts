@@ -544,7 +544,8 @@ class GatewayServer {
     return (this.boardClient ??= new BoardService(this.config, this.github, this.deps));
   }
 
-  boardStatus: Handlers["boardStatus"] = async () => this.board.status();
+  boardStatus: Handlers["boardStatus"] = async ({ fix }) =>
+    fix ? this.board.fixStatus() : this.board.status();
   boardMigrate: Handlers["boardMigrate"] = async (input) => {
     if (
       (input.dryRun !== undefined && typeof input.dryRun !== "boolean") ||
@@ -652,11 +653,20 @@ class GatewayServer {
       await this.github.rest(`${path}/comments`, "POST", { body }, false);
     }
     const closed = object(
-      await this.github.rest(path, "PATCH", { state: "closed", state_reason: "completed" })
+      await this.github.rest(path, "PATCH", {
+        state: "closed",
+        state_reason: "completed",
+        assignees: [],
+      })
     );
     if (closed.state !== "closed") {
       throw new Error("Issue closure not confirmed");
     }
+    if (typeof closed.node_id !== "string") {
+      throw new Error("Closed issue response lacks node id");
+    }
+    await this.board.setIssueField(closed.node_id, "Status", "Done");
+    await this.board.setIssueField(closed.node_id, "Progress", null);
     return `Closed issue #${number}`;
   };
   boardArchive: Handlers["boardArchive"] = async ({ itemId }) => this.board.archive(itemId);

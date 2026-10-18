@@ -66,6 +66,13 @@ export interface BoardStatus {
   state: BoardState;
   pending: Migration[];
   drift: string[];
+  mismatches: {
+    itemId: string;
+    number: number;
+    closed: boolean;
+    status: string | null;
+    summary: string;
+  }[];
 }
 export interface MigrationResult extends BoardStatus {
   dryRun: boolean;
