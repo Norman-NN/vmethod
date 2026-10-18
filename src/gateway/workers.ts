@@ -939,7 +939,12 @@ export class WorkerService {
     };
     this.save(record);
     const amendment = meta.comments
-      .filter((c) => c.role === "orchestrator" && c.body.startsWith("[orchestrator]"))
+      .filter(
+        (c) =>
+          c.role === "orchestrator" &&
+          c.body.startsWith("[orchestrator]") &&
+          !c.body.startsWith("[relay]")
+      )
       .sort((a, b) => a.date.localeCompare(b.date))
       .at(-1);
     const prompt = unknown

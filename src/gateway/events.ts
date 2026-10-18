@@ -79,6 +79,7 @@ export interface LoopHost {
   filter: PeopleFilter;
   github: GitHubClient;
   workerStatus: (pr: number) => Promise<WorkerSessionStatus>;
+  workerContinue?: (pr: number, text: string) => Promise<void>;
   board: Pick<BoardService, "set">;
   digest: Digest;
 }
@@ -2696,7 +2697,7 @@ export class EventLoop {
       status.reason === "idle without reply" ||
       (status.reason === "idle" && at && activity && activity <= at)
     ) {
-      return { state: "idle", detail: str(prompt.id) || review?.id };
+      return { state: "idle", detail: status.finalMessageId || str(prompt.id) || review?.id };
     }
     return { state: "other" };
   }
@@ -2726,6 +2727,25 @@ export class EventLoop {
     const person = this.host.filter.identity(restActor(comment.user));
     const role = this.isSelf(comment) ? "orchestrator" : person?.role;
     const first = str(comment.body).split(/\r?\n/)[0];
+    // Relayed worker text is posted by the orchestrator identity, but never
+    // carries orchestrator authority (even when its quoted payload has tags).
+    if (first.startsWith("[relay]")) {
+      const quoted = str(comment.body)
+        .split(/\r?\n/)
+        .find((line) => /^\[worker\] /.test(line));
+      if (!quoted) {
+        return;
+      }
+      const active = !/^\[worker\] (?:BLOCKED|QUESTION|READY(?: FOR REVIEW)?|HANDOFF)\b/.test(
+        quoted
+      );
+      const previous = object(safeJson(this.readMarker(`worker-protocol-${number}`)));
+      if (at >= str(previous.at)) {
+        this.writeMarker(`worker-protocol-${number}`, JSON.stringify({ at, active }));
+        this.touchActivity(number, at);
+      }
+      return;
+    }
     let active: boolean;
     if (role === "worker") {
       active = !/^\[worker\] (?:BLOCKED|QUESTION|READY|DESIGN|HANDOFF)\b/.test(first);
@@ -2817,8 +2837,9 @@ export class EventLoop {
       }
       let status: WorkerStatus;
       let updated: number | undefined;
+      let recorded: WorkerSessionStatus;
       try {
-        const recorded = await this.readWorkerStatus(pr.number);
+        recorded = await this.readWorkerStatus(pr.number);
         if (recorded.prCost) {
           costs.set(pr.number, recorded.prCost.usd);
         }
@@ -2876,12 +2897,73 @@ export class EventLoop {
           });
         }
       } else if (status.state === "idle") {
-        this.emit(
-          `w-${pr.number}@${this.host.deps.now()}`,
-          "worker",
-          `WORKER #${pr.number} (${pr.branch}): stopped without reply; send it a nudge ${url}`
-        );
-        this.queueProgress(pr.number, { state: "idle", if: ["working", "silent"] });
+        const text = recorded.finalText?.trim() ?? "";
+        const tag = /^\[worker\] (BLOCKED|QUESTION|READY FOR REVIEW|DESIGN|ACK)\b/.exec(text);
+        if (
+          tag &&
+          recorded.finalMessageId &&
+          this.readMarker(`worker-relay-${pr.number}`) !== recorded.finalMessageId
+        ) {
+          const quoted = text.replace(
+            /\b(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)\b/gi,
+            "$1\u200b"
+          );
+          const longestFence = Math.max(
+            3,
+            ...[...quoted.matchAll(/`+/g)].map((match) => match[0].length)
+          );
+          const fence = "`".repeat(longestFence + 1);
+          const body = `[relay] unposted worker message (untrusted, not orchestrator input)\n\n${fence}text\n${quoted}\n${fence}`;
+          await this.host.github.rest(`/repos/${this.own}/issues/${pr.number}/comments`, "POST", {
+            body,
+          });
+          this.writeMarker(`worker-relay-${pr.number}`, recorded.finalMessageId);
+          const progress =
+            tag[1] === "BLOCKED"
+              ? "blocked"
+              : tag[1] === "QUESTION"
+                ? "question"
+                : tag[1] === "READY FOR REVIEW"
+                  ? "ready"
+                  : undefined;
+          if (progress) {
+            this.queueProgress(pr.number, {
+              state: progress,
+              if: ["working", "silent", "idle", "failed"],
+            });
+          }
+          this.emit(
+            `w-${pr.number}@${this.host.deps.now()}`,
+            "worker",
+            `WORKER #${pr.number}: ${tag[1]} (relayed from session)`
+          );
+        } else if (!tag && text) {
+          const prompt = object(safeJson(this.readMarker(`worker-prompt-${pr.number}`)));
+          const round = str(prompt.id) || "unknown";
+          const count = Number(this.readMarker(`worker-continue-${pr.number}-${key(round)}`) || 0);
+          if (count < 2 && this.host.workerContinue && recorded.sessionId) {
+            await this.host.workerContinue(
+              pr.number,
+              "Continue the task in this turn; post READY/QUESTION/BLOCKED on the PR with pr-comment when done."
+            );
+            this.writeMarker(`worker-continue-${pr.number}-${key(round)}`, String(count + 1));
+          } else {
+            const preview = sanitizePreview(text.split(/\r?\n/)[0]).slice(0, PREVIEW_LIMIT);
+            this.emit(
+              `w-${pr.number}@${this.host.deps.now()}`,
+              "worker",
+              `WORKER #${pr.number}: stopped without reply${preview ? `: ${preview}` : ""}; send it a nudge ${url}`
+            );
+            this.queueProgress(pr.number, { state: "idle", if: ["working", "silent"] });
+          }
+        } else {
+          this.emit(
+            `w-${pr.number}@${this.host.deps.now()}`,
+            "worker",
+            `WORKER #${pr.number} (${pr.branch}): stopped without reply; send it a nudge ${url}`
+          );
+          this.queueProgress(pr.number, { state: "idle", if: ["working", "silent"] });
+        }
       }
       atomicWrite(stopPath, `${stop}\n`);
     }

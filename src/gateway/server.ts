@@ -451,6 +451,7 @@ class GatewayServer {
           ),
           github: this.github,
           workerStatus: (pr) => this.workers.watchStatus(pr),
+          workerContinue: (pr, text) => this.workers.resume(pr, text),
           board: { set: (input) => this.board.set(input) },
           digest: this.digest,
         },
@@ -1267,6 +1268,7 @@ class GatewayServer {
             (comment) =>
               comment.role === "orchestrator" &&
               comment.body.startsWith("[orchestrator]") &&
+              !comment.body.startsWith("[relay]") &&
               comment.date > mine
           )
           .sort((a, b) => a.date.localeCompare(b.date));

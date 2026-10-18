@@ -618,6 +618,17 @@ export class OpencodeClient {
       throw new Error("Invalid opencode status response");
     }
     const latest = messages.map(object).find((m) => m.type === "idle");
+    const finalMessage = messages
+      .map(object)
+      .find((message) => message.role === "assistant" || message.type === "assistant");
+    const finalText = finalMessage
+      ? (Array.isArray(finalMessage.content) ? finalMessage.content : [])
+          .map(object)
+          .filter((part) => part.type === "text" && part.phase !== "commentary")
+          .map((part) => str(part.text))
+          .filter(Boolean)
+          .join("\n")
+      : "";
     if (!usage) {
       const measured = messages
         .map(object)
@@ -657,7 +668,18 @@ export class OpencodeClient {
     if (active[id]) {
       return { reason: "running", active: true, ...detail };
     }
-    return { ...classifyTurn(latest ?? session), ...detail };
+    return {
+      ...classifyTurn(latest ?? session),
+      ...detail,
+      ...(finalText
+        ? {
+            finalText,
+            finalMessageId:
+              str(finalMessage?.id) || str(finalMessage?.info && object(finalMessage.info).id),
+          }
+        : {}),
+      sessionId: id,
+    };
   }
 
   private redact(text: string): string {
@@ -695,6 +717,10 @@ export interface WorkerSessionStatus {
   inputTokens?: number;
   outputTokens?: number;
   updated?: number;
+  /** Last assistant final (non-commentary) output and its stable opencode identity. */
+  finalText?: string;
+  finalMessageId?: string;
+  sessionId?: string;
   permissions?: number;
   /** Cumulative provider usage for this session, never inferred from message text. */
   usage?: Usage;

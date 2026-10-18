@@ -60,6 +60,39 @@ test.each(["running", "permission", "failed"])(
   }
 );
 
+test("session status returns only the last assistant final text, excluding commentary parts", async () => {
+  const responses: unknown[] = [
+    { data: {} },
+    { data: { ...recordedOpencode.session.data, location: { directory: "/work" } } },
+    { data: [] },
+    {
+      data: [
+        {
+          id: "msg-final",
+          role: "assistant",
+          content: [
+            { type: "text", phase: "commentary", text: "internal commentary" },
+            { type: "text", text: "[worker] BLOCKED\nNeed help" },
+          ],
+        },
+        { id: "msg-old", role: "assistant", content: [{ type: "text", text: "[worker] ACK" }] },
+      ],
+    },
+  ];
+  const client = new OpencodeClient(
+    {
+      OPENCODE_BASE_URL: "http://opencode.invalid",
+      OPENCODE_SERVER_USERNAME: "u",
+      OPENCODE_SERVER_PASSWORD: "p",
+    },
+    async () => Response.json(responses.shift())
+  );
+  const status = await client.status("/work", "ses_recorded");
+  expect(status.finalText).toBe("[worker] BLOCKED\nNeed help");
+  expect(status.finalMessageId).toBe("msg-final");
+  expect(status.sessionId).toBe("ses_recorded");
+});
+
 test("opencode poll isolates a session's 400, reports it once per status, and continues polling", async () => {
   const requests: string[] = [],
     reports: string[] = [];
