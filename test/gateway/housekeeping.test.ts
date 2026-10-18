@@ -235,7 +235,11 @@ test.each([
   ["Estimate", "NaN", "finite numeric"],
   ["Estimate", "1e999", "finite numeric"],
   ["Status", "Missing option", "Unknown Status option"],
-  ["Progress", "text", "single-select or number"],
+  ["Progress", "text", "Invalid Progress"],
+  ["Progress", "👤❓ junk", "Invalid Progress"],
+  ["Progress", "👤❓ 🔁2", "Invalid Progress"],
+  ["Progress", "👤❓ 🔴 🔴", "Invalid Progress"],
+  ["Progress", "👤❓ 🔴 🔁2️⃣", "Invalid Progress"],
   ["Missing", "1", "single-select or number"],
 ])(
   "board set rejects %s=%s before mutation",
@@ -490,11 +494,11 @@ test("issue create with disabled board preserves standalone creation", async () 
   f.done();
 }, 15000);
 
-test.each(["Estimate", "Status"])(
+test.each(["Estimate", "Status", "Progress"])(
   "board set %s decodes recordings, writes exact values and records Status moves",
   async (field) => {
     const card = boardRecording.items.nodes[0];
-    const value = field === "Estimate" ? "2.5" : "Done";
+    const value = field === "Estimate" ? "2.5" : field === "Progress" ? "👤❓ 🔁2️⃣ 🔴" : "Done";
     const progressId = boardRecording.fields.nodes.find((f) => f.name === "Progress")!.id;
     const fieldId = boardRecording.fields.nodes.find((f) => f.name === field)!.id;
     const f = fixtureServer([
@@ -509,7 +513,12 @@ test.each(["Estimate", "Status"])(
             projectId: boardRecording.id,
             itemId: card.id,
             fieldId,
-            value: field === "Estimate" ? { number: 2.5 } : { singleSelectOptionId: "e807513c" },
+            value:
+              field === "Estimate"
+                ? { number: 2.5 }
+                : field === "Progress"
+                  ? { text: value }
+                  : { singleSelectOptionId: "e807513c" },
           };
           expect(variables).toEqual(
             field === "Status"

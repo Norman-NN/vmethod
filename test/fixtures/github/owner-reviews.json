@@ -1,0 +1,17 @@
+{
+  "repository": {
+    "pullRequest": {
+      "headRefOid": "65529924a3aa9732eedf7c6c00f86372a4493792",
+      "reviews": {
+        "nodes": [
+          {
+            "id": "PRR_kwDOVMIbYc8AAAABSuj3hA",
+            "state": "APPROVED",
+            "commit": { "oid": "65529924a3aa9732eedf7c6c00f86372a4493792" },
+            "author": { "__typename": "User", "login": "jpeletier", "databaseId": 11574521 }
+          }
+        ]
+      }
+    }
+  }
+}

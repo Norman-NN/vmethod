@@ -1,0 +1,23 @@
+{
+  "repository": {
+    "pullRequest": {
+      "headRefOid": "a985b9c61b3118df66a2bfb7ed36dbc213575a73",
+      "reviews": {
+        "nodes": [
+          {
+            "id": "PRR_kwDOVMIbYc8AAAABSuvRIQ",
+            "state": "COMMENTED",
+            "commit": { "oid": "19778382c8ffd8ec23df517422a13f157f26cf3d" },
+            "author": { "__typename": "User", "login": "VecsMaster", "databaseId": 238095565 }
+          },
+          {
+            "id": "PRR_kwDOVMIbYc8AAAABSuvfww",
+            "state": "COMMENTED",
+            "commit": { "oid": "19778382c8ffd8ec23df517422a13f157f26cf3d" },
+            "author": { "__typename": "User", "login": "spacerocks79", "databaseId": 340349740 }
+          }
+        ]
+      }
+    }
+  }
+}

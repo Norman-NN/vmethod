@@ -20,6 +20,7 @@ export interface Operations {
   workerAccess: { input: { directory: string }; output: string };
   openTask: { input: OpenTaskInput; output: string };
   reviewTask: { input: ReviewInput; output: string };
+  askIssue: { input: { ref: string; file: string }; output: string };
   mergeTask: { input: { ref: string; mergeCommit?: boolean }; output: string };
   releaseHold: { input: { ref: string }; output: string };
   workerStatus: { input: { ref: string }; output: "live" | "stopped" | "unknown" };

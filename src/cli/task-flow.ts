@@ -9,6 +9,12 @@ export async function taskFlowVerb(
   env: NodeJS.ProcessEnv
 ): Promise<string> {
   const ctx = context(env);
+  if (verb === "ask") {
+    if (args.length !== 2) {
+      throw new Error("Usage: ask <issue> <file>");
+    }
+    return transport.call("askIssue", { ref: args[0], file: args[1] }, ctx);
+  }
   if (verb === "open-task") {
     const input: OpenTaskInput = {};
     const values = {

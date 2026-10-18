@@ -339,7 +339,7 @@ export class WatchFake {
                 },
               };
         } else {
-          if (this.enableWrites && init?.method !== "GET") {
+          if ((this.enableWrites || route.endsWith("/assignees")) && init?.method !== "GET") {
             const body = object(JSON.parse(String(init?.body ?? "{}")));
             if (route === "/repos/example/project/pulls" && init?.method === "POST") {
               const card = this.card(27, "Backlog", "PullRequest");
@@ -690,7 +690,7 @@ export class WatchFake {
       id: `PVTI_${number}`,
       status: { ...recordedActions.status, name: status, updatedAt: this.iso() },
       estimate: { number: 3 },
-      progress: { text: "🤖🔨 🔁2️⃣" },
+      progress: { text: kind === "Issue" ? "" : "🤖🔨 🔁2️⃣" },
       content: {
         __typename: kind,
         number,

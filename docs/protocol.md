@@ -14,6 +14,7 @@ Use a machine-readable first line and keep the delivery conversation on its card
 | Worker       | `[worker] READY FOR REVIEW (round n)` | Green CI, evidence and handover               |
 | Orchestrator | `[orchestrator] REVIEW round n`       | Numbered review and requested changes         |
 | Orchestrator | `[orchestrator] OWNER REVIEW`         | Hand over try-out and decisions               |
+| Orchestrator | `[orchestrator] OWNER QUESTION`       | Ask the owner through tracked tooling         |
 | Orchestrator | `[orchestrator] ANSWER`               | Answer a worker question                      |
 | Orchestrator | `[orchestrator] AMENDMENT`            | Explicitly change the task prompt             |
 | Orchestrator | `[orchestrator] GO`                   | Release a hold                                |
@@ -21,6 +22,14 @@ Use a machine-readable first line and keep the delivery conversation on its card
 
 APPROVED from an orchestrator accepts worker work, but is not a forged
 owner approval. Only [verified identity and role](security.md) confer authority.
+
+The scripts keep assignee and Progress together: worker READY (`🤖👍`), QUESTION
+(`🤖❓`) and BLOCKED (`🤖🚫`) hand the turn to the orchestrator. OWNER REVIEW
+(`👤🔍`) and OWNER QUESTION (`👤❓`) hand it to the owner and mirror that wait on
+the linked issue. REVIEW and ANSWER return to working (`🤖🔨`), In progress,
+without management assignees. Owner replies and current-head reviews return to
+the orchestrator (`🧭🔍`); the issue's owner mirror clears. Orchestrator APPROVED
+leaves verification/merge follow-up with the orchestrator, not an unassigned review.
 
 Replies include a separate `in reply to <comment-url>` line after the first line.
 Answer every review point in the next round, including what changed, what did not

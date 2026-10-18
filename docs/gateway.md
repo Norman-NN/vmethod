@@ -150,8 +150,10 @@ Do not blindly retry a failed create: inspect the repository for a created issue
 
 `board set` accepts an issue number, not a project item ID. The issue must pass the
 people filter and already belong to the configured board. Choose a single-select
-option by its exact name or supply a finite numeric value; other field types are
-refused. Status writes clear Progress first; the gateway client journals the
+option by its exact name, supply a finite numeric value, or set the Progress text
+field to a known state emoji (including board README aliases), optionally followed
+by a keycap round and red-CI marker, for example `👤❓ 🔁2️⃣ 🔴`. Other text fields
+and unknown Progress values are refused. Status writes clear Progress first; the gateway client journals the
 successful mutations like other writes. No housekeeping command changes repository/board scope.
 The typed operations are `issueCreate({title, file, labels?, estimate?, status?})`,
 `issueClose({ref, comment?})` and `boardSetIssue({ref, field, value})` in
@@ -358,6 +360,11 @@ with an open, trusted task PR in the configured repository, using its task heade
 structured `vmethod-task` relation, not its branch name or an incidental issue mention.
 
 Worker READY, QUESTION, DESIGN, BLOCKED and HANDOFF wake and update Progress.
+The watcher synchronizes management assignees, mirrors owner waits on linked
+issues, and reports unassigned In review cards and Progress/assignee mismatches.
+Known states repair assignments from the same board poll; ambiguous states are
+reported for manual review. Owner replies and current-head owner reviews return
+the turn to the orchestrator. See the [protocol transition table](protocol.md).
 READY moves the task card to In review. HANDOFF uses 🤖🤝 (migration 0002), not the
 🔁 round marker; subsequent worker activity restores working. Other wake events
 include COMMENT, BOARD, NEXT, LAUNCH, ASSIGNED, OWNER DONE, STALE (30 minutes),
@@ -567,6 +574,10 @@ These commands require `VMETHOD_ROLE=orchestrator`:
   posts the protocol header and sets the next actor. Owner review always names the
   full current SHA and marks the draft ready. `approve` posts an orchestrator
   acceptance, **not** owner authority.
+- `ask <issue> <file>` posts `[orchestrator] OWNER QUESTION`, assigns the owner and
+  sets `👤❓`. It refuses issues with an open task PR: use `review <pr> ask` there.
+  The typed operation is `askIssue({ref, file})`. `review ask` uses the same heading;
+  `review answer` remains ANSWER for a worker. See [tracked owner questions](orchestrator-guide.md).
 - `merge-task <pr> [--merge-commit]` refuses live/unknown worker sessions before merging, stale
   approval, untrusted/red/missing CI, unknown/conflicting mergeability and a stale
   tested base. `merge.requireCurrentBase` defaults to true; false allows a
