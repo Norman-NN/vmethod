@@ -1997,8 +1997,11 @@ test("open held task, release, and worker start; second release has no side effe
       fetch: async (input, init) => {
         const url = new URL(String(input));
         expect(url.origin).toBe("https://opencode.invalid");
-        expect(init?.method).toBe("POST");
         requests.push(url.pathname);
+        if (url.pathname === "/api/session/ses_hold" && init?.method === "GET") {
+          return Response.json({ data: { id: "ses_hold", title: "project#27" } });
+        }
+        expect(init?.method).toBe("POST");
         if (url.pathname === "/api/session") {
           return Response.json({ data: { id: "ses_hold" } });
         }
@@ -2056,7 +2059,11 @@ test("open held task, release, and worker start; second release has no side effe
     before
   );
   await service.command(["start", "27"]);
-  expect(requests).toEqual(["/api/session", "/api/session/ses_hold/prompt"]);
+  expect(requests).toEqual([
+    "/api/session",
+    "/api/session/ses_hold/prompt",
+    "/api/session/ses_hold",
+  ]);
   f.done();
 });
 
