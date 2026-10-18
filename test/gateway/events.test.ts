@@ -462,6 +462,24 @@ test("existing worker poll writes Cost to the PR, deduplicates and clears unknow
   expect(f.reports).toEqual([]);
 });
 
+test("worker poll preserves lower-bound Cost text on the task PR", async () => {
+  const f = setup();
+  f.task();
+  f.worktree();
+  const taskPr = f.card(24, "In progress", "PullRequest");
+  f.cards.push(taskPr);
+  f.staleWorker = {
+    reason: "running",
+    active: true,
+    prCost: { pr: 24, usd: 1.256, lowerBound: true },
+  };
+  await f.once(f.loop());
+  expect(f.writes.filter((write) => write.field === "Cost")).toEqual([
+    { itemId: taskPr.id, field: "Cost", value: "≥ $1.26" },
+  ]);
+  expect(f.reports).toEqual([]);
+});
+
 test("idle after an unanswered amendment reports stopped without reply using observed comments", async () => {
   const f = setup();
   f.task();

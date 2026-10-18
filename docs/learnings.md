@@ -113,16 +113,30 @@ family advice; do not automate methodology changes or defaults from these metric
 
 Configure each family's API rates in `models.yaml`, in USD per million tokens:
 `price: { input: 2, output: 10, cached: 0.2 }` (illustrative, not recommended rates).
-These are the only three prices; subscription-backed work uses the same API-price
+You may also configure `tiers: [{ minPrompt: 272000, input: 4, output: 15, cached: 0.4 }]`
+alongside `price`, using OpenRouter's `pricing.overrides` (convert per-token USD to
+per-million rates). A tier applies to the **whole request**, not just its excess
+tokens, when input plus cache reads and writes **exceeds** `minPrompt`. At the
+threshold itself, base rates apply; with several tiers, the highest exceeded
+threshold wins. Thresholds must be unique positive integers; rates must be
+nonnegative and no lower than base rates, so totals-only estimates remain lower bounds.
+Subscription-backed work uses the same API-price
 calculation. `check` warns for missing prices. Never substitute a subscription's
 reported zero cost for the configured API price.
 
 Existing worker polling collects provider usage automatically; workers need no extra
-command or self-reported measurement. OpenCode uses cumulative session tokens,
-falling back to assistant-message totals when absent. Input includes cache writes,
+command or self-reported measurement. OpenCode prices each assistant message,
+paging history when necessary, then sums the results. Per-message costs are cached
+by id in worker state; subsequent polls price only new or changed usage. Input includes cache writes,
 output includes reasoning, and cached means cache reads. Model switches snapshot
 the cumulative baseline so each segment pays only its delta at its family's rate.
-Claude sums each turn's result-event usage, including cache creation in input.
+Claude prices each `assistant` event's `message.usage`, deduplicated by `message.id`,
+including cache creation in input. Result-event usage supplies cumulative token
+totals (or assistant totals when no result exists), never request tier selection.
+When only totals or partial history remain, unmeasured tokens use base rates and
+the board/status/GRADE cost is marked `≥ $0.00`. The model log carries
+`costCoverage: "partial"`; missing usage remains unknown. Polling, grading and
+backfill share the request-pricing function in `src/cost.ts`.
 Provider cost is retained only as `segments[].reportedUsd`. Claude's reported cost
 is cumulative over resumed turns: keep its latest value per session, never sum
 those repeated cumulative values. Its `modelUsage` totals are not per-turn usage.

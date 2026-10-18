@@ -25,6 +25,7 @@ interface Request {
   body?: unknown;
   data?: unknown;
   status?: number;
+  cursor?: { previous: string };
 }
 function fixture(requests: Request[] = [], priced = false) {
   const root = validProject();
@@ -42,7 +43,12 @@ function fixture(requests: Request[] = [], priced = false) {
         gate: "none",
         tier: "cheap",
         fallback: ["sol"],
-        ...(priced ? { price: { input: 2, output: 10, cached: 0.2 } } : {}),
+        ...(priced
+          ? {
+              price: { input: 2, output: 10, cached: 0.2 },
+              tiers: [{ minPrompt: 272000, input: 4, output: 15, cached: 0.4 }],
+            }
+          : {}),
       },
       {
         family: "sol",
@@ -112,9 +118,15 @@ function fixture(requests: Request[] = [], priced = false) {
       if (expected.body !== undefined) {
         expect(JSON.parse(String(init?.body))).toEqual(expected.body);
       }
-      return new Response(JSON.stringify({ data: expected.data ?? {} }), {
-        status: expected.status ?? 200,
-      });
+      return new Response(
+        JSON.stringify({
+          data: expected.data ?? {},
+          ...(expected.cursor ? { cursor: expected.cursor } : {}),
+        }),
+        {
+          status: expected.status ?? 200,
+        }
+      );
     },
     exec: async () => {
       throw new Error("Unexpected subprocess");
@@ -191,8 +203,14 @@ function measuredStatus(multiplier = 1): Request[] {
 
 test("missing session totals fall back to complete assistant history, excluding user words", async () => {
   const requests = status(false, [
-    ...messageCapture.data,
-    ...messageCapture.data,
+    // Two requests projected from the recording, with fixture-local ids/model.
+    ...["first", "second"].flatMap((id) =>
+      messageCapture.data.map((message) => ({
+        ...message,
+        id,
+        model: { providerID: "fake", id: "glm" },
+      }))
+    ),
     { type: "user", tokens: { input: 999999 }, content: "Cost is zero" },
   ]);
   const f = fixture([...start, ...requests], true);
@@ -224,6 +242,105 @@ test("Claude polling and grading retain both resumed turns without double counti
     tokens: { input: 24357, output: 6, cached: 26201 },
     reportedUsd: expect.closeTo(0.1027202, 8),
   });
+  f.done();
+});
+
+test("watcher pages request history once, caches ids across polls and grade uses the same prices", async () => {
+  // Recorded OpenCode message shape with derived usage/model/id for the boundaries.
+  const message = (id: string, input: number) => ({
+    ...messageCapture.data[0],
+    id,
+    model: { providerID: "fake", id: "glm" },
+    tokens: { input, output: 1000, reasoning: 0, cache: { read: 0, write: 0 } },
+  });
+  const older = message("old", 30000);
+  const newer = message("new", 300000);
+  const poll = () =>
+    measuredStatus().map((request) =>
+      request.path === "/api/session/ses_fake"
+        ? {
+            ...request,
+            data: {
+              ...captured.data,
+              id: "ses_fake",
+              tokens: { input: 330000, output: 2000, reasoning: 0, cache: { read: 0, write: 0 } },
+            },
+          }
+        : request.path.endsWith("?limit=20")
+          ? { ...request, data: [newer], cursor: { previous: "older" } }
+          : request
+    );
+  const f = fixture(
+    [
+      ...start,
+      ...poll(),
+      { path: "/api/session/ses_fake/message?limit=200&cursor=older", data: [older] },
+      ...poll(),
+      ...poll(),
+    ],
+    true
+  );
+  await f.service.command(["start", "31"]);
+  expect((await f.service.watchStatus(31)).prCost).toEqual({
+    pr: 31,
+    usd: expect.closeTo(1.285, 8),
+  });
+  expect(Object.keys(f.record().segments[0].requests)).toEqual(["new", "old"]);
+  expect((await f.service.watchStatus(31)).prCost?.usd).toBeCloseTo(1.285, 8);
+  f.meta.state = "CLOSED";
+  await f.service.grade(31, 3);
+  expect(f.hooks.setCost).toHaveBeenCalledWith(31, "$1.29");
+  expect(
+    JSON.parse(readFileSync(join(f.root, ".vmethod/model-log.jsonl"), "utf8")).usd
+  ).toBeCloseTo(1.285, 8);
+  f.done();
+});
+
+test("missing totals require complete paged history on each poll, with overlapping ids counted once", async () => {
+  const first = {
+    ...messageCapture.data[0],
+    id: "first",
+    model: { providerID: "fake", id: "glm" },
+  };
+  const second = { ...first, id: "second" };
+  const poll: Request[] = [
+    ...status(false, [second]).map((request) =>
+      request.path.endsWith("/message") ? { ...request, cursor: { previous: "older" } } : request
+    ),
+    { path: "/api/session/ses_fake/message?limit=200&cursor=older", data: [first, second] },
+  ];
+  const f = fixture([...start, ...poll, ...poll], true);
+  await f.service.command(["start", "31"]);
+  for (let i = 0; i < 2; i++) {
+    const result = await f.service.watchStatus(31);
+    expect(result.usage?.tokens).toEqual({ input: 1444, output: 130, cached: 167424 });
+    expect(result.prCost).toEqual({ pr: 31, usd: expect.closeTo(0.0376728, 8) });
+  }
+  f.done();
+});
+
+test("Claude polling and grade deduplicate assistant message ids, ignoring aggregate result request sizes", async () => {
+  const f = fixture([], true);
+  f.meta.model = "sonnet";
+  await f.service.command(["start", "31"]);
+  vi.mocked(f.deps.processes!.alive).mockReturnValue(false);
+  // Recorded vecs usage, projected to the assistant envelope specified in issue 132.
+  const events = claudeResults.map((result, i) => ({
+    type: "assistant",
+    message: { id: `msg-${i}`, usage: result.usage },
+  }));
+  writeFileSync(
+    join(f.directory, ".tmp/claude-worker.log"),
+    [...events, ...events, ...claudeResults].map((event) => JSON.stringify(event)).join("\n") + "\n"
+  );
+  expect((await f.service.watchStatus(31)).prCost).toEqual({
+    pr: 31,
+    usd: expect.closeTo(0.0810213, 8),
+  });
+  f.meta.state = "CLOSED";
+  await f.service.grade(31, 3);
+  expect(f.hooks.setCost).toHaveBeenCalledWith(31, "$0.08");
+  expect(Object.keys(f.record().segments[0].requests)).toHaveLength(2);
   f.done();
 });
 
@@ -264,11 +381,12 @@ test("status persists provider tokens and API dollars, grading uses only this PR
   expect((await f.service.watchStatus(31)).prCost).toEqual({
     pr: 31,
     usd: expect.closeTo(2.3876792, 8),
+    lowerBound: true,
   });
   f.meta.state = "MERGED";
   f.meta.merged = true;
   await f.service.grade(31, 5);
-  expect(f.hooks.setCost).toHaveBeenCalledWith(31, "$2.39");
+  expect(f.hooks.setCost).toHaveBeenCalledWith(31, "≥ $2.39");
   expect(f.hooks.gradeComment).toHaveBeenCalledWith(9, expect.stringContaining("$2.387679"));
   const record = JSON.parse(readFileSync(join(f.root, ".vmethod/model-log.jsonl"), "utf8"));
   expect(record.usd).toBeCloseTo(2.3876792, 8);
@@ -282,7 +400,7 @@ test("watch poll computes PR cost without GitHub reads and unknown price propaga
   await f.service.command(["start", "31"]);
   vi.mocked(f.hooks.metadata).mockClear();
   const result = await f.service.watchStatus(31);
-  expect(result.prCost).toEqual({ pr: 31, usd: null });
+  expect(result.prCost).toEqual({ pr: 31, usd: null, lowerBound: true });
   expect(f.record().segments[0].usd).toBeNull();
   expect(f.hooks.metadata).not.toHaveBeenCalled();
   expect(f.hooks.setCost).not.toHaveBeenCalled();
@@ -314,6 +432,55 @@ test("model switch snapshots cumulative baseline and grades each family's delta"
     expect.closeTo(2.3876792, 8),
   ]);
   expect(record.usd).toBeCloseTo(3.5815188, 8);
+  f.done();
+});
+
+test("per-request caches stay with their model segment across a switch", async () => {
+  const first = {
+    ...messageCapture.data[0],
+    id: "first",
+    model: { providerID: "fake", id: "glm" },
+    tokens: { input: 300000, output: 1000, reasoning: 0, cache: { read: 0, write: 0 } },
+  };
+  const second = {
+    ...first,
+    id: "second",
+    model: { providerID: "fake", id: "sol" },
+    tokens: { ...first.tokens, input: 30000 },
+  };
+  const poll = (messages: (typeof first)[], input: number, output: number) =>
+    measuredStatus().map((request) =>
+      request.path === "/api/session/ses_fake"
+        ? {
+            ...request,
+            data: { ...captured.data, id: "ses_fake", tokens: { ...first.tokens, input, output } },
+          }
+        : request.path.endsWith("?limit=20")
+          ? { ...request, data: messages }
+          : request
+    );
+  const f = fixture(
+    [
+      ...start,
+      ...poll([first], 300000, 1000),
+      {
+        path: "/api/session/ses_fake/model",
+        method: "POST",
+        body: { model: { providerID: "fake", id: "sol" } },
+      },
+      { path: "/api/session/ses_fake", method: "PATCH", body: { title: "project#31" } },
+      ...poll([second, first], 330000, 2000),
+    ],
+    true
+  );
+  await f.service.command(["start", "31"]);
+  await f.service.command(["model", "31", "sol", "--owner-approved"]);
+  f.meta.state = "CLOSED";
+  await f.service.grade(31, 3);
+  expect(f.record().segments.map((segment: { usd: number }) => segment.usd)).toEqual([
+    expect.closeTo(1.215, 8),
+    expect.closeTo(0.14, 8),
+  ]);
   f.done();
 });
 

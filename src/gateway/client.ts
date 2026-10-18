@@ -1,5 +1,12 @@
 import { resolve } from "node:path";
-import { addTokens, opencodeUsage, zeroTokens, type Usage } from "../cost.js";
+import {
+  addTokens,
+  opencodeUsage,
+  opencodeRequests,
+  zeroTokens,
+  type Usage,
+  type CostRequest,
+} from "../cost.js";
 import type { Config } from "../config.js";
 import type { ProcessRuntime } from "./claude.js";
 import type { WorkerFilesystem } from "./access.js";
@@ -523,15 +530,21 @@ export class OpencodeClient {
   }
 
   async status(directory: string): Promise<WorkerStatus>;
-  async status(directory: string, id: string, deadline?: number): Promise<WorkerSessionStatus>;
+  async status(
+    directory: string,
+    id: string,
+    deadline?: number,
+    known?: readonly string[]
+  ): Promise<WorkerSessionStatus>;
   async status(
     directory: string,
     id?: string,
-    deadline?: number
+    deadline?: number,
+    known?: readonly string[]
   ): Promise<WorkerStatus | WorkerSessionStatus> {
     return id === undefined
       ? this.watchStatus(directory)
-      : this.sessionStatus(directory, id, deadline);
+      : this.sessionStatus(directory, id, deadline, known);
   }
 
   /** Read the recorded session envelope for cost recovery; a missing session is unknown. */
@@ -653,7 +666,8 @@ export class OpencodeClient {
   private async sessionStatus(
     directory: string,
     id: string,
-    deadline?: number
+    deadline?: number,
+    known: readonly string[] = []
   ): Promise<WorkerSessionStatus> {
     const active = object(
       opencodeData(await this.request("GET", "/api/session/active", undefined, deadline))
@@ -689,20 +703,56 @@ export class OpencodeClient {
       )
     );
     let usage = opencodeUsage(session);
-    const messages = opencodeData(
-      await this.request(
-        "GET",
-        `/api/session/${encodeURIComponent(id)}/message${usage ? "?limit=20" : ""}`,
-        undefined,
-        deadline
-      )
+    const messageEnvelope = await this.request(
+      "GET",
+      `/api/session/${encodeURIComponent(id)}/message${usage ? "?limit=20" : ""}`,
+      undefined,
+      deadline
     );
+    const messages = opencodeData(messageEnvelope);
     if (!Array.isArray(permissions) || !Array.isArray(messages)) {
       throw new Error("Invalid opencode status response");
     }
-    const latest = messages.map(object).find((m) => m.type === "idle");
+    const seen = new Set(known);
+    let pageMessages = messages;
+    let cursor = object(object(messageEnvelope).cursor).previous;
+    for (let page = 0; typeof cursor === "string" && cursor; page++) {
+      if (usage && pageMessages.some((message) => seen.has(String(object(message).id)))) {
+        break;
+      }
+      if (page === 99) {
+        throw new Error("OpenCode cost history exceeds pagination limit");
+      }
+      const query = new URLSearchParams({ limit: "200", cursor });
+      const envelope = await this.request(
+        "GET",
+        `/api/session/${encodeURIComponent(id)}/message?${query}`,
+        undefined,
+        deadline
+      );
+      const next = opencodeData(envelope);
+      if (!Array.isArray(next)) {
+        throw new Error("Invalid opencode cost message response");
+      }
+      messages.push(...next);
+      const previous = object(object(envelope).cursor).previous;
+      if (!next.length || previous === cursor) {
+        break;
+      }
+      pageMessages = next;
+      cursor = previous;
+    }
+    const uniqueMessages = [
+      ...new Map(
+        messages.map((message) => [
+          typeof object(message).id === "string" ? object(message).id : JSON.stringify(message),
+          message,
+        ])
+      ).values(),
+    ];
+    const latest = uniqueMessages.map(object).find((m) => m.type === "idle");
     if (!usage) {
-      const measured = messages
+      const measured = uniqueMessages
         .map(object)
         .filter((m) => m.type === "assistant")
         .map((message) => opencodeUsage(message))
@@ -717,6 +767,7 @@ export class OpencodeClient {
       }
     }
     const detail = {
+      requests: opencodeRequests(uniqueMessages),
       ...(usage ? { usage } : {}),
       title: typeof session.title === "string" ? session.title : undefined,
       directory,
@@ -781,8 +832,10 @@ export interface WorkerSessionStatus {
   permissions?: number;
   /** Cumulative provider usage for this session, never inferred from message text. */
   usage?: Usage;
+  /** Per-request usage from assistant messages, separate from cumulative totals. */
+  requests?: CostRequest[];
   /** This task PR's own segments, for the existing board poll; never an issue rollup. */
-  prCost?: { pr: number; usd: number | null };
+  prCost?: { pr: number; usd: number | null; lowerBound?: boolean };
 }
 
 export function classifyTurn(turn: ObjectData): WorkerSessionStatus {

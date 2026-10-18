@@ -2852,7 +2852,7 @@ export class EventLoop {
     if (this.cycle % WORKER_EVERY !== 1) {
       return;
     }
-    const costs = new Map<number, number | null>();
+    const costs = new Map<number, { usd: number | null; lowerBound?: boolean }>();
     for (const pr of this.inprogress) {
       if (this.muted(this.own, pr.number)) {
         continue;
@@ -2888,7 +2888,7 @@ export class EventLoop {
       try {
         recorded = await this.readWorkerStatus(pr.number);
         if (recorded.prCost) {
-          costs.set(pr.number, recorded.prCost.usd);
+          costs.set(pr.number, recorded.prCost);
         }
         status = this.workerStop(pr.number, recorded);
         updated = recorded.updated;
@@ -2967,9 +2967,9 @@ export class EventLoop {
       }
       atomicWrite(stopPath, `${stop}\n`);
     }
-    for (const [pr, usd] of costs) {
+    for (const [pr, cost] of costs) {
       const id = this.prCostCards.get(pr);
-      const text = boardCost(usd);
+      const text = boardCost(cost.usd, cost.lowerBound);
       const value = JSON.stringify({ id, text });
       if (id && this.readMarker(`cost-${pr}`) !== value) {
         await this.host.board.set({
