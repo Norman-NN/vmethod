@@ -345,7 +345,7 @@ export class EventLoop {
   private workerPollErrors = new Map<number, Set<string>>();
   private reportedFailures = new Map<
     string,
-    { message: string; since: number; reminded: number }
+    { message: string; since: number; reminded: number; step: string }
   >();
   private reading = false;
   private budgetDeferred = false;
@@ -1125,7 +1125,7 @@ export class EventLoop {
     try {
       await run();
       for (const [signature, failure] of this.reportedFailures) {
-        if (signature.startsWith(`${name}:`)) {
+        if (failure.step === name) {
           this.host.deps.report(
             `watcher: ${name} recovered after failing since ${new Date(failure.since).toISOString()}`
           );
@@ -1139,17 +1139,24 @@ export class EventLoop {
         return false;
       }
       const message = (error as Error).message;
-      const signature = `${name}:${message}`;
+      const signature = message;
       const previous = this.reportedFailures.get(signature);
       const now = this.host.deps.now();
       if (!previous) {
-        this.reportedFailures.set(signature, { message, since: now, reminded: now });
+        this.reportedFailures.set(signature, {
+          message,
+          since: now,
+          reminded: now,
+          step: name,
+        });
         this.host.deps.report(`watcher: ${name} failed: ${message}`);
-      } else if (now - previous.reminded >= 60 * 60_000) {
-        previous.reminded = now;
-        this.host.deps.report(
-          `watcher: still failing since ${new Date(previous.since).toISOString()}: ${message}`
-        );
+      } else {
+        if (now - previous.reminded >= 60 * 60_000) {
+          previous.reminded = now;
+          this.host.deps.report(
+            `watcher: still failing since ${new Date(previous.since).toISOString()}: ${message}`
+          );
+        }
       }
       if (error instanceof GraphQLResponseError) {
         this.produceOnce(

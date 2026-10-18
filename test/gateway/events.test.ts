@@ -18,6 +18,7 @@ import {
   resolveSession,
   procStart,
   sanitizePreview,
+  type WatchEvent,
 } from "../../src/gateway/events.js";
 import { object } from "../../src/gateway/people.js";
 import { WatchFake, proc, user } from "./watch-fake.js";
@@ -525,6 +526,27 @@ test.each([false, true])(
   }
 );
 
+test("a same-session merge with completed follow-up is not deferred", async () => {
+  const f = setup();
+  f.task();
+  const loop = f.loop();
+  await f.tick(loop);
+  f.advance();
+  f.pulls = [];
+  f.gone = {
+    merged: true,
+    merged_at: f.iso(),
+    user: user(),
+    merged_by: { login: "me", id: 999, type: "User" },
+  };
+  writeFileSync(join(f.dir, "merge-24.json"), JSON.stringify({ done: ["follow-up"] }));
+
+  const events = await f.tick(loop);
+  expect(events).toHaveLength(1);
+  expect(events[0].kind).toBe("button-merge");
+  expect(events[0].line).toContain("follow-up complete");
+});
+
 test("an owner merge whose follow-up already completed before polling is not new work", async () => {
   const f = setup();
   f.task();
@@ -974,6 +996,56 @@ test("QUERY ERROR wakes immediately and transport errors report three failures",
   const failed = await loop.nextEvents({ timeoutSeconds: 300 });
   expect(failed.events.some((e) => e.kind === "watcher-error")).toBe(true);
   expect(f.sleeps.some((ms) => ms >= 20_000)).toBe(true);
+});
+
+test("repeated step failures are deduplicated, reminded hourly, and reported recovered", async () => {
+  const f = setup();
+  const loop = f.loop();
+  await f.once(loop);
+  f.fail = true;
+  await f.once(loop);
+  const failureLines = () =>
+    f.reports.filter((line) => line.startsWith("watcher: pull requests failed:"));
+  expect(failureLines()).toHaveLength(1);
+
+  await f.once(loop);
+  expect(failureLines()).toHaveLength(1);
+  f.advance(60 * 60_000);
+  await f.once(loop);
+  expect(
+    f.reports.filter(
+      (line) =>
+        line.includes("still failing since") && line.includes("GitHub network request failed")
+    )
+  ).toHaveLength(1);
+
+  f.fail = false;
+  await f.once(loop);
+  expect(
+    f.reports.filter((line) =>
+      line.startsWith("watcher: pull requests recovered after failing since")
+    )
+  ).toHaveLength(1);
+  f.fail = true;
+  await f.once(loop);
+  expect(failureLines()).toHaveLength(2);
+});
+
+test("a locked worker is skipped without an event or worker poll error", async () => {
+  const f = setup();
+  f.task();
+  f.worktree();
+  f.staleWorker = new Error("Worker #24 is locked; another operation is active");
+  const loop = f.loop();
+  let events: WatchEvent[] = [];
+  for (let i = 0; i < 6; i++) {
+    events = await f.once(loop);
+  }
+  expect(events).toEqual([]);
+  expect(f.reports.some((line) => line.includes("Worker #24 is locked"))).toBe(false);
+  expect(
+    (loop as unknown as { workerPollErrors: Map<number, Set<string>> }).workerPollErrors.has(24)
+  ).toBe(false);
 });
 
 test("number-scoped watchers observe shared merge completion without consuming it", async () => {
