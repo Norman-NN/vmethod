@@ -96,7 +96,7 @@ export class WatchFake {
   viewer = { login: "me", id: 999 };
   staleWorker: WorkerSessionStatus | Error = { reason: "session unknown", active: false };
   staleWorkerReads: number[] = [];
-  workerContinues: { pr: number; text: string }[] = [];
+  workerSends: { pr: number; text: string }[] = [];
   workerStatus?: (pr: number) => Promise<WorkerSessionStatus>;
   watchPeople = people;
   fields: ObjectData[] = structuredClone(recordedBoard.fields.nodes);
@@ -647,8 +647,8 @@ export class WatchFake {
           }
           return this.staleWorker;
         },
-        workerContinue: async (pr, text) => {
-          this.workerContinues.push({ pr, text });
+        workerSend: async (pr, text) => {
+          this.workerSends.push({ pr, text });
         },
         board: {
           set: async (input) => {

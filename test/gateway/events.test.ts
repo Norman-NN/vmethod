@@ -316,10 +316,10 @@ test("relays a tagged final worker reply once and applies its Progress", async (
     f.comments["example/project"].filter((comment) => String(comment.body).startsWith("[relay]"))
       .length
   ).toBe(1);
-  expect(f.workerContinues).toHaveLength(0);
+  expect(f.workerSends).toHaveLength(0);
 });
 
-test("an untagged final message auto-continues three times before reporting", async () => {
+test("an untagged final message gets two check-ins then reports on the third stop", async () => {
   const f = setup();
   f.task();
   f.worktree();
@@ -338,11 +338,88 @@ test("an untagged final message auto-continues three times before reporting", as
       events.push(...(await f.once(loop)));
     }
   }
-  expect(f.workerContinues).toHaveLength(2);
+  expect(f.workerSends).toHaveLength(2);
+  expect(f.workerSends[0].text).toBe(
+    "[orchestrator] CHECK-IN: your turn ended without a status on the PR. Are you done?\n- If yes: run `vmethod wait-checks 24` once and post READY with your evidence.\n- If no: finish only the unfinished steps of this task's acceptance criteria, add no new scope, then post READY.\n- If you are unsure, stuck or need a decision: post QUESTION or BLOCKED on the PR, and stop."
+  );
   expect(events.filter((event) => event.line.includes("stopped without reply"))).toHaveLength(1);
   expect(events.find((event) => event.line.includes("stopped without reply"))?.line).toContain(
     "Progress summary, not finished."
   );
+});
+
+test("a new orchestrator review prompt resets the check-in count", async () => {
+  const f = setup();
+  f.task();
+  f.worktree();
+  const loop = f.loop();
+  for (let turn = 1; turn <= 2; turn++) {
+    f.staleWorker = {
+      reason: "idle without reply",
+      active: false,
+      updated: f.clock + turn,
+      sessionId: "ses_test",
+      finalMessageId: `round1-${turn}`,
+      finalText: "Progress continues.",
+    };
+    for (let i = 0; i < 7; i++) {
+      await f.once(loop);
+    }
+  }
+  expect(f.workerSends).toHaveLength(2);
+  f.advance();
+  const prompt = f.comment("[orchestrator] REVIEW round 2", 2);
+  prompt.user = f.writeActor;
+  f.staleWorker = { reason: "running", active: true, updated: f.clock };
+  for (let i = 0; i < 7; i++) {
+    await f.once(loop);
+  }
+  f.staleWorker = {
+    reason: "idle without reply",
+    active: false,
+    updated: f.clock + 1,
+    sessionId: "ses_test",
+    finalMessageId: "round2-1",
+    finalText: "Another progress note.",
+  };
+  const events = [];
+  for (let i = 0; i < 7; i++) {
+    events.push(...(await f.once(loop)));
+  }
+  expect(f.workerSends).toHaveLength(3);
+  expect(events.some((event) => event.line.includes("stopped without reply"))).toBe(false);
+});
+
+test.each([
+  ["I cannot proceed without a decision.", "BLOCKED"],
+  ["Is this the right scope?", "QUESTION"],
+])("a final summary with a %s signal relays instead of checking in", async (summary, tag) => {
+  const f = setup();
+  f.task();
+  f.worktree();
+  f.enableWrites = true;
+  f.staleWorker = {
+    reason: "idle without reply",
+    active: false,
+    updated: f.clock,
+    sessionId: "ses_test",
+    finalMessageId: `msg-${tag}`,
+    finalText: summary,
+  };
+  const loop = f.loop();
+  const events = [];
+  for (let i = 0; i < 7; i++) {
+    events.push(...(await f.once(loop)));
+  }
+  expect(f.workerSends).toHaveLength(0);
+  expect(events.some((event) => event.line === `WORKER #24: ${tag} (relayed from session)`)).toBe(
+    true
+  );
+  expect(
+    f.comments["example/project"].some((comment) =>
+      String(comment.body).includes(`[worker] ${tag}`)
+    )
+  ).toBe(true);
 });
 
 test("commentary-only final output is not relayed", async () => {

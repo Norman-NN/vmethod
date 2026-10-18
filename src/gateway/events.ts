@@ -79,7 +79,7 @@ export interface LoopHost {
   filter: PeopleFilter;
   github: GitHubClient;
   workerStatus: (pr: number) => Promise<WorkerSessionStatus>;
-  workerContinue?: (pr: number, text: string) => Promise<void>;
+  workerSend?: (pr: number, text: string) => Promise<void>;
   board: Pick<BoardService, "set">;
   digest: Digest;
 }
@@ -2898,13 +2898,24 @@ export class EventLoop {
         }
       } else if (status.state === "idle") {
         const text = recorded.finalText?.trim() ?? "";
-        const tag = /^\[worker\] (BLOCKED|QUESTION|READY FOR REVIEW|DESIGN|ACK)\b/.exec(text);
+        const explicitTag = /^\[worker\] (BLOCKED|QUESTION|READY FOR REVIEW|DESIGN|ACK)\b/.exec(
+          text
+        );
+        const inferredTag = explicitTag
+          ? undefined
+          : /\b(?:i need|cannot|can't|unable|blocked)\b/i.test(text)
+            ? "BLOCKED"
+            : /\?|\b(?:unsure|unclear)\b/i.test(text)
+              ? "QUESTION"
+              : undefined;
+        const tag = explicitTag ?? (inferredTag ? ["", inferredTag] : undefined);
+        const relayText = inferredTag && tag ? `[worker] ${inferredTag}\n\n${text}` : text;
         if (
           tag &&
           recorded.finalMessageId &&
           this.readMarker(`worker-relay-${pr.number}`) !== recorded.finalMessageId
         ) {
-          const quoted = text.replace(
+          const quoted = relayText.replace(
             /\b(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)\b/gi,
             "$1\u200b"
           );
@@ -2940,13 +2951,13 @@ export class EventLoop {
         } else if (!tag && text) {
           const prompt = object(safeJson(this.readMarker(`worker-prompt-${pr.number}`)));
           const round = str(prompt.id) || "unknown";
-          const count = Number(this.readMarker(`worker-continue-${pr.number}-${key(round)}`) || 0);
-          if (count < 2 && this.host.workerContinue && recorded.sessionId) {
-            await this.host.workerContinue(
+          const count = Number(this.readMarker(`worker-checkin-${pr.number}-${key(round)}`) || 0);
+          if (count < 2 && this.host.workerSend && recorded.sessionId) {
+            await this.host.workerSend(
               pr.number,
-              "Continue the task in this turn; post READY/QUESTION/BLOCKED on the PR with pr-comment when done."
+              `[orchestrator] CHECK-IN: your turn ended without a status on the PR. Are you done?\n- If yes: run \`vmethod wait-checks ${pr.number}\` once and post READY with your evidence.\n- If no: finish only the unfinished steps of this task's acceptance criteria, add no new scope, then post READY.\n- If you are unsure, stuck or need a decision: post QUESTION or BLOCKED on the PR, and stop.`
             );
-            this.writeMarker(`worker-continue-${pr.number}-${key(round)}`, String(count + 1));
+            this.writeMarker(`worker-checkin-${pr.number}-${key(round)}`, String(count + 1));
           } else {
             const preview = sanitizePreview(text.split(/\r?\n/)[0]).slice(0, PREVIEW_LIMIT);
             this.emit(
