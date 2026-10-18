@@ -55,6 +55,8 @@ import { VerificationService } from "./verify.js";
 import { reference } from "./refs.js";
 import { LearningsService } from "./learnings.js";
 import { checkLearningPr } from "./learning-check.js";
+import { backfillCosts } from "./cost-backfill.js";
+import type { Price } from "../cost.js";
 
 class GatewayServer {
   private readonly config: Config;
@@ -185,6 +187,34 @@ class GatewayServer {
   };
   grade: Handlers["grade"] = async ({ ref, points }) =>
     this.workers.grade(this.localNumber(ref), points);
+  costBackfill: Handlers["costBackfill"] = async ({ dryRun, prs }) => {
+    if (dryRun !== undefined && typeof dryRun !== "boolean") {
+      throw new Error("Invalid dryRun");
+    }
+    if (
+      prs !== undefined &&
+      (!Array.isArray(prs) || prs.some((pr) => !Number.isSafeInteger(pr) || pr < 1))
+    ) {
+      throw new Error("Invalid PR numbers");
+    }
+    const models = loadYaml(this.root, "models") as {
+      family: string;
+      model: string;
+      price?: Price;
+    }[];
+    return backfillCosts(
+      {
+        root: this.root,
+        config: this.config,
+        env: this.env,
+        models,
+        readSession: (id) => this.workers.readSessionForCost(id),
+        setCost: (pr, cost) => this.setWorkerField(pr, "pr", "Cost", cost),
+        report: this.deps.report,
+      },
+      { dryRun, prs }
+    );
+  };
   suggestModel: Handlers["suggestModel"] = async ({ ref }) => {
     const suggestion = await this.workers.suggest(this.localNumber(ref));
     const family = suggestion.split(":", 1)[0];
@@ -1499,6 +1529,7 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     boardSetIssue: server.boardSetIssue,
     worker: server.worker,
     grade: server.grade,
+    costBackfill: server.costBackfill,
     suggestModel: server.suggestModel,
     workerAccess: server.workerAccess,
     openTask: server.openTask,
@@ -1538,6 +1569,7 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     boardSetIssue: ["orchestrator"],
     worker: ["orchestrator"],
     grade: ["orchestrator"],
+    costBackfill: ["orchestrator"],
     suggestModel: ["orchestrator"],
     workerAccess: ["worker", "orchestrator"],
     openTask: ["orchestrator"],

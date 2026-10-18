@@ -505,6 +505,21 @@ export class OpencodeClient {
       : this.sessionStatus(directory, id, deadline);
   }
 
+  /** Read the recorded session envelope for cost recovery; a missing session is unknown. */
+  async costSession(id: string): Promise<unknown | undefined> {
+    if (!validSessionId(id)) {
+      throw new Error("Invalid opencode session id: expected ses_ prefix");
+    }
+    try {
+      return opencodeData(await this.request("GET", `/api/session/${encodeURIComponent(id)}`));
+    } catch (error) {
+      if (error instanceof OpencodeError && error.status === 404) {
+        return undefined;
+      }
+      throw error;
+    }
+  }
+
   private async watchStatus(directory: string): Promise<WorkerStatus> {
     const active = sessionIds(await this.request("GET", "/api/session/active"));
     for (const id of this.pollErrors.keys()) {

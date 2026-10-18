@@ -49,6 +49,7 @@ try {
     case "worker":
     case "suggest-model":
     case "grade":
+    case "cost":
     case "read":
     case "watch":
     case "mute":

@@ -88,6 +88,23 @@ export async function gatewayVerb(
         { ref: args[0], points: args[1] === undefined ? undefined : Number(args[1]) },
         ctx
       );
+    case "cost": {
+      if (args[0] !== "backfill") {
+        throw new Error("Usage: vmethod cost backfill [--dry-run] [--pr <n>]");
+      }
+      let dryRun = false;
+      const prs: number[] = [];
+      for (let i = 1; i < args.length; i++) {
+        if (args[i] === "--dry-run" && !dryRun) {
+          dryRun = true;
+        } else if (args[i] === "--pr" && /^[1-9]\d*$/.test(args[i + 1] ?? "")) {
+          prs.push(Number(args[++i]));
+        } else {
+          throw new Error("Usage: vmethod cost backfill [--dry-run] [--pr <n>]");
+        }
+      }
+      return transport.call("costBackfill", { dryRun, prs: [...new Set(prs)] }, ctx);
+    }
     case "mute":
     case "unmute":
       if (args.length !== 1) {
