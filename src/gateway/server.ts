@@ -666,6 +666,7 @@ class GatewayServer {
       throw new Error("Closed issue response lacks node id");
     }
     await this.board.setIssueField(closed.node_id, "Status", "Done");
+    await this.board.setIssueField(closed.node_id, "Progress", null);
     return `Closed issue #${number}`;
   };
   boardArchive: Handlers["boardArchive"] = async ({ itemId }) => this.board.archive(itemId);

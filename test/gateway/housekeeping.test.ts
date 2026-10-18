@@ -17,6 +17,9 @@ test.each(
   async ({ verb, owner }) => {
     const recording = verb === "issue create" ? createdCard() : structuredClone(boardRecording);
     const card = recording.items.nodes[0];
+    if (verb === "issue close") {
+      card.fieldValues.nodes.push({ text: "👤❓", field: { name: "Progress" } } as never);
+    }
     const metadata = [
       graph({ repository: { issue: item({ id: card.content.id }) } }),
       graph({ node: { ...acceptedIssue(), id: card.content.id } }),
@@ -46,6 +49,8 @@ test.each(
               },
               ...boardReads(recording),
               mutation,
+              ...boardReads(recording),
+              boardGraph({ m0: { projectV2Item: { id: card.id } } }),
             ]
           : [...metadata, ...boardReads(recording), mutation];
     const f = fixtureServer(requests);
@@ -404,6 +409,9 @@ test.each([
 );
 
 test("issue close gates identity and posts the exact checked comment before closing", async () => {
+  const recording = structuredClone(boardRecording);
+  const card = recording.items.nodes[0];
+  card.fieldValues.nodes.push({ text: "👤❓", field: { name: "Progress" } } as never);
   const f = fixtureServer([
     graph({ repository: { issue: item() } }),
     graph({ node: acceptedIssue() }),
@@ -416,24 +424,35 @@ test("issue close gates identity and posts the exact checked comment before clos
       path: "/repos/example/project/issues/37",
       method: "PATCH",
       body: { state: "closed", state_reason: "completed", assignees: [] },
-      json: { ...issueResponse, node_id: boardRecording.items.nodes[0].content.id },
+      json: { ...issueResponse, node_id: card.content.id },
     },
-    ...boardReads(),
+    ...boardReads(recording),
     {
       ...boardGraph({
-        m0: { projectV2Item: { id: boardRecording.items.nodes[0].id } },
-        m1: { projectV2Item: { id: boardRecording.items.nodes[0].id } },
+        m0: { projectV2Item: { id: card.id } },
+        m1: { projectV2Item: { id: card.id } },
       }),
       checkQuery: (query, variables) => {
         expect(query).toContain("clearProjectV2ItemFieldValue");
         expect(variables.m0).toMatchObject({
-          itemId: boardRecording.items.nodes[0].id,
-          fieldId: boardRecording.fields.nodes.find((field) => field.name === "Progress")!.id,
+          itemId: card.id,
+          fieldId: recording.fields.nodes.find((field) => field.name === "Progress")!.id,
         });
         expect(variables.m1).toMatchObject({
-          itemId: boardRecording.items.nodes[0].id,
-          fieldId: boardRecording.fields.nodes.find((field) => field.name === "Status")!.id,
+          itemId: card.id,
+          fieldId: recording.fields.nodes.find((field) => field.name === "Status")!.id,
           value: { singleSelectOptionId: expect.any(String) },
+        });
+      },
+    },
+    ...boardReads(recording),
+    {
+      ...boardGraph({ m0: { projectV2Item: { id: card.id } } }),
+      checkQuery: (query, variables) => {
+        expect(query).toContain("clearProjectV2ItemFieldValue");
+        expect(variables.m0).toMatchObject({
+          itemId: card.id,
+          fieldId: recording.fields.nodes.find((field) => field.name === "Progress")!.id,
         });
       },
     },
