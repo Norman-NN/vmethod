@@ -61,6 +61,11 @@ raising minimum compatibility, including on shared boards. Run the normal board
 migration before enabling cost writes. See [cost accounting](learnings.md#worker-cost-and-model-log-migration)
 for configuration, provider mappings and report semantics.
 
+Preview with `board migrate --dry-run` before applying a shared-board migration.
+The message lists each pending migration's operations and the version change, for
+example `Dry run: 2 → 3; v3: add field Cost (number)`. It says `no changes` only when
+there are no pending operations or version bump; dry runs never write board state.
+
 ## Model
 
 On an issue, Model is an optional, evidence-backed hint, not an estimate-to-model
