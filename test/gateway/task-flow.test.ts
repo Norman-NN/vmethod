@@ -143,6 +143,7 @@ test.each(
         expect(await sibling.once(sibling.loop())).toEqual([]);
       }
       w.advance();
+      w.clock += 668;
       if (verb === "open-task") {
         await taskFlowVerb(transport, verb, ["8", "--model", "sol"], commandEnv);
       } else if (verb === "merge-task") {
@@ -189,6 +190,28 @@ test.each(
           "utf8"
         )
       ).toContain('"kind":');
+      if (verb === "review owner") {
+        const entries = readFileSync(
+          join(f.env.XDG_STATE_HOME, "vmethod", String(f.config.stateName), "writes.jsonl"),
+          "utf8"
+        )
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line));
+        expect(entries.find((entry) => entry.kind === "comment")).toMatchObject({
+          commentId: w.comments["example/project"][0].id,
+          nodeId: w.comments["example/project"][0].node_id,
+        });
+        expect(
+          entries.find((entry) => entry.kind === "markPullRequestReadyForReview")
+        ).toMatchObject({ nodeId: "pr" });
+        expect(
+          entries
+            .filter((entry) => entry.kind === "board")
+            .every((entry) => entry.itemId && entry.nodeId)
+        ).toBe(true);
+        expect(entries.some((entry) => entry.kind === "assigned")).toBe(true);
+      }
       f.done();
     } finally {
       sibling?.done();

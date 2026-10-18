@@ -1,5 +1,15 @@
 # GitHub board field regression
 
+## Review comment projection (PR #71)
+
+`review-comment.json` projects the REST comment supplied by vimescmd in PR #71's
+authenticated ANSWER (`.tmp/captures/comment-6242861295.json`). Only IDs, URLs,
+numeric author identity, timestamps and the first body line remain. The matrix
+renames repository, issue number, author and body and advances timestamps while
+retaining the recorded second-precision wire shape; the writer clock is 668 ms
+later. Board mutations reuse the existing recorded projections below. This is
+not a full capture of the multi-command review transaction.
+
 ## Watch action projections (PR #56)
 
 `watch-actions.json` projects the gateway-filtered captures supplied by vimescmd
