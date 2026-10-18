@@ -600,7 +600,7 @@ These commands require `VMETHOD_ROLE=orchestrator`:
   posts the protocol header and sets the next actor. Owner review always names the
   full current SHA and marks the draft ready. `approve` posts an orchestrator
   acceptance, **not** owner authority.
-- `merge-task <pr> [--merge-commit]` refuses live/unknown worker sessions before merging, stale
+- `merge-task <pr> [--merge-commit] [--carry-approval "<reason>"]` refuses live/unknown worker sessions before merging, stale
   approval, untrusted/red/missing CI, unknown/conflicting mergeability and a stale
   tested base. `merge.requireCurrentBase` defaults to true; false allows a
   conflict-free green-head squash onto a moved base. Pack heads require merge
@@ -667,8 +667,22 @@ paths against old/new merge-bases. Ordinary commits, edited merge trees or chang
 patches void approval. The client cannot assert this exception. Issue launch
 approval likewise checks the latest configured-board event's owner id, not Status.
 
+Orchestrators may explicitly carry an earlier verified owner approval across
+conflict-resolving base merges with `--carry-approval "<reason>"`. The reason must
+be nonempty and single-line. Every task-side commit since that approved SHA must
+be a two-parent merge with one parent on the current PR base's history; either
+parent order is accepted. Ordinary commits, missing approval, unrelated histories
+or unavailable git proof refuse and require fresh owner approval. The gateway
+posts `[orchestrator] APPROVAL CARRIED from <A> to <head>: <reason>`, a no-behaviour-change
+certification and the union of `git show --remerge-diff` file lists before merging.
+An empty list is recorded explicitly. This is an orchestrator semantic assertion,
+not an automated proof of unchanged behaviour: behaviour changes or an algorithmic
+revamp require re-asking the owner. All other merge gates and journaling remain
+unchanged; see the [owner rule](orchestrator-guide.md#merge-and-release).
+
 Tests inject strict fake fetch/exec, clock and sleep implementations. No test
-needs a real GitHub token, opencode server or git process. Mermaid tests use
+needs a real GitHub token or opencode server. Base-merge proof tests also use
+isolated local git repositories with real conflicts. Mermaid tests use
 installed local peer fixtures. Optional peer usage is intentional, so Knip's
 referenced-optional-peer rule is disabled; other dependency checks remain enabled.
 A static syntax test guards the seam against fetch calls and credential reads

@@ -2,6 +2,17 @@ import { expect, test } from "vitest";
 import { actor, fixtureServer, graph, item, sha } from "./helpers.js";
 import developmentLinks from "../fixtures/github/task-development-links.json" with { type: "json" };
 
+test.each(["", "   ", "reason\nforged line"])(
+  "gateway forwards and validates carry reason %j before PR reads",
+  async (carryApproval) => {
+    const f = fixtureServer([]);
+    await expect(f.transport.call("mergeTask", { ref: "27", carryApproval })).rejects.toThrow(
+      "nonempty single-line reason"
+    );
+    f.done();
+  }
+);
+
 test("link-task reaches the authenticated Development mutation path without editing the body", async () => {
   const body = "# Task: feat: task (issue #8)\n\nYou are a worker.\nPrompt.";
   const f = fixtureServer([
