@@ -138,7 +138,11 @@ test("built CLI initializes and checks the verbatim public vecs TSV registry off
   );
   const checked = run(["check"]);
   expect(checked.status, `${checked.stdout}\n${checked.stderr}`).toBe(0);
-  expect(checked.stdout).toContain("vmethod check: ok");
+  expect(checked.stdout).toBe(
+    ["sol", "luna", "astra", "sonnet", "opus", "glm", "glm-flash", "big-pickle"]
+      .map((family) => `WARN models.yaml: ${family} has no price; delivery usd is null\n`)
+      .join("")
+  );
   expect(run(["init"]).stdout).toContain("Already initialized");
   expect(readFileSync(join(root, "models.tsv"))).toEqual(
     readFileSync("test/fixtures/models-vecs.tsv")
@@ -222,7 +226,10 @@ test("CI self-check skips absent config and explicitly defers only missing owner
   const ownerOnly = run(root);
   expect(ownerOnly.status, ownerOnly.stderr).toBe(0);
   expect(ownerOnly.stdout).toBe(
-    "WARN permissions deferred (prerelease 0.0.0-dev): .claude/settings.json not installed\n"
+    ["sol", "astra", "sonnet", "glm", "big-pickle"]
+      .map((family) => `WARN models.yaml: ${family} has no price; delivery usd is null\n`)
+      .join("") +
+      "WARN permissions deferred (prerelease 0.0.0-dev): .claude/settings.json not installed\n"
   );
   writeFileSync(join(root, "people.yaml"), "invalid: config");
   expect(run(root).status).toBe(1);

@@ -2,7 +2,30 @@ import { mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { check } from "../src/check.js";
-import { peer, validProject } from "./helpers.js";
+import { peer, validProject as unpricedProject } from "./helpers.js";
+import { parse, stringify } from "yaml";
+
+function validProject() {
+  const root = unpricedProject();
+  const models = parse(readFileSync(join(root, "models.yaml"), "utf8")) as Record<
+    string,
+    unknown
+  >[];
+  writeFileSync(
+    join(root, "models.yaml"),
+    stringify(models.map((model) => ({ ...model, price: { input: 1, output: 2, cached: 0.1 } })))
+  );
+  return root;
+}
+
+test("missing family price warns without failing or pretending usage is free", () => {
+  const result = check(unpricedProject());
+  expect(result.code).toBe(0);
+  expect(result.messages.length).toBeGreaterThan(0);
+  expect(
+    result.messages.every((message) => message.includes("has no price; delivery usd is null"))
+  ).toBe(true);
+});
 
 test("only explicit prerelease deferral softens absent settings, on every run", () => {
   const root = validProject();
@@ -137,7 +160,10 @@ test("Claude families require a separately configured worker token", () => {
   expect(check(root)).toMatchObject({ code: 1 });
   expect(check(root).messages.join("\n")).toContain("credentials.workerGithubToken");
   writeFileSync(path, original);
-  expect(check(root)).toEqual({ code: 0, messages: [] });
+  expect(check(root)).toEqual({
+    code: 0,
+    messages: ["WARN models.yaml: sonnet has no price; delivery usd is null"],
+  });
 });
 
 test("permissions, numeric ids, model families and secret-looking values are checked without leaking secrets", () => {

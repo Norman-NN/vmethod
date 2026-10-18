@@ -1,4 +1,5 @@
 import { Ajv } from "ajv";
+import { sumUsd, type Tokens } from "./cost.js";
 import schema from "../schema/model-log.schema.json" with { type: "json" };
 
 export interface ModelRecord {
@@ -7,7 +8,16 @@ export interface ModelRecord {
   pr: number;
   task: string;
   kind: string;
-  segments: { family: string; model: string; rounds: number[]; why: string }[];
+  segments: {
+    family: string;
+    model: string;
+    rounds: number[];
+    why: string;
+    tokens?: Tokens | null;
+    usd?: number | null;
+    reportedUsd?: number;
+  }[];
+  usd?: number | null;
   points_open: number;
   points_final: number;
   rounds: number;
@@ -57,9 +67,20 @@ export function learningReport(records: readonly ModelRecord[], family?: string,
       (!family || record.segments.some((segment) => segment.family === family)) &&
       (!kind || record.kind === kind)
   );
-  const group = (items: readonly ModelRecord[]) => {
+  const group = (items: readonly ModelRecord[], familyName?: string) => {
     const points = items.reduce((sum, record) => sum + record.points_final, 0);
     const rounds = items.reduce((sum, record) => sum + record.rounds, 0);
+    const usd = sumUsd(
+      items.map((record) =>
+        familyName
+          ? sumUsd(
+              record.segments
+                .filter((segment) => segment.family === familyName)
+                .map((segment) => segment.usd)
+            )
+          : record.usd
+      )
+    );
     const count: Record<string, number> = Object.create(null) as Record<string, number>;
     const caught: Record<string, number> = Object.create(null) as Record<string, number>;
     const outcomes: Record<string, number> = Object.create(null) as Record<string, number>;
@@ -81,6 +102,8 @@ export function learningReport(records: readonly ModelRecord[], family?: string,
       points,
       rounds,
       roundsPerPoint: points ? rounds / points : null,
+      usd,
+      usdPerPoint: points && usd !== null ? usd / points : null,
       findingsRate: Object.fromEntries(
         Object.entries(count).map(([tag, n]) => [tag, n / items.length])
       ),
@@ -98,7 +121,8 @@ export function learningReport(records: readonly ModelRecord[], family?: string,
         .map((name) => [
           name,
           group(
-            selected.filter((record) => record.segments.some((segment) => segment.family === name))
+            selected.filter((record) => record.segments.some((segment) => segment.family === name)),
+            name
           ),
         ])
     ),

@@ -158,6 +158,20 @@ class GatewayServer {
       },
       setModel: (pr, family) => this.setWorkerField(pr, "pr", "Model", family),
       setEstimate: (issue, points) => this.setWorkerField(issue, "issue", "Estimate", points),
+      setCost: (issue, usd) => this.setWorkerField(issue, "issue", "Cost", usd),
+      gradeComment: async (issue, body) => {
+        await checkMarkdown(this.root, body);
+        guardClosingKeywords(body);
+        const { person } = await this.thread(String(issue), "issue");
+        if (!person) {
+          throw new Error("Refusing GRADE on unaccepted issue");
+        }
+        await this.github.rest(
+          `/repos/${String(this.config.repo)}/issues/${issue}/comments`,
+          "POST",
+          { body }
+        );
+      },
       workerIdentity: () => this.workerIdentity(),
       issue: (issue) => this.workerIssue(issue),
     }));
@@ -250,8 +264,8 @@ class GatewayServer {
   private async setWorkerField(
     ref: number,
     kind: "pr" | "issue",
-    field: "Estimate" | "Model",
-    value: number | string
+    field: "Estimate" | "Model" | "Cost",
+    value: number | string | null
   ): Promise<void> {
     const item = await this.richThread(ref, kind);
     const card = this.projectCard(item);

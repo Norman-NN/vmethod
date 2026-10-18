@@ -57,6 +57,24 @@ Use only this scale. `board set` and `issue create --estimate` reject off-scale
 values and list the allowed points; `open-task` also refuses to freeze an off-scale
 opening Estimate. Clearing an issue Estimate remains distinct from assigning zero.
 
+## Cost
+
+`Cost` is an issue-only number in USD at configured API prices, not subscription
+charges. The existing worker poll updates it from all locally tracked task PRs for
+the issue, including partial deliveries; `grade` sets the final rollup. Unknown
+usage or missing prices clear the field rather than writing zero. Keep worker
+state for previous deliveries so the rollup retains their costs.
+
+Expand-only migration `0003` adds this field without changing existing cards or
+raising minimum compatibility, including on shared boards. Run the normal board
+migration before enabling cost writes. See [cost accounting](learnings.md#worker-cost-and-model-log-migration)
+for configuration, provider mappings and report semantics.
+
+Preview with `board migrate --dry-run` before applying a shared-board migration.
+The message lists each pending migration's operations and the version change, for
+example `Dry run: 2 → 3; v3: add field Cost (number)`. It says `no changes` only when
+there are no pending operations or version bump; dry runs never write board state.
+
 ## Model
 
 On an issue, Model is an optional, evidence-backed hint, not an estimate-to-model

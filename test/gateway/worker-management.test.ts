@@ -81,6 +81,7 @@ function fixture(prefix?: string, legacy = false) {
   const comments: ReturnType<typeof item>[] = [];
   const mutations: Record<string, unknown>[] = [];
   const requests: string[] = [];
+  const gradePosts: unknown[] = [];
   const unexpected: string[] = [];
   let viewer = actor(1),
     active = false,
@@ -112,6 +113,14 @@ function fixture(prefix?: string, legacy = false) {
             data: turnError ? [{ type: "idle", outcome: "failed", error: turnError }] : [],
           });
         }
+      } else if (
+        url.origin === "https://api.github.com" &&
+        url.pathname === "/repos/example/project/issues/9/comments" &&
+        init?.method === "POST"
+      ) {
+        gradePosts.push(JSON.parse(String(init.body)));
+        // The gateway does not consume response fields for a comment write.
+        return Response.json({});
       } else if (url.origin === "https://api.github.com" && url.pathname === "/graphql") {
         const { query, variables } = JSON.parse(String(init?.body));
         parse(query);
@@ -158,6 +167,12 @@ function fixture(prefix?: string, legacy = false) {
                     {
                       id: "F_ESTIMATE",
                       name: "Estimate",
+                      dataType: "NUMBER",
+                      createdAt: recordedFields.node.fields.nodes[0].createdAt,
+                    },
+                    {
+                      id: "F_COST",
+                      name: "Cost",
                       dataType: "NUMBER",
                       createdAt: recordedFields.node.fields.nodes[0].createdAt,
                     },
@@ -267,6 +282,7 @@ function fixture(prefix?: string, legacy = false) {
     pr,
     issue,
     comments,
+    gradePosts,
     mutations,
     requests,
     deps,
@@ -452,7 +468,12 @@ test("gateway dispatches a draft PR and grades its delivery, writing Estimate on
     points_open: 8,
     points_final: 20,
     segments: [{ family: "glm", why: "start" }],
+    usd: null,
   });
+  expect(f.mutations[2]).toMatchObject({ m0: { itemId: "CARD9", fieldId: "F_COST" } });
+  expect(f.gradePosts).toEqual([
+    { body: "[orchestrator] GRADE\n\nGraded PR #31: issue #9 Estimate 20; USD unknown" },
+  ]);
   f.done();
 });
 

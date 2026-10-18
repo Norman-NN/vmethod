@@ -333,6 +333,7 @@ export class EventLoop {
   private readonly cycleOwnMoves = new Set<string>();
   private inprogress: { number: number; branch: string; working: boolean }[] = [];
   private taskIssues = new Map<number, number[]>();
+  private costCards = new Map<number, string>();
   private observedPrs: PrInfo[] = [];
   private nextBoardAt = 0;
   private lastBoardAt = 0;
@@ -2049,6 +2050,11 @@ export class EventLoop {
       throw new Error("Missing board configuration");
     }
     const cards = await this.readBoard(owner, number);
+    this.costCards = new Map(
+      cards.list
+        .filter((card) => card.repo === this.own && card.kind === "ISSUE")
+        .map((card) => [card.number, card.id])
+    );
     this.lastBoardAt = this.host.deps.now();
     const migration = migrationActive(readState(cards.readme), this.host.deps.now(), (message) =>
       this.host.deps.report(`watcher: ${message}`)
@@ -2779,6 +2785,7 @@ export class EventLoop {
     if (this.cycle % WORKER_EVERY !== 1) {
       return;
     }
+    const costs = new Map<number, number | null>();
     for (const pr of this.inprogress) {
       if (this.muted(this.own, pr.number)) {
         continue;
@@ -2812,6 +2819,9 @@ export class EventLoop {
       let updated: number | undefined;
       try {
         const recorded = await this.readWorkerStatus(pr.number);
+        if (recorded.issueCost) {
+          costs.set(recorded.issueCost.issue, recorded.issueCost.usd);
+        }
         status = this.workerStop(pr.number, recorded);
         updated = recorded.updated;
         if (recorded.reason === "session unknown") {
@@ -2874,6 +2884,14 @@ export class EventLoop {
         this.queueProgress(pr.number, { state: "idle", if: ["working", "silent"] });
       }
       atomicWrite(stopPath, `${stop}\n`);
+    }
+    for (const [issue, usd] of costs) {
+      const id = this.costCards.get(issue);
+      const value = JSON.stringify({ id, usd });
+      if (id && this.readMarker(`cost-${issue}`) !== value) {
+        await this.host.board.set({ itemId: id, field: "Cost", value: usd });
+        this.writeMarker(`cost-${issue}`, value);
+      }
     }
   }
 

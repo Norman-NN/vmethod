@@ -656,6 +656,8 @@ export class WatchFake {
             if (input.field === "Status") {
               card.status = { name: input.value };
               card.progress = { text: input.progress };
+            } else if (input.field === "Cost") {
+              card.cost = { number: input.value };
             } else {
               card.progress = { text: input.value };
             }

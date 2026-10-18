@@ -269,6 +269,11 @@ Grading requires a closed delivery with recorded session history and writes
 different existing grade requires explicit reconciliation. The default final
 points are the issue's current Estimate. Records are validated against the shared
 `schema/model-log.schema.json` before either the Estimate write or log append.
+Grading also snapshots final provider tokens and API-price USD, posts GRADE on the
+issue, and updates its Cost rollup. `worker status` displays tokens and USD so far;
+the existing watcher poll updates issue Cost automatically. Configure family prices
+and migrate the board as described in [worker cost accounting](learnings.md#worker-cost-and-model-log-migration).
+No additional worker or orchestrator command is needed for collection.
 
 Records under `$XDG_STATE_HOME/vmethod/<stateName>/workers/<pr>.json` hold session
 identity, repository, issue, worktree, opening Estimate and timestamped model

@@ -1,0 +1,13 @@
+{
+  "data": {
+    "id": "ses_recorded",
+    "model": { "id": "gpt-6.1-sol", "providerID": "codexbal", "variant": "default" },
+    "cost": 0,
+    "tokens": {
+      "input": 118893,
+      "output": 13085,
+      "reasoning": 4361,
+      "cache": { "read": 3907968, "write": 0 }
+    }
+  }
+}
