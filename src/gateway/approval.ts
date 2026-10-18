@@ -41,6 +41,17 @@ export function isOwnerApproved(pr: ApprovalPR, filter: PeopleFilter): boolean |
     return "unknown";
   }
   const owner = (actor: unknown) => filter.identity(actor)?.role === "owner";
+  if (
+    pr.reviews.some(
+      (review) =>
+        review.state === "APPROVED" &&
+        object(review.commit).oid === pr.headRefOid &&
+        owner(review.author) &&
+        (review.lastEditedAt == null || owner(review.editor))
+    )
+  ) {
+    return true;
+  }
   if (pr.historical) {
     const handovers = pr.comments.filter((comment) => {
       const author = filter.identity(comment.author);
@@ -59,13 +70,26 @@ export function isOwnerApproved(pr: ApprovalPR, filter: PeopleFilter): boolean |
     if (!Number.isFinite(handedAt)) {
       return "unknown";
     }
-    const afterHandover = pr.timeline.filter(
+    const statusEvents = pr.timeline.filter(
       (event) =>
         event.__typename === "ProjectV2ItemStatusChangedEvent" &&
         event.field === "Status" &&
-        object(event.project).number === pr.boardNumber &&
-        Date.parse(String(event.createdAt)) > handedAt
+        object(event.project).number === pr.boardNumber
     );
+    if (
+      statusEvents.some(
+        (event) =>
+          typeof event.createdAt !== "string" || !Number.isFinite(Date.parse(event.createdAt))
+      )
+    ) {
+      return "unknown";
+    }
+    const afterHandover = statusEvents.filter(
+      (event) => Date.parse(String(event.createdAt)) > handedAt
+    );
+    if (afterHandover.some((event) => event.actor == null)) {
+      return "unknown";
+    }
     const approvals = afterHandover.filter(
       (event) => event.status === "Approved" && owner(event.actor)
     );
@@ -79,17 +103,6 @@ export function isOwnerApproved(pr: ApprovalPR, filter: PeopleFilter): boolean |
         owner(event.actor) &&
         event.status !== "Approved"
     );
-  }
-  if (
-    pr.reviews.some(
-      (review) =>
-        review.state === "APPROVED" &&
-        object(review.commit).oid === pr.headRefOid &&
-        owner(review.author) &&
-        (review.lastEditedAt == null || owner(review.editor))
-    )
-  ) {
-    return true;
   }
   const events = pr.timeline.filter(
     (event) =>

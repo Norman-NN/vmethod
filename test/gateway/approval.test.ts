@@ -261,4 +261,19 @@ test("historical board approval survives a later non-owner move and is revoked b
   expect(
     isOwnerApproved({ ...pr, timeline: [approved, { ...movedAway, actor: actor() }] }, filter)
   ).toBe(false);
+  expect(
+    isOwnerApproved(
+      { ...pr, reviews: [{ state: "APPROVED", author: actor(), commit: { oid: sha } }] },
+      filter
+    )
+  ).toBe(true);
+  expect(
+    isOwnerApproved({ ...pr, timeline: [approved, { ...movedAway, createdAt: "invalid" }] }, filter)
+  ).toBe("unknown");
+  expect(isOwnerApproved({ ...pr, timeline: [{ ...approved, actor: null }] }, filter)).toBe(
+    "unknown"
+  );
+  expect(
+    isOwnerApproved({ ...pr, timeline: [approved, { ...movedAway, actor: null }] }, filter)
+  ).toBe("unknown");
 });
