@@ -384,8 +384,9 @@ with an open, trusted task PR in the configured repository, using its task heade
 structured `vmethod-task` relation, not its branch name or an incidental issue mention.
 
 Worker READY, QUESTION, DESIGN, BLOCKED and HANDOFF wake and update Progress.
-The watcher synchronizes management assignees, mirrors owner waits on linked
-issues, and reports unassigned In review cards and Progress/assignee mismatches.
+The watcher synchronizes management assignees and clears stale owner mirrors on
+linked issues. It reports unassigned In review cards (except linked task issues)
+and Progress/assignee mismatches.
 Known states repair assignments from the same board poll; ambiguous states are
 reported for manual review. Owner replies and current-head owner reviews return
 the turn to the orchestrator. See the [protocol transition table](protocol.md).
