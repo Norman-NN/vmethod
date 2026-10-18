@@ -4,6 +4,8 @@ import type { SessionInput, WatchEvent } from "./events.js";
 import type { LearningInput } from "./learnings.js";
 
 export interface Operations {
+  /** Resolve one accepted open task PR with this exact same-repository head branch, or null. */
+  resolveTask: { input: { branch: string }; output: number | null };
   learnings: { input: LearningInput; output: string };
   learningCheck: { input: { ref: string; label?: boolean }; output: string };
   issueCreate: {
@@ -116,7 +118,7 @@ export function inProcess(
     operation: K,
     input: Operations[K]["input"],
     ctx: CallContext
-  ) => void
+  ) => void | Promise<void>
 ): Transport {
   return {
     async call<K extends keyof Operations>(
@@ -124,7 +126,7 @@ export function inProcess(
       input: Operations[K]["input"],
       ctx: CallContext
     ): Promise<Operations[K]["output"]> {
-      authorize(operation, input, ctx);
+      await authorize(operation, input, ctx);
       return (
         handlers[operation] as (
           input: Operations[K]["input"],

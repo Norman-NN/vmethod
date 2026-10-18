@@ -10,5 +10,6 @@ export default defineConfig({
     teardownTimeout: 15000,
     include: ["test/**/*.test.ts"],
     setupFiles: ["test/offline.ts"],
+    globalSetup: ["test/global-setup.ts"],
   },
 });

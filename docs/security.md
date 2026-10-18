@@ -22,7 +22,9 @@ unread digest of counts, repository, numbers and links for daily owner triage.
 Mentions outside `org` are dropped. Bot PRs/comments are dropped like any unlisted
 author; trusted system entries yield only allowlisted structured event kinds.
 
-Match author numeric id and account type; pin login/id correspondence. A comment
+Match author numeric id and account type; pin login/id correspondence. GraphQL
+spells `Bot` logins without REST's trailing `[bot]` suffix; normalize that suffix
+only for Bot login comparison, never numeric IDs or types. A comment
 edited by another person counts as the editor's input. Association is secondary;
 display names and commit metadata are never authority. Label every accepted event
 with verified login and role before classifying its protocol tag.
@@ -48,7 +50,7 @@ raw API clients and direct pushes; allow only reviewed local stubs and
 or narrowly allowlisted. Shell patterns are not an OS/network sandbox: aliases,
 interpreters, alternate clients and writable wrappers also require owner control.
 
-Check installed rules during adoption. Current offline `check` validates the Claude
+Check installed rules during adoption. Offline `check` validates the Claude
 deny entries. With the owner's approval to defer installation during the pilot,
 use `check --defer-permissions` in CI. Only prereleases accept this switch
 (including `0.0.0-dev` and later prereleases beyond 1.0); stable versions reject it.
@@ -57,13 +59,46 @@ Installed settings are still validated and every other finding still fails.
 Agents never install or change their own permission rules to satisfy validation.
 `check` also warns when CODEOWNERS lacks entries for `vmethod.yaml`, `people.yaml`
 or `.claude/`; see the [adoption checklist](adoption.md) for owner review policy.
-Online validation through `check --online` (vmethod 1.0, #5)
-remains planned. Do not imply
-that a passing skeleton check proves those protections exist. Keep permission files
+`check --online` additionally verifies configured GitHub credential identities,
+not the effective shell sandbox, and may be combined with `--defer-permissions`.
+Do not imply that a passing check proves those protections exist. Keep permission files
 and reviewed stubs owner-controlled;
 protect identity changes with owner review.
 
 ## Credentials and supply chain
+
+Gateway authority comes from the configured token's viewer, matched against the
+numeric ID, login and account type in owner-approved `people.yaml`. Only pinned
+orchestrator and worker identities may call general gateway operations. `VMETHOD_ROLE`
+defaults to worker and can only narrow authority: a worker token claiming
+orchestrator is refused. Task-scoped sessions (`VMETHOD_TASK_PR`) must actually
+hold a worker token; an orchestrator token there is refused, not silently downgraded.
+The first allowed operation authenticates once per process. Offline `version`,
+`check`, `config get` and `check-markdown` do not require identity.
+
+The sole CI exception accepts a fully pinned `system` viewer only for
+`learningCheck` (`learnings check-pr`, including `--label`) when
+`GITHUB_ACTIONS=true`, without a worker task context. It grants no other verbs:
+board and issue writes still refuse system credentials. Learning checks retain
+the base-code checkout and base-pinned registry rules; label writes happen only
+after submission validation. Setting the environment flag never substitutes for
+the pinned credential identity.
+
+On this token-only CI path, Actions' recorded `viewer` type `User` may match a
+`system`/`Bot` registry entry only when its numeric ID and login match exactly.
+No Bot suffix normalization applies to token matching. This exception never
+applies to authors/editors, worker or orchestrator pins, or other operations;
+author/editor type pins remain strict.
+
+Unpinned-token errors report the viewer's login, numeric database ID and account
+type, using `<missing>` for absent fields. These identity diagnostics contain no
+credential values; use them to investigate pin mismatches without guessing.
+
+Run `check --online` to report each configured GitHub credential's pinned login
+and role. It fails unless `credentials.githubToken` belongs to an orchestrator
+and, when configured, `credentials.workerGithubToken` belongs to a worker.
+Claude families require the worker credential setting even in offline `check`;
+Claude launch independently verifies that token's worker identity before starting.
 
 Configuration stores credential **environment-variable names**, never values.
 Take credentials only from the launching wrapper's environment, not global git

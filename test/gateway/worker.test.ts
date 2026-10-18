@@ -4,7 +4,14 @@ import { expect, test } from "vitest";
 import { workerVerb } from "../../src/cli/worker.js";
 import { createGateway } from "../../src/gateway/server.js";
 import type { Dependencies } from "../../src/gateway/client.js";
-import { actor, fixtureServer, graph, hostile, item, sha } from "./helpers.js";
+import {
+  actor,
+  workerFixtureServer as fixtureServer,
+  graph,
+  hostile,
+  item,
+  sha,
+} from "./helpers.js";
 
 const ctx = { role: "worker", taskPr: 3 } as const;
 const task = (overrides = {}) =>

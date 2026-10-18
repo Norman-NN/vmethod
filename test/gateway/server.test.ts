@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { expect, test } from "vitest";
 import { createGateway } from "../../src/gateway/server.js";
 import { gatewayVerb } from "../../src/cli/gateway.js";
-import { actor, fixtureServer, graph, hostile, item, sha } from "./helpers.js";
+import { actor, fixtureServer, graph, hostile, item, sha, workerFixtureServer } from "./helpers.js";
 
 test("PR metadata is gated before content, hostile titles/bodies remain fenced, and unknown comments have no follow-up read", async () => {
   const fixture = fixtureServer([
@@ -172,7 +172,7 @@ test("comment reads verify REST identity then GraphQL editor before fetching bod
 
 test("post validates first, sends exact Markdown without footer, and supports a PR through issueOrPullRequest", async () => {
   const body = "[worker] ACK\n\nThis is data: `$(touch OWNED)`\n";
-  const fixture = fixtureServer([
+  const fixture = workerFixtureServer([
     graph({ repository: { issueOrPullRequest: item() } }),
     {
       path: "/repos/example/project/issues/3/comments",
@@ -200,7 +200,7 @@ test.each([
   "```mermaid\ngraph TD\n",
   "```\nunclosed",
 ])(
-  "invalid Markdown or closing syntax is refused before any network call: %s",
+  "invalid Markdown or closing syntax is refused before target reads or writes: %s",
   async (body) => {
     const fixture = fixtureServer([]);
     const file = join(fixture.root, "post.md");
@@ -211,7 +211,7 @@ test.each([
   15000
 );
 
-test("out-of-org posts, mentions in foreign endpoints, methods and malformed CLI arguments are refused offline", async () => {
+test("out-of-org posts, mentions in foreign endpoints, methods and malformed CLI arguments are refused before operation I/O", async () => {
   const fixture = fixtureServer([]);
   await expect(
     fixture.transport.call("post", {
@@ -240,7 +240,7 @@ test("out-of-org posts, mentions in foreign endpoints, methods and malformed CLI
   fixture.done();
 }, 15000);
 
-test("dropped requires no token and persisted digest contains no hostile content", async () => {
+test("dropped requires a credential and persisted digest contains no hostile content", async () => {
   const fixture = fixtureServer([
     graph({
       repository: {
@@ -257,11 +257,12 @@ test("dropped requires no token and persisted digest contains no hostile content
     { XDG_STATE_HOME: fixture.env.XDG_STATE_HOME },
     fixture.deps
   );
-  expect(
-    await gatewayVerb(transport, "dropped", [], {
+  await expect(
+    gatewayVerb(transport, "dropped", [], {
       VMETHOD_ROLE: "orchestrator",
     })
-  ).toContain("Dropped: 1");
+  ).rejects.toThrow("Missing configured GitHub token");
+  expect(await fixture.transport.call("dropped", {})).toContain("Dropped: 1");
   const text = readFileSync(
     join(fixture.env.XDG_STATE_HOME, "vmethod/example-state/dropped.jsonl"),
     "utf8"
@@ -339,24 +340,26 @@ test.each([actor(), actor(2), null])(
   15000
 );
 
-test("registry reads use the injected fetch without GitHub credentials and label all metadata untrusted", async () => {
+test("registry reads authenticate first but never send GitHub credentials to npm", async () => {
   const fixture = fixtureServer([]);
-  const transport = createGateway(
-    fixture.root,
-    {},
-    {
-      ...fixture.deps,
-      fetch: async (url, init) => {
-        expect(String(url)).toBe("https://registry.npmjs.org/%40example%2Fpackage");
-        expect(init?.headers).toBeUndefined();
-        expect(init?.redirect).toBe("error");
-        return Response.json({
-          name: "@example/package",
-          description: hostile,
-        });
-      },
-    }
-  );
+  const transport = createGateway(fixture.root, fixture.env, {
+    ...fixture.deps,
+    fetch: async (url, init) => {
+      if (String(url) === "https://api.github.com/graphql") {
+        expect(JSON.parse(String(init?.body)).query).toBe(
+          "query GatewayIdentity { viewer { databaseId login __typename } }"
+        );
+        return Response.json({ data: { viewer: actor(1) } });
+      }
+      expect(String(url)).toBe("https://registry.npmjs.org/%40example%2Fpackage");
+      expect(init?.headers).toBeUndefined();
+      expect(init?.redirect).toBe("error");
+      return Response.json({
+        name: "@example/package",
+        description: hostile,
+      });
+    },
+  });
   expect(
     await transport.call("read", { kind: "registry", ref: "@example/package" }, { role: "worker" })
   ).toContain("UNTRUSTED DATA");
@@ -395,6 +398,9 @@ test("comment pagination carries the cursor, filters before follow-up reads, and
   const fetch = fixture.deps.fetch;
   let count = 0;
   fixture.deps.fetch = async (url, init) => {
+    if (JSON.parse(String(init?.body)).query.includes("query GatewayIdentity")) {
+      return fetch(url, init);
+    }
     if (++count === 4) {
       expect(JSON.parse(String(init?.body)).variables).toEqual({
         id: "node-1",

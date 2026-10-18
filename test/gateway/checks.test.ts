@@ -1,5 +1,10 @@
 import { expect, test } from "vitest";
-import { fixtureServer, people, sha } from "./helpers.js";
+import {
+  workerFixtureServer as fixtureServer,
+  fixtureServer as orchestratorFixtureServer,
+  people,
+  sha,
+} from "./helpers.js";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { stringify } from "yaml";
@@ -263,7 +268,7 @@ const workflow = (baseSha = base) => ({
 test.each([base, "c".repeat(40)])(
   "check-task-ci compares the run's base SHA (%s), not timestamps",
   async (testedBase) => {
-    const f = fixtureServer([
+    const f = orchestratorFixtureServer([
       pull(),
       checks([run({ check_suite: { id: 50 } })]),
       workflow(testedBase),
@@ -280,7 +285,7 @@ test.each([
   { runs: [run({ status: "queued", conclusion: null })], code: 2 },
   { runs: [run({ conclusion: "failure" })], code: 1 },
 ])("check-task-ci gives a one-shot non-green verdict $code", async ({ runs, code }) => {
-  const f = fixtureServer([pull(), checks(runs), pull()]);
+  const f = orchestratorFixtureServer([pull(), checks(runs), pull()]);
   expect((await f.gateway.call("checkTaskCi", { ref: "3" }, { role: "orchestrator" })).code).toBe(
     code
   );

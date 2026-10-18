@@ -32,7 +32,7 @@ export class PeopleFilter {
     }
   }
 
-  identity(value: unknown): Person | undefined {
+  identity(value: unknown, normalizeBotLogin = true): Person | undefined {
     const actor = object(value);
     if (
       !["User", "Bot"].includes(String(actor.__typename)) ||
@@ -46,7 +46,9 @@ export class PeopleFilter {
         person.id === actor.databaseId &&
         person.type === actor.__typename &&
         typeof actor.login === "string" &&
-        person.login.toLowerCase() === actor.login.toLowerCase()
+        (normalizeBotLogin
+          ? identityLogin(person.login, person.type) === identityLogin(actor.login, person.type)
+          : person.login.toLowerCase() === actor.login.toLowerCase())
     );
   }
 
@@ -86,6 +88,12 @@ export class PeopleFilter {
     }
     return person;
   }
+}
+
+/** GraphQL omits REST's trailing [bot] suffix; only Bot accounts share these spellings. */
+function identityLogin(login: string, type: Person["type"]): string {
+  const lower = login.toLowerCase();
+  return type === "Bot" ? lower.replace(/\[bot\]$/, "") : lower;
 }
 
 /** A variable-length fence cannot be closed by hostile body text. */

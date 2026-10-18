@@ -6,6 +6,7 @@ import { configValue, getConfig } from "../config.js";
 import { init } from "../init.js";
 import { verbs } from "../registry.js";
 import { createGateway } from "../gateway/server.js";
+import { checkOnline } from "../gateway/identity.js";
 import { gatewayVerb } from "./gateway.js";
 import { workerVerb } from "./worker.js";
 import { taskFlowVerb } from "./task-flow.js";
@@ -15,6 +16,8 @@ import { MarkdownDependencyError } from "../gateway/markdown.js";
 import { execFile, execFileSync } from "node:child_process";
 import { watchClient } from "./watch.js";
 import { promisify } from "node:util";
+import { inferWorkerEnvironment } from "../gateway/worker-context.js";
+import type { Dependencies } from "../gateway/client.js";
 
 declare const __VERSION__: string;
 declare const __BOARD_VERSION__: number;
@@ -69,7 +72,7 @@ try {
     case "verify":
     case "refresh-checks":
     case "check-task-ci": {
-      const transport = createGateway(root(), process.env, {
+      const dependencies = {
         fetch,
         exec: async (file, args, options) =>
           (
@@ -81,23 +84,25 @@ try {
         now: Date.now,
         sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
         report: (message) => console.error(message),
-      });
+      } satisfies Dependencies;
+      const transport = createGateway(root(), process.env, dependencies);
+      const env = await inferWorkerEnvironment(root(), process.env, transport, dependencies);
       if (verb === "learnings") {
-        console.log(await learningsVerb(transport, args, process.env));
+        console.log(await learningsVerb(transport, args, env));
         break;
       }
       if (verb === "watch") {
-        await watchClient(transport, args, process.env);
+        await watchClient(transport, args, env);
         break;
       }
       if (["wait-checks", "verify", "refresh-checks", "check-task-ci"].includes(verb)) {
-        const result = await ciVerb(transport, verb, args, process.env);
+        const result = await ciVerb(transport, verb, args, env);
         console.log(result.text);
         process.exitCode = result.code;
         break;
       }
       const output = ["start-task", "read-pr", "pr-comment", "push", "wait-review"].includes(verb)
-        ? await workerVerb(transport, root(), verb, args, process.env, {
+        ? await workerVerb(transport, root(), verb, args, env, {
             exec: async (file, args, options) =>
               (
                 await promisify(execFile)(file, [...args], {
@@ -108,8 +113,8 @@ try {
             report: (message) => console.error(message),
           })
         : ["open-task", "review", "merge-task", "release-hold"].includes(verb)
-          ? await taskFlowVerb(transport, verb, args, process.env)
-          : await gatewayVerb(transport, verb, args, process.env);
+          ? await taskFlowVerb(transport, verb, args, env)
+          : await gatewayVerb(transport, verb, args, env);
       if (output) {
         console.log(output);
       }
@@ -135,13 +140,31 @@ try {
       break;
     }
     case "check": {
-      if (args.length && (args.length !== 1 || args[0] !== "--defer-permissions")) {
-        throw new Error("Usage: vmethod check [--defer-permissions] (offline)");
+      if (
+        args.some((arg) => !["--online", "--defer-permissions"].includes(arg)) ||
+        new Set(args).size !== args.length
+      ) {
+        throw new Error("Usage: vmethod check [--online] [--defer-permissions]");
       }
       const result = check(root(), process.env, {
         deferPermissions: args.includes("--defer-permissions"),
         version: __VERSION__,
       });
+      if (args.includes("--online")) {
+        const online = await checkOnline(root(), process.env, {
+          fetch,
+          exec: async () => {
+            throw new Error("Unexpected identity-check exec");
+          },
+          now: Date.now,
+          sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+          report: (message) => console.error(message),
+        });
+        result.messages.push(...online.messages);
+        if (online.code && !result.code) {
+          result.code = online.code;
+        }
+      }
       console.log(result.messages.length ? result.messages.join("\n") : "vmethod check: ok");
       process.exitCode = result.code;
       break;

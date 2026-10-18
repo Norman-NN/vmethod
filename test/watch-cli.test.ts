@@ -2,7 +2,7 @@ import { expect, test, vi } from "vitest";
 import { watchClient } from "../src/cli/watch.js";
 import { gatewayVerb } from "../src/cli/gateway.js";
 import type { Transport } from "../src/gateway/transport.js";
-import { fixtureServer } from "./gateway/helpers.js";
+import { actor, fixtureServer } from "./gateway/helpers.js";
 import { WatchFake } from "./gateway/watch-fake.js";
 import { spawnSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
@@ -119,6 +119,7 @@ test("built CLI --once exits promptly on two successive empty runs against the s
     preload,
     `globalThis.fetch = async (input, init) => {
     const url = new URL(String(input));
+    if (String(url) === 'https://api.github.com/graphql' && init.method === 'POST' && JSON.parse(init.body).query === 'query GatewayIdentity { viewer { databaseId login __typename } }') return Response.json({data:{viewer:${JSON.stringify(actor(2))}}});
     if (url.origin !== 'https://api.github.com' || init.method !== 'GET') throw new Error('Unexpected request ' + url);
     let data;
     if (url.pathname === '/user') data = {login:'me',id:999};

@@ -119,6 +119,10 @@ function fixture(prefix?: string, legacy = false) {
           expect(object(init?.headers).authorization).toBe("Bearer worker-token");
           return Response.json({ data: { viewer } });
         }
+        if (query === "query GatewayIdentity { viewer { databaseId login __typename } }") {
+          expect(object(init?.headers).authorization).toBe("Bearer orchestrator-token");
+          return Response.json({ data: { viewer: actor(2) } });
+        }
         expect(object(init?.headers).authorization).toBe("Bearer orchestrator-token");
         if (query.includes("query BoardProject")) {
           return Response.json({
@@ -674,6 +678,17 @@ test("gateway verifies worker token identity and launches Claude with no orchest
       },
     })
   );
+  expect(f.requests.join("\n")).not.toContain("opencode.invalid");
+  f.done();
+});
+
+test("Claude worker start refuses a missing worker credential before launch", async () => {
+  const f = fixture();
+  f.env.EXAMPLE_WORKER_GITHUB_TOKEN = "";
+  await expect(
+    f.transport.call("worker", { args: ["start", "31", "--model", "sonnet"] }, f.ctx)
+  ).rejects.toThrow("Claude workers require credentials.workerGithubToken");
+  expect(f.deps.processes!.launch).not.toHaveBeenCalled();
   expect(f.requests.join("\n")).not.toContain("opencode.invalid");
   f.done();
 });

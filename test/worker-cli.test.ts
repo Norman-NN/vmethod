@@ -15,6 +15,8 @@ import { beforeAll, expect, test } from "vitest";
 import { fixture, validProject } from "./helpers.js";
 import { actor, item, people } from "./gateway/helpers.js";
 import { stringify } from "yaml";
+import recorded from "./fixtures/github/learnings-recorded.json" with { type: "json" };
+import { stub } from "../src/registry.js";
 
 const require = createRequire(import.meta.url);
 let bundle: string;
@@ -49,6 +51,75 @@ function cliFixture(timeout = 3000) {
     });
   return { root, cli, run };
 }
+
+test("generated stub uses cached worktree context through the CLI; explicit task PR wins", () => {
+  const f = cliFixture();
+  writeFileSync(join(f.root, "people.yaml"), stringify(people));
+  const preload = join(f.root, "worker-identity.mjs");
+  writeFileSync(
+    preload,
+    `import assert from 'node:assert/strict';
+    let calls=0;
+    globalThis.fetch=async (url, init)=> {
+      assert.equal(String(url),'https://api.github.com/graphql');
+      assert.equal(init.method,'POST');
+      assert.equal(++calls,1);
+      assert.equal(JSON.parse(init.body).query,'query GatewayIdentity { viewer { databaseId login __typename } }');
+      return Response.json({data:{viewer:${JSON.stringify(actor(1))}}});
+    };
+    if (!process.argv[1].endsWith('/git')) process.on('exit',()=>assert.equal(calls,1));`
+  );
+  const bin = join(f.root, "fake-bin");
+  mkdirSync(bin);
+  const git = join(bin, "git");
+  writeFileSync(
+    git,
+    `#!${process.execPath}
+const command = process.argv.slice(2).join(' ');
+const responses = {
+  'rev-parse --git-dir': '.git/worktrees/task',
+  'rev-parse --git-common-dir': '.git',
+  'rev-parse --abbrev-ref HEAD': '64-task',
+  'rev-parse HEAD': '${"a".repeat(40)}',
+};
+if (!(command in responses)) throw new Error('Unexpected git command: ' + command);
+console.log(responses[command]);
+`
+  );
+  chmodSync(git, 0o755);
+  mkdirSync(join(f.root, ".tmp"));
+  writeFileSync(
+    join(f.root, ".tmp", "worker-context.json"),
+    JSON.stringify({ branch: "64-task", head: "a".repeat(40), taskPr: 65 })
+  );
+  mkdirSync(join(f.root, "node_modules", ".bin"), { recursive: true });
+  symlinkSync(f.cli, join(f.root, "node_modules", ".bin", "vmethod"));
+  chmodSync(f.cli, 0o755);
+  // The generated stub delegates inference to the same CLI used by direct invocations.
+  const script = join(f.root, "post.sh");
+  writeFileSync(script, stub("post"));
+  const run = (env: NodeJS.ProcessEnv) =>
+    runChild("/bin/sh", [script, "65", ".tmp/must-not-exist.md"], {
+      cwd: f.root,
+      env: {
+        VMETHOD_ROOT: f.root,
+        PATH: `${bin}:${dirname(process.execPath)}`,
+        EXAMPLE_GITHUB_TOKEN: "fake-token",
+        NODE_OPTIONS: `--import=${preload}`,
+        ...env,
+      },
+      encoding: "utf8",
+      timeout: 3000,
+    });
+  const inferred = run({});
+  expect(inferred.status, inferred.stderr).toBe(1);
+  expect(inferred.stderr).toContain("ENOENT");
+  expect(inferred.stderr).not.toContain("own taskPr");
+  const explicit = run({ VMETHOD_TASK_PR: "90" });
+  expect(explicit.status, explicit.stderr).toBe(1);
+  expect(explicit.stderr).toContain("own taskPr");
+  expect(explicit.stderr).not.toContain("ENOENT");
+}, 10000);
 
 test.each([0, 1, 2, 3])(
   "wait-checks CLI preserves verdict exit %s and prints it last without real networking",
@@ -88,7 +159,7 @@ test.each([0, 1, 2, 3])(
     const preload = join(f.root, "offline.mjs");
     writeFileSync(
       preload,
-      `import assert from 'node:assert/strict'; const responses=${JSON.stringify(responses)}; const paths=${JSON.stringify(paths)}; globalThis.fetch=async (url, init)=> { assert.equal(String(url), 'https://api.github.com/repos/example/project'+paths.shift()); assert.equal(init.method,'GET'); assert.equal(init.redirect,'error'); assert.ok(responses.length); return new Response(JSON.stringify(responses.shift())); }; process.on('exit',()=>{ assert.equal(responses.length,0); assert.equal(paths.length,0); });`
+      `import assert from 'node:assert/strict'; let identities=0; const responses=${JSON.stringify(responses)}; const paths=${JSON.stringify(paths)}; globalThis.fetch=async (url, init)=> { assert.equal(init.redirect,'error'); if (String(url)==='https://api.github.com/graphql') { assert.equal(++identities,1); assert.equal(init.method,'POST'); assert.equal(JSON.parse(init.body).query,'query GatewayIdentity { viewer { databaseId login __typename } }'); return Response.json({data:{viewer:${JSON.stringify(actor(1))}}}); } assert.equal(String(url), 'https://api.github.com/repos/example/project'+paths.shift()); assert.equal(init.method,'GET'); assert.ok(responses.length); return new Response(JSON.stringify(responses.shift())); }; process.on('exit',()=>{ assert.equal(identities,1); assert.equal(responses.length,0); assert.equal(paths.length,0); });`
     );
     const result = f.run(["wait-checks", "3", "0"], ["--import", preload], {
       VMETHOD_TASK_PR: "3",
@@ -120,6 +191,48 @@ function peers(root: string) {
     "exports.JSDOM = class { window = { document: {}, close() {} }; };"
   );
 }
+
+test("check --online reports both credential identities through the built CLI", () => {
+  const f = cliFixture();
+  // Captured viewer (learnings-PROVENANCE.md), projected to the requested fields.
+  const viewer = {
+    databaseId: recorded.viewer.databaseId,
+    login: recorded.viewer.login,
+    __typename: recorded.viewer.__typename,
+  };
+  writeFileSync(
+    join(f.root, "people.yaml"),
+    stringify([
+      { login: viewer.login, id: viewer.databaseId, type: viewer.__typename, role: "orchestrator" },
+      people[1],
+    ])
+  );
+  const preload = join(f.root, "online-check.mjs");
+  writeFileSync(
+    preload,
+    `import assert from 'node:assert/strict';
+    const viewers=${JSON.stringify([viewer, actor(1)])};
+    const tokens=['Bearer orchestrator-token','Bearer worker-token'];
+    globalThis.fetch=async (url, init)=> {
+      assert.equal(String(url),'https://api.github.com/graphql');
+      assert.equal(init.method,'POST');
+      assert.equal(init.headers.authorization,tokens.shift());
+      assert.equal(JSON.parse(init.body).query,'query GatewayIdentity { viewer { databaseId login __typename } }');
+      assert.ok(viewers.length);
+      return Response.json({data:{viewer:viewers.shift()}});
+    };
+    process.on('exit',()=>{assert.equal(viewers.length,0);assert.equal(tokens.length,0);});`
+  );
+  const result = f.run(["check", "--online"], ["--import", preload], {
+    EXAMPLE_GITHUB_TOKEN: "orchestrator-token",
+    EXAMPLE_WORKER_GITHUB_TOKEN: "worker-token",
+  });
+  expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+  expect(result.stdout).toContain("credentials.githubToken: vimescmd (orchestrator)");
+  expect(result.stdout).toContain("credentials.workerGithubToken: worker (worker)");
+  expect(result.stdout).not.toContain("orchestrator-token");
+  expect(result.stdout).not.toContain("worker-token");
+}, 5000);
 
 test("Markdown CLI reports missing peers with a stable exit", () => {
   const f = cliFixture();
@@ -319,7 +432,7 @@ test.each(["auto-", ""])(
     };
     writeFileSync(
       preload,
-      `import assert from 'node:assert/strict'; let calls=0; globalThis.fetch=async (url, init) => { assert.equal(String(url),'https://api.github.com/graphql'); assert.equal(++calls,1); const payload=JSON.parse(init.body); assert.equal(payload.variables.number,3); assert.ok(payload.query.includes('headRefName')); return new Response(${JSON.stringify(JSON.stringify(response))}); }; process.on('exit',()=>assert.equal(calls,1));`
+      `import assert from 'node:assert/strict'; let calls=0; globalThis.fetch=async (url, init) => { assert.equal(String(url),'https://api.github.com/graphql'); const payload=JSON.parse(init.body); if (++calls===1) { assert.equal(payload.query,'query GatewayIdentity { viewer { databaseId login __typename } }'); return Response.json({data:{viewer:${JSON.stringify(actor(1))}}}); } assert.equal(calls,2); assert.equal(payload.variables.number,3); assert.ok(payload.query.includes('headRefName')); return new Response(${JSON.stringify(JSON.stringify(response))}); }; process.on('exit',()=>assert.equal(calls,2));`
     );
     const env = {
       PATH: bin,

@@ -271,6 +271,9 @@ function fixture() {
         data = { merged: true };
       } else if (method === "POST" && path === "/repos/example/project/pulls") {
         data = { number: 27, node_id: "pr" };
+      } else if (method === "PATCH" && path === "/repos/example/project/pulls/27") {
+        expect(typeof payload.body).toBe("string");
+        data = { number: 27, node_id: "pr" };
       } else if (
         method === "POST" &&
         /^\/repos\/example\/project\/issues\/(8|27)\/comments$/.test(path)
@@ -512,6 +515,43 @@ test.each([
   f.set({ title });
   await f.flow().open({ issue: "8" });
   expect(f.writes.find((w) => w.path.endsWith("/pulls"))!.body.title).toBe(expected);
+  f.done();
+});
+
+test.each([{ issue: "8" }, { direct: "fix: direct task" }])(
+  "open-task fills worker commands with the created PR number: %j",
+  async (input) => {
+    const f = fixture();
+    await f.flow().open(input);
+    const body = String(
+      f.writes.find((write) => write.path === "/repos/example/project/pulls/27")?.body.body
+    );
+    expect(body).toContain("## Commands");
+    for (const command of [
+      "read-pr 27",
+      "pr-comment 27 .tmp/<file>.md",
+      "push",
+      "wait-checks 27",
+    ]) {
+      expect(body).toContain(
+        `VMETHOD_ROLE=worker VMETHOD_TASK_PR=27 npm exec --no -- vmethod ${command}\n`
+      );
+    }
+    expect(body).toContain("Every vmethod command needs this prefix");
+    expect(body).toContain("'denied for client role' or 'own taskPr'");
+    expect(body).not.toContain("<task PR number>");
+    f.done();
+  }
+);
+
+test("open-task reports the created draft when updating commands fails", async () => {
+  const f = fixture();
+  f.set({ fail: "/pulls/27" });
+  await expect(f.flow().open({ issue: "8" })).rejects.toThrow(
+    "Created draft PR #27, but command rendering failed; inspect it before retrying open-task"
+  );
+  expect(f.writes.filter((write) => write.path.endsWith("/pulls"))).toHaveLength(1);
+  expect(f.touched).toEqual([]);
   f.done();
 });
 
