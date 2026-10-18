@@ -1,0 +1,71 @@
+{
+  "before": {
+    "data": {
+      "repository": {
+        "pullRequest": {
+          "number": 74,
+          "closingIssuesReferences": {
+            "nodes": [],
+            "pageInfo": { "hasNextPage": false }
+          }
+        }
+      }
+    }
+  },
+  "add": { "data": { "addCloseIssueReferences": { "clientMutationId": null } } },
+  "afterAdd": {
+    "data": {
+      "repository": {
+        "pullRequest": {
+          "number": 74,
+          "closingIssuesReferences": {
+            "nodes": [{ "number": 68, "repository": { "nameWithOwner": "vworlds/vmethod" } }],
+            "pageInfo": { "hasNextPage": false }
+          }
+        }
+      }
+    }
+  },
+  "addAgain": { "data": { "addCloseIssueReferences": { "clientMutationId": null } } },
+  "afterIdempotentAdd": {
+    "data": {
+      "repository": {
+        "pullRequest": {
+          "number": 74,
+          "closingIssuesReferences": {
+            "nodes": [{ "number": 68, "repository": { "nameWithOwner": "vworlds/vmethod" } }],
+            "pageInfo": { "hasNextPage": false }
+          }
+        }
+      }
+    }
+  },
+  "remove": { "data": { "removeCloseIssueReferences": { "clientMutationId": null } } },
+  "afterRemove": {
+    "data": {
+      "repository": {
+        "pullRequest": {
+          "number": 74,
+          "closingIssuesReferences": {
+            "nodes": [],
+            "pageInfo": { "hasNextPage": false }
+          }
+        }
+      }
+    }
+  },
+  "finalAdd": { "data": { "addCloseIssueReferences": { "clientMutationId": null } } },
+  "final": {
+    "data": {
+      "repository": {
+        "pullRequest": {
+          "number": 74,
+          "closingIssuesReferences": {
+            "nodes": [{ "number": 68, "repository": { "nameWithOwner": "vworlds/vmethod" } }],
+            "pageInfo": { "hasNextPage": false }
+          }
+        }
+      }
+    }
+  }
+}

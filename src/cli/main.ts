@@ -67,6 +67,7 @@ try {
     case "open-task":
     case "review":
     case "merge-task":
+    case "link-task":
     case "release-hold":
     case "wait-checks":
     case "verify":
@@ -112,7 +113,7 @@ try {
               ).stdout,
             report: (message) => console.error(message),
           })
-        : ["open-task", "review", "merge-task", "release-hold"].includes(verb)
+        : ["open-task", "review", "merge-task", "link-task", "release-hold"].includes(verb)
           ? await taskFlowVerb(transport, verb, args, env)
           : await gatewayVerb(transport, verb, args, env);
       if (output) {

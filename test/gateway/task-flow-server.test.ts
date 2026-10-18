@@ -1,5 +1,46 @@
 import { expect, test } from "vitest";
 import { actor, fixtureServer, graph, item, sha } from "./helpers.js";
+import developmentLinks from "../fixtures/github/task-development-links.json" with { type: "json" };
+
+test("link-task reaches the authenticated Development mutation path without editing the body", async () => {
+  const body = "# Task: feat: task (issue #8)\n\nYou are a worker.\nPrompt.";
+  const f = fixtureServer([
+    graph({ repository: { pullRequest: item() } }),
+    graph({
+      node: item({
+        body,
+        title: "feat: task",
+        state: "OPEN",
+        headRefName: "8-task",
+        baseRefName: "dev",
+        headRepository: { nameWithOwner: "example/project" },
+        labels: { nodes: [], pageInfo: { hasNextPage: false } },
+        closingIssuesReferences: { nodes: [], pageInfo: { hasNextPage: false } },
+      }),
+    }),
+    graph({ repository: { issue: item() } }),
+    graph({
+      node: item({
+        state: "OPEN",
+        title: "feat: issue",
+        body: "Spec",
+        labels: { nodes: [], pageInfo: { hasNextPage: false } },
+      }),
+    }),
+    {
+      path: "/graphql",
+      json: developmentLinks.add,
+      checkQuery(query, variables) {
+        expect(query).toContain(
+          "addCloseIssueReferences(input: {issueId: $issueId, pullRequestIds: $pullRequestIds})"
+        );
+        expect(variables).toEqual({ issueId: "node-1", pullRequestIds: ["node-1"] });
+      },
+    },
+  ]);
+  await expect(f.transport.call("linkTask", { ref: "27" })).resolves.toBe("Linked task #27");
+  f.done();
+});
 
 test("open-task checks the issue timeline actor at the server, not the card's Status", async () => {
   const f = fixtureServer([

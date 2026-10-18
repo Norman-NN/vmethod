@@ -1,0 +1,20 @@
+{
+  "repository": {
+    "pullRequest": {
+      "number": 346,
+      "closingIssuesReferences": {
+        "nodes": [
+          {
+            "number": 342,
+            "repository": {
+              "nameWithOwner": "vworlds/spacerocks"
+            }
+          }
+        ],
+        "pageInfo": {
+          "hasNextPage": false
+        }
+      }
+    }
+  }
+}

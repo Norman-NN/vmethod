@@ -1,5 +1,43 @@
 # GitHub board field regression
 
+## Native closing references (PR #73)
+
+`task-development-links.json` groups the nine raw GraphQL responses supplied by
+vimescmd in PR #73's authenticated review-round-1 answer on 2026-10-18. Sources
+are `.tmp/captures/link-mutations/1-before.json` through `9-final.json` and their
+`PROVENANCE.md`, recorded live against `vworlds/vmethod` issue #68 / PR #74.
+The wrapper keys follow that order: before, add, afterAdd, addAgain,
+afterIdempotentAdd, remove, afterRemove, finalAdd, final. No selected fields,
+values or wire types are changed; the additional grouping keys and formatting
+are local. Add/remove selected `clientMutationId`, with inputs `issueId` and
+`pullRequestIds`, exactly as in the worker's DESIGN comment. Reads select PR number
+and the same closing-reference connection described below. The final state leaves
+PR #74 correctly linked to issue #68, with no reference prose in its body.
+
+Task-flow fakes now use those recorded mutation responses and connection shapes.
+They rename linked repository/issue values to match each isolated scenario and
+use fixture node IDs for request variables. The recorded lifecycle regression
+preserves issue #68 and projects only its repository to `example/project`, then
+decodes the raw read/mutation envelopes through the real GraphQL client. It checks
+backfill, idempotent re-read, removal, partial no-op and promotion, with no body
+reference prose and no duplicate mutations. The live second add also demonstrates
+API-level idempotence; the CLI additionally skips that redundant call.
+
+`task-closing-references.json` records the gateway query supplied by vimescmd in
+PR #73's authenticated answer on 2026-10-18, against `vworlds/spacerocks` PR #346.
+That PR has a real closing-keyword body reference to issue #342. The query selects
+`repository.pullRequest.number` and `closingIssuesReferences(first: 100)` with
+`nodes { number repository { nameWithOwner } }` and `pageInfo { hasNextPage }`.
+Only the gateway-added `attribution` key is removed; all selected wire values and
+types are unchanged. The original capture is ignored under `.tmp/captures/`.
+
+The task-flow regression renames only the linked repository to `example/project`
+to match its isolated configured scope, then returns the capture through the real
+GitHub GraphQL client and consumes its connection in merge follow-up. It verifies
+the issue close payload and board Done write, with unexpected calls rejected.
+This records GitHub's actual linked-issue shape, not a vmethod live write; the
+orchestrator owns vmethod backfill and board confirmation after merge.
+
 ## Review comment projection (PR #71)
 
 `review-comment.json` projects the REST comment supplied by vimescmd in PR #71's

@@ -12,6 +12,7 @@ import { checkMarkdown, guardClosingKeywords } from "./markdown.js";
 import { GitTransport, taskBranch, validateBranch } from "./git.js";
 import { cleanBaseMerges } from "./clean-base.js";
 import type { OpenTaskInput, ReviewInput } from "./task-flow-types.js";
+import { taskRelation } from "./task-flow-types.js";
 
 interface Host {
   thread(ref: string, kind: "pr" | "issue"): Promise<ObjectData>;
@@ -331,9 +332,13 @@ export class TaskFlow {
         ? "\nAt each defined breakpoint post `[worker] HANDOFF` with what is done, uncommitted files and remaining mechanical steps, then end your turn.\n"
         : "") +
       `\n<!-- vmethod-task ${JSON.stringify({ issues: issue ? [Number(input.issue)] : [], ...(input.part ? { part: true } : {}) })} -->\n`;
-    const body = renderBody("<task PR number>");
-    await checkMarkdown(this.root, body);
-    guardClosingKeywords(body);
+    const checkedBody = async (taskPr: string): Promise<string> => {
+      const body = renderBody(taskPr);
+      guardClosingKeywords(body);
+      await checkMarkdown(this.root, body);
+      return body;
+    };
+    const body = await checkedBody("<task PR number>");
     if (input.unapproved && issue) {
       await this.post(input.issue!, `[orchestrator] Unapproved exception\n\n${input.unapproved}`);
     }
@@ -367,9 +372,7 @@ export class TaskFlow {
     const ref = String(created.number);
     this.number(ref);
     // GitHub assigns the task PR number on creation, independently of the issue number.
-    const finalBody = renderBody(ref);
-    await checkMarkdown(this.root, finalBody);
-    guardClosingKeywords(finalBody);
+    const finalBody = await checkedBody(ref);
     try {
       await this.host.github.rest(this.path(ref, "pulls"), "PATCH", { body: finalBody }, false);
     } catch (error) {
@@ -386,6 +389,20 @@ export class TaskFlow {
         labels: [`track:${String(this.config.track)}`],
       });
     }
+    if (issue && !input.part) {
+      try {
+        await this.closingLinks(
+          await this.host.thread(ref, "pr"),
+          [this.number(input.issue!)],
+          false
+        );
+      } catch (error) {
+        throw new Error(
+          `Created draft PR #${ref}, but Development linking failed; retry link-task ${ref}`,
+          { cause: error }
+        );
+      }
+    }
     await this.card(pr, "In progress", input.hold ? "⛔" : "🤖🔨", model.family);
     await this.turn(ref, false);
     if (issue) {
@@ -393,6 +410,122 @@ export class TaskFlow {
       await this.turn(input.issue!, false);
     }
     return `Opened draft PR #${ref} (${branch})`;
+  }
+
+  /** Backfill Development links; complete promotes, unlink demotes to a partial task. */
+  async link(ref: string, complete = false, unlink = false): Promise<string> {
+    if (typeof complete !== "boolean" || typeof unlink !== "boolean" || (complete && unlink)) {
+      throw new Error("Invalid or conflicting link flags");
+    }
+    const item = await this.pr(ref);
+    if (item.state !== "OPEN") {
+      throw new Error("PR is not open");
+    }
+    let body = String(item.body);
+    const relation = taskRelation(body);
+    if (!relation) {
+      throw new Error("Missing structured task relation");
+    }
+    if (!relation.issues.length) {
+      return `Task #${ref} links already current`;
+    }
+    if ((complete && relation.part) || (unlink && !relation.part)) {
+      relation.part = unlink;
+      body = body.replace(
+        /^(# Task: [^\r\n]*) \((?:part of )?issue #([1-9]\d*)\)/,
+        (_match, title: string, issue: string) =>
+          `${title} (${relation.part ? "part of " : ""}issue #${issue})`
+      );
+      // The template's marker is last; marker examples in the worker prompt are data.
+      const marker = [...body.matchAll(/<!-- vmethod-task (\{[^\n]*\}) -->/g)].at(-1);
+      if (marker) {
+        const value = object(JSON.parse(marker[1]));
+        const updated = `<!-- vmethod-task ${JSON.stringify({ ...value, issues: relation.issues, part: relation.part })} -->`;
+        body = body.slice(0, marker.index) + updated + body.slice(marker.index + marker[0].length);
+      }
+    }
+    if (body !== item.body) {
+      await checkMarkdown(this.root, body);
+    }
+    const changed =
+      unlink || !relation.part ? await this.closingLinks(item, relation.issues, unlink) : false;
+    if (!changed && body === item.body) {
+      return `Task #${ref} links already current`;
+    }
+    if (body !== item.body) {
+      // Only structured plan flags change, never reference prose or prompt text.
+      await this.host.github.rest(this.path(ref, "pulls"), "PATCH", { body }, false);
+    }
+    return `${unlink ? "Unlinked" : "Linked"} task #${ref}${complete ? " as completing" : ""}`;
+  }
+
+  private async closingLinks(
+    item: ObjectData,
+    issues: number[],
+    unlink: boolean
+  ): Promise<boolean> {
+    if (!issues.length) {
+      return false;
+    }
+    const references = this.linkedIssues(item);
+    if (typeof item.id !== "string" || !item.id) {
+      throw new Error("Missing task PR node id");
+    }
+    let changed = false;
+    for (const number of issues) {
+      const linked = references.has(number);
+      if (linked !== unlink) {
+        continue;
+      }
+      const issue = await this.host.thread(String(number), "issue");
+      if (typeof issue.id !== "string" || !issue.id) {
+        throw new Error("Missing issue node id");
+      }
+      const mutation = unlink ? "removeCloseIssueReferences" : "addCloseIssueReferences";
+      const result = object(
+        await this.host.github.graphql(
+          `mutation TaskClosingLink($issueId: ID!, $pullRequestIds: [ID!]!) {
+          ${mutation}(input: {issueId: $issueId, pullRequestIds: $pullRequestIds}) { clientMutationId }
+        }`,
+          { issueId: issue.id, pullRequestIds: [item.id] }
+        )
+      );
+      if (!result[mutation] || typeof result[mutation] !== "object") {
+        throw new Error("Missing closing reference mutation result");
+      }
+      changed = true;
+    }
+    if (unlink && changed) {
+      const remaining = this.linkedIssues(await this.pr(String(item.number)));
+      if (issues.some((number) => remaining.has(number))) {
+        throw new Error(
+          "Closing reference remains; --unlink removes manual links only, not automatic body references"
+        );
+      }
+    }
+    return changed;
+  }
+
+  private linkedIssues(item: ObjectData): Set<number> {
+    const references = object(item.closingIssuesReferences);
+    if (!Array.isArray(references.nodes) || object(references.pageInfo).hasNextPage !== false) {
+      throw new Error("Missing or incomplete closing issue references");
+    }
+    const numbers = new Set<number>();
+    for (const value of references.nodes) {
+      const node = object(value);
+      if (
+        !Number.isSafeInteger(node.number) ||
+        Number(node.number) < 1 ||
+        typeof object(node.repository).nameWithOwner !== "string"
+      ) {
+        throw new Error("Invalid closing issue reference");
+      }
+      if (object(node.repository).nameWithOwner === this.repo) {
+        numbers.add(Number(node.number));
+      }
+    }
+    return numbers;
   }
 
   async review(input: ReviewInput): Promise<string> {
@@ -543,50 +676,33 @@ export class TaskFlow {
   }
 
   private async issues(item: ObjectData): Promise<number[]> {
-    const header = /^# Task: [^\r\n]* \((part of )?issue #([1-9]\d*)\)[\t ]*(?:\r?\n|$)/.exec(
-      String(item.body)
-    );
-    if (header) {
-      if (!Number.isSafeInteger(Number(header[2]))) {
-        throw new Error("Invalid task header issue");
-      }
-      return header[1] ? [] : [Number(header[2])];
+    const relation = taskRelation(String(item.body));
+    if (relation) {
+      return relation.part ? [] : relation.issues;
     }
-    const match = /<!-- vmethod-task (\{[^\n]*\}) -->/.exec(String(item.body));
-    if (!match) {
-      if (/^[\t ]*(?:>[\t ]*)?(?:\*\*)?Part of\s+#([1-9]\d*)\b/im.test(String(item.body))) {
-        return [];
-      }
-      const references = object(item.closingIssuesReferences);
-      if (object(references.pageInfo).hasNextPage === true) {
-        throw new Error("Too many legacy issue links");
-      }
-      const linked = Array.isArray(references.nodes)
-        ? references.nodes
-            .map(object)
-            .filter((node) => object(node.repository).nameWithOwner === this.repo)
-            .map((node) => Number(node.number))
-        : [];
-      const legacy = linked.length ? linked : legacyIssueHeaders(String(item.body));
-      if (legacy.some((number) => !Number.isSafeInteger(number))) {
-        throw new Error("Invalid legacy issue link");
-      }
-      if (legacy.length) {
-        this.deps.report("legacy link: using pre-adoption issue relation");
-      } else {
-        this.deps.report("no linked issue");
-      }
-      return [...new Set(legacy)];
+    if (/^[\t ]*(?:>[\t ]*)?(?:\*\*)?Part of\s+#([1-9]\d*)\b/im.test(String(item.body))) {
+      return [];
     }
-    const relation = object(JSON.parse(match[1]));
-    if (relation.part !== undefined && typeof relation.part !== "boolean") {
-      throw new Error("Invalid partial task relation");
+    const references = object(item.closingIssuesReferences);
+    if (object(references.pageInfo).hasNextPage === true) {
+      throw new Error("Too many legacy issue links");
     }
-    const issues: unknown = relation.issues;
-    if (!Array.isArray(issues) || issues.some((n) => !Number.isSafeInteger(n) || n < 1)) {
-      throw new Error("Invalid task issue relation");
+    const linked = Array.isArray(references.nodes)
+      ? references.nodes
+          .map(object)
+          .filter((node) => object(node.repository).nameWithOwner === this.repo)
+          .map((node) => Number(node.number))
+      : [];
+    const legacy = linked.length ? linked : legacyIssueHeaders(String(item.body));
+    if (legacy.some((number) => !Number.isSafeInteger(number))) {
+      throw new Error("Invalid legacy issue link");
     }
-    return relation.part ? [] : [...new Set(issues as number[])];
+    if (legacy.length) {
+      this.deps.report("legacy link: using pre-adoption issue relation");
+    } else {
+      this.deps.report("no linked issue");
+    }
+    return [...new Set(legacy)];
   }
   private stateFile(ref: string): string {
     const name = String(this.config.stateName ?? this.repo.replace("/", "-"));

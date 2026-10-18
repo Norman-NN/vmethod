@@ -564,13 +564,38 @@ These commands require `VMETHOD_ROLE=orchestrator`:
   The header is `# Task: <title> (issue #N)` and `<!-- points_open: N -->`
   freezes the issue's opening Estimate for grading; it is never copied onto the PR card.
   `open-task --direct "<title>"` also works without an issue. It records a structured
-  issue relation without closing prose, sets Model/Progress and never estimates a PR.
+  issue relation, sets Model/Progress and never estimates a PR. After creating a
+  completing PR, the gateway establishes its issue-side Development relation with
+  GraphQL `addCloseIssueReferences`, using the issue and PR node IDs. This manual
+  closing link appears in Development and the board's linked-PR field; GitHub closes
+  the issue when the completing PR merges into the repository's default branch.
+  No closing-keyword or association-reference text is added to the PR description.
   Gates and expensive-only Handoff breakpoints are enforced server-side.
   Existing conforming title prefixes are preserved. An issue-only `bug:` alias
   becomes `fix:`; prose/nonconforming titles receive `feat:` without broadening
   the accepted delivery-title types. `--part` requires an issue and records
   `# Task: <title> (part of issue #N)` plus `"part":true` in the structured marker.
-  A partial delivery leaves the issue and its card unchanged during merge follow-up.
+  Partial PRs have only vmethod's structured relation: no native closing link,
+  added timeline reference or board linked-PR entry. A partial delivery leaves the
+  issue and its card unchanged during merge follow-up. For multi-PR issues, use
+  `--part` for intermediate deliveries; only the completing PR gets a closing link.
+- `link-task <pr> [--complete|--unlink]` idempotently backfills an open task PR's
+  Development relation from its structured header or marker, never from prose or
+  branch numbers. It reads `closingIssuesReferences` first and skips existing links.
+  Use it on existing open task PRs after upgrading. `--complete` promotes a partial
+  PR by updating its structured relation and adding the manual closing reference.
+  `--unlink` calls `removeCloseIssueReferences` and demotes the structured relation
+  to partial, so merge follow-up will not complete that issue. These flags are exclusive.
+  Removal affects manual links only: automatic body-keyword references are unchanged.
+  If a reference remains after removal, the command fails visibly without demoting
+  the plan; remove that automatic reference through an owner-approved body edit.
+  The orchestrator decides which PR completes an issue. Plain backfill never edits
+  the body; promotion/demotion change only the structured plan, not reference prose.
+  Direct tasks without an issue need no link. Workers cannot edit PR bodies or call
+  this command; agent comments and reviews still reject closing/association keywords.
+  Failed linking after PR creation names the created PR and the `link-task` recovery
+  command; retry that command rather than creating another task. A failed plan edit
+  after a successful mutation can likewise be retried without duplicating links.
 - `review <pr> changes|owner|answer|ask|approve <file> [--in-reply-to <comment-url>]`
   posts the protocol header and sets the next actor. Owner review always names the
   full current SHA and marks the draft ready. `approve` posts an orchestrator
@@ -581,10 +606,12 @@ These commands require `VMETHOD_ROLE=orchestrator`:
   conflict-free green-head squash onto a moved base. Pack heads require merge
   commits and are retained. Track/pack-base deliveries leave linked issues and the
   main checkout alone. A final-base delivery closes linked issues and reports
-  `revise estimates: …` for own-repository dependents.
+  `revise estimates: …` for own-repository dependents. Missing native links never
+  block merging. If GitHub already closed the issue, follow-up still sets its card
+  to Done without another close write or duplicate comment.
 - `release-hold <pr>` posts GO, updates Progress and resumes the worker.
 
-The transport operations are `openTask`, `reviewTask`, `mergeTask`, `releaseHold`
+The transport operations are `openTask`, `linkTask`, `reviewTask`, `mergeTask`, `releaseHold`
 and `workerStatus`; `src/gateway/task-flow-types.ts` and `transport.ts` own their
 signatures. The gateway wires worker status, stop and resume to the recorded opencode
 or Claude session. Missing records remain unknown, never interpreted as stopped.
