@@ -1,4 +1,5 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { getConfig } from "../../src/config.js";
@@ -251,5 +252,37 @@ test("journal errors are loud, never interpreted as an empty successful read", a
   await expect(client.rest("/repos/example/project/issues/6/comments", "POST", {})).rejects.toThrow(
     "journal"
   );
+  f.done();
+});
+
+test("a dead process's old journal lock is reclaimed", async () => {
+  const f = fixtureServer([{ path: "/repos/example/project/issues/6/comments", json: {} }]);
+  const client = new GitHubClient(getConfig(f.root, {}), f.env, f.deps);
+  const dir = join(f.env.XDG_STATE_HOME, "vmethod", "example-state");
+  mkdirSync(dir, { recursive: true });
+  const lock = join(dir, "writes.jsonl.lock");
+  writeFileSync(lock, "2147483647");
+  const old = new Date(Date.now() - 10_000);
+  utimesSync(lock, old, old);
+  await client.rest("/repos/example/project/issues/6/comments", "POST", {});
+  expect(readFileSync(join(dir, "writes.jsonl"), "utf8")).toContain('"kind":"comment"');
+  f.done();
+});
+
+test("a brief journal lock contention is waited out", async () => {
+  const f = fixtureServer([{ path: "/repos/example/project/issues/6/comments", json: {} }]);
+  const client = new GitHubClient(getConfig(f.root, {}), f.env, f.deps);
+  const dir = join(f.env.XDG_STATE_HOME, "vmethod", "example-state");
+  mkdirSync(dir, { recursive: true });
+  const lock = join(dir, "writes.jsonl.lock");
+  writeFileSync(lock, String(process.pid));
+  const child = spawn(
+    process.execPath,
+    ["-e", 'setTimeout(() => require("node:fs").unlinkSync(process.argv[1]), 150)', lock],
+    { stdio: "ignore" }
+  );
+  child.unref();
+  await client.rest("/repos/example/project/issues/6/comments", "POST", {});
+  expect(readFileSync(join(dir, "writes.jsonl"), "utf8")).toContain('"kind":"comment"');
   f.done();
 });

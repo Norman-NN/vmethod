@@ -5,6 +5,7 @@ import {
   openSync,
   readFileSync,
   renameSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -14,6 +15,10 @@ import type { Config } from "../config.js";
 import { stateRoot } from "./digest.js";
 import { object, type ObjectData } from "./people.js";
 import { writeSession } from "./watch-scope.js";
+
+const LOCK_RETRIES = 20;
+const LOCK_RETRY_MS = 100;
+const STALE_LOCK_MS = 3_000;
 
 const RETENTION_MS = 24 * 60 * 60_000;
 const MATCH_MS = 2 * 60_000;
@@ -134,15 +139,40 @@ export class WriteJournal {
   private append(entry: WriteRecord): void {
     mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
     // Do not lose a simultaneous writer's append during pruning. The critical
-    // section contains no await/network I/O; contention is a visible retry, not
-    // silently missing attribution. A crash lock requires operator inspection.
-    let lock: number;
-    try {
-      lock = openSync(`${this.path}.lock`, "wx", 0o600);
-    } catch (error) {
+    // section contains no await/network I/O; brief contention is retried.
+    let lock = -1;
+    const lockPath = `${this.path}.lock`;
+    let lockError: unknown;
+    for (let attempt = 0; attempt <= LOCK_RETRIES; attempt += 1) {
+      try {
+        lock = openSync(lockPath, "wx", 0o600);
+        writeFileSync(lock, String(process.pid));
+        lockError = undefined;
+        break;
+      } catch (error) {
+        lockError = error;
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+          break;
+        }
+        if (staleLock(lockPath)) {
+          try {
+            unlinkSync(lockPath);
+          } catch (unlinkError) {
+            if ((unlinkError as NodeJS.ErrnoException).code !== "ENOENT") {
+              lockError = unlinkError;
+            }
+          }
+          continue;
+        }
+        if (attempt < LOCK_RETRIES) {
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, LOCK_RETRY_MS);
+        }
+      }
+    }
+    if (lockError !== undefined) {
       throw new Error(
         "GitHub write succeeded but cannot lock gateway write journal; inspect the remote state and journal lock before retrying (do not blindly repeat creates)",
-        { cause: error }
+        { cause: lockError }
       );
     }
     try {
@@ -362,6 +392,26 @@ export class WriteJournal {
       });
     const recent = entries.filter((entry) => Date.parse(entry.at) >= this.now() - RETENTION_MS);
     return recent;
+  }
+}
+
+function staleLock(path: string): boolean {
+  try {
+    if (Date.now() - statSync(path).mtimeMs <= STALE_LOCK_MS) {
+      return false;
+    }
+    const pid = Number(readFileSync(path, "utf8"));
+    if (!Number.isSafeInteger(pid) || pid < 1) {
+      return false;
+    }
+    try {
+      process.kill(pid, 0);
+      return false;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "ESRCH";
+    }
+  } catch {
+    return false;
   }
 }
 
