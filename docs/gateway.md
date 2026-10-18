@@ -679,9 +679,13 @@ are never issue relations and no sibling-PR scan is performed. Explicit legacy
 relations emit a `legacy link` notice; absent relations report `no linked issue`
 and leave issues unchanged. Old empty journals reconcile newly discoverable issues.
 Completed follow-up is checkpointed as `follow-up` in `merge-<pr>.json` before any
-reinstall; failed follow-up does not mark completion. A journal-matched own merge
-is silent only after that checkpoint. An unmatched self-merge reports another
-session and, unless complete, `follow-up not run: run merge-task`. Owner button
+reinstall; failed follow-up does not mark completion. For same-account merges,
+the watcher waits until ten minutes after the merge and while an incomplete journal
+was modified less than ten minutes ago. If follow-up remains incomplete after both
+grace periods, it reports `follow-up not run: run merge-task` once. An interrupted
+journal therefore ages out rather than suppressing the notice forever. Completed
+journal-matched own merges stay silent; unmatched self-merges report another
+session with `follow-up complete`. Owner button
 merges notify normally; after follow-up completes they stop repeating.
 Obsolete `.turn-*` and `merged-*` stamps are imported once to preserve old
 suppression state, not written by verbs anymore. Done capping ranks all board repositories but archives

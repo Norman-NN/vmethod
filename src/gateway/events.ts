@@ -1591,16 +1591,29 @@ export class EventLoop {
     if (data.merged === true) {
       // Never run follow-up from the watcher. A sibling's same-account merge is
       // still work unless this session recorded it AND recovery is complete.
+      const mergeTime = Date.parse(str(data.merged_at));
       const attempted = Number(this.readMarker(`merge-attempt-${number}`)) * 1000;
       if (this.host.deps.now() - attempted < BUTTON_RETRY_MS) {
         return;
       }
-      const at = Math.floor(this.host.deps.now() / 1000);
-      const pending = `merge-pending-${number}`;
-      if (self && !complete && !this.marked(pending)) {
-        this.writeMarker(pending, String(at));
+      if (self && !complete && notified) {
         return;
       }
+      const journalActive =
+        existsSync(mergeFile) &&
+        !complete &&
+        this.host.deps.now() - statSync(mergeFile).mtimeMs < BUTTON_RETRY_MS;
+      // A recent checkpoint counts as a running follow-up. An interrupted journal
+      // ages out; a missing journal still gets ten minutes from the merge itself.
+      if (
+        self &&
+        !complete &&
+        (journalActive ||
+          (Number.isFinite(mergeTime) && this.host.deps.now() - mergeTime < BUTTON_RETRY_MS))
+      ) {
+        return;
+      }
+      const at = Math.floor(this.host.deps.now() / 1000);
       const merger = str(object(data.merged_by).login);
       const sibling = self && !matched ? " (this account, another session)" : "";
       const action =
