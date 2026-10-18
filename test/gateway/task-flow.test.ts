@@ -206,6 +206,7 @@ test.each(
       let events = await once();
       if (verb === "merge-task" && identity === "sibling") {
         expect(events.some((event) => event.kind === "button-merge")).toBe(false);
+        w.advance(10 * 60_000);
         events = await once();
       }
       if (verb.startsWith("review ")) {

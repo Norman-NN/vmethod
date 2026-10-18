@@ -9,6 +9,7 @@ import {
   openSync,
   copyFileSync,
   unlinkSync,
+  utimesSync,
 } from "node:fs";
 import { join } from "node:path";
 import {
@@ -60,6 +61,35 @@ test.each(["assignment", "progress", "both"])(
     expect(f.reports).toEqual([]);
   }
 );
+
+test("a same-session merge waits for a follow-up completed 30 seconds later", async () => {
+  const f = setup();
+  f.task();
+  const loop = f.loop();
+  await f.tick(loop);
+  f.advance();
+  f.pulls = [];
+  f.gone = {
+    merged: true,
+    merged_at: f.iso(),
+    user: user(),
+    merged_by: { login: "me", id: 999, type: "User" },
+  };
+  const journal = join(f.dir, "merge-24.json");
+  writeFileSync(journal, JSON.stringify({ done: [] }));
+  utimesSync(journal, new Date(f.iso()), new Date(f.iso()));
+  expect((await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true })).events).toEqual([]);
+  f.advance(3_000);
+  expect((await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true })).events).toEqual([]);
+  f.advance(27_000);
+  writeFileSync(journal, JSON.stringify({ done: ["follow-up"] }));
+  const completed = (await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true })).events;
+  expect(completed).toHaveLength(1);
+  expect(completed[0].line).toContain("follow-up complete");
+  expect(completed[0].line).not.toContain("follow-up not run");
+  await f.ack(loop, completed);
+  expect((await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true })).events).toEqual([]);
+});
 
 test("clearing an owner mirror retries an assignment failure without losing the mirror", async () => {
   const f = setup();
@@ -682,16 +712,48 @@ test.each([false, true])(
       );
     }
     expect((await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true })).events).toEqual([]);
-    f.advance();
+    f.advance(10 * 60_000 - 1);
+    expect((await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true })).events).toEqual([]);
+    f.advance(1);
     const events = (await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true })).events;
     expect(events).toHaveLength(1);
     expect(events[0].line).toContain("follow-up not run: run merge-task");
     expect(events[0].line.includes("this account, another session")).toBe(!matched);
     await f.ack(loop, events);
+    f.advance(20 * 60_000);
+    expect((await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true })).events).toEqual([]);
     writeFileSync(join(f.dir, "merge-24.json"), JSON.stringify({ done: ["follow-up"] }));
     expect((await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true })).events).toEqual([]);
   }
 );
+
+test("a recent incomplete merge journal defers a notice until it is ten minutes old", async () => {
+  const f = setup();
+  f.task();
+  const loop = f.loop();
+  await f.tick(loop);
+  f.advance();
+  f.pulls = [];
+  f.gone = {
+    merged: true,
+    merged_at: f.iso(-20 * 60_000),
+    user: user(),
+    merged_by: { login: "me", id: 999, type: "User" },
+  };
+  const journal = join(f.dir, "merge-24.json");
+  writeFileSync(journal, JSON.stringify({ done: [] }));
+  utimesSync(journal, new Date(f.iso()), new Date(f.iso()));
+  expect((await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true })).events).toEqual([]);
+  f.advance(10 * 60_000 - 1);
+  expect((await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true })).events).toEqual([]);
+  f.advance(1);
+  const events = (await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true })).events;
+  expect(events).toHaveLength(1);
+  expect(events[0].line).toContain("follow-up not run: run merge-task");
+  await f.ack(loop, events);
+  f.advance(20 * 60_000);
+  expect((await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true })).events).toEqual([]);
+});
 
 test("a same-session merge with completed follow-up is not deferred", async () => {
   const f = setup();
