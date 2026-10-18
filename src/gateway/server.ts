@@ -1466,6 +1466,7 @@ class GatewayServer {
           timeline: [],
           comments: [],
           boardNumber: Number(object(this.config.board).number),
+          historical: historical !== undefined,
         },
         this.filter
       ) === true
@@ -1536,6 +1537,7 @@ class GatewayServer {
         timeline,
         comments,
         boardNumber: Number(object(this.config.board).number),
+        historical: historical !== undefined,
       },
       this.filter
     );

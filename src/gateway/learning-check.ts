@@ -122,8 +122,11 @@ export async function validateLearningPr(
 export async function learningFiles(github: GitHubClient, pr: number, count: unknown) {
   const endpoint = `/repos/vworlds/vmethod/pulls/${pr}`;
   const files: { filename: string; status: string; previous_filename?: string }[] = [];
-  if (!Number.isSafeInteger(count) || Number(count) < 1 || Number(count) > 3000) {
+  if (!Number.isSafeInteger(count) || Number(count) < 0 || Number(count) > 3000) {
     throw new Error("Incomplete learning PR changed-file metadata");
+  }
+  if (count === 0) {
+    return files;
   }
   for (let page = 1; ; page++) {
     const values = await github.rest(`${endpoint}/files?per_page=100&page=${page}`);

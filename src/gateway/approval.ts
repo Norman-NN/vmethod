@@ -6,6 +6,7 @@ export interface ApprovalPR {
   timeline: ObjectData[];
   comments: ObjectData[];
   boardNumber: number;
+  historical?: boolean;
 }
 
 export function isIssueOwnerApproved(
@@ -50,6 +51,58 @@ export function isOwnerApproved(pr: ApprovalPR, filter: PeopleFilter): boolean |
     )
   ) {
     return true;
+  }
+  if (pr.historical) {
+    const handovers = pr.comments.filter((comment) => {
+      const author = filter.identity(comment.author);
+      const editor = comment.lastEditedAt == null ? author : filter.identity(comment.editor);
+      return (
+        author?.role === "orchestrator" &&
+        editor?.role === "orchestrator" &&
+        typeof comment.body === "string" &&
+        /^\[orchestrator\] OWNER REVIEW(?:\s|$)/.test(comment.body.split(/\r?\n/, 1)[0]) &&
+        new RegExp(`(?<![a-zA-Z0-9])${pr.headRefOid}(?![a-zA-Z0-9])`, "i").test(comment.body)
+      );
+    });
+    const handedAt = Math.max(
+      ...handovers.map((comment) => Date.parse(String(comment.lastEditedAt ?? comment.createdAt)))
+    );
+    if (!Number.isFinite(handedAt)) {
+      return "unknown";
+    }
+    const statusEvents = pr.timeline.filter(
+      (event) =>
+        event.__typename === "ProjectV2ItemStatusChangedEvent" &&
+        event.field === "Status" &&
+        object(event.project).number === pr.boardNumber
+    );
+    if (
+      statusEvents.some(
+        (event) =>
+          typeof event.createdAt !== "string" || !Number.isFinite(Date.parse(event.createdAt))
+      )
+    ) {
+      return "unknown";
+    }
+    const afterHandover = statusEvents.filter(
+      (event) => Date.parse(String(event.createdAt)) > handedAt
+    );
+    if (afterHandover.some((event) => event.actor == null)) {
+      return "unknown";
+    }
+    const approvals = afterHandover.filter(
+      (event) => event.status === "Approved" && owner(event.actor)
+    );
+    if (!approvals.length) {
+      return false;
+    }
+    const approvalAt = Math.max(...approvals.map((event) => Date.parse(String(event.createdAt))));
+    return !afterHandover.some(
+      (event) =>
+        Date.parse(String(event.createdAt)) > approvalAt &&
+        owner(event.actor) &&
+        event.status !== "Approved"
+    );
   }
   const events = pr.timeline.filter(
     (event) =>

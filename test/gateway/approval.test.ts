@@ -223,3 +223,57 @@ test("board approval is bound to the configured project, latest status event, an
     "unknown"
   );
 }, 15000);
+
+test("historical board approval survives a later non-owner move and is revoked by owner", () => {
+  const filter = new PeopleFilter(
+    people,
+    "example",
+    new Digest({ XDG_STATE_HOME: fixture() }, "state", () => 0)
+  );
+  const handover = {
+    author: actor(2),
+    body: `[orchestrator] OWNER REVIEW\nHead: ${sha}`,
+    createdAt: "2026-01-01T01:00:00Z",
+  };
+  const approved = {
+    __typename: "ProjectV2ItemStatusChangedEvent",
+    field: "Status",
+    status: "Approved",
+    actor: actor(),
+    project: { number: 1 },
+    createdAt: "2026-01-01T02:00:00Z",
+  };
+  const movedAway = {
+    ...approved,
+    status: "In review",
+    actor: actor(2),
+    createdAt: "2026-01-01T03:00:00Z",
+  };
+  const pr = {
+    headRefOid: sha,
+    reviews: [],
+    comments: [handover],
+    timeline: [approved, movedAway],
+    boardNumber: 1,
+    historical: true,
+  };
+  expect(isOwnerApproved(pr, filter)).toBe(true);
+  expect(
+    isOwnerApproved({ ...pr, timeline: [approved, { ...movedAway, actor: actor() }] }, filter)
+  ).toBe(false);
+  expect(
+    isOwnerApproved(
+      { ...pr, reviews: [{ state: "APPROVED", author: actor(), commit: { oid: sha } }] },
+      filter
+    )
+  ).toBe(true);
+  expect(
+    isOwnerApproved({ ...pr, timeline: [approved, { ...movedAway, createdAt: "invalid" }] }, filter)
+  ).toBe("unknown");
+  expect(isOwnerApproved({ ...pr, timeline: [{ ...approved, actor: null }] }, filter)).toBe(
+    "unknown"
+  );
+  expect(
+    isOwnerApproved({ ...pr, timeline: [approved, { ...movedAway, actor: null }] }, filter)
+  ).toBe("unknown");
+});
