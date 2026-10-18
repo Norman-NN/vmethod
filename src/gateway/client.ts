@@ -511,7 +511,34 @@ export class OpencodeClient {
       throw new Error("Invalid opencode session id: expected ses_ prefix");
     }
     try {
-      return opencodeData(await this.request("GET", `/api/session/${encodeURIComponent(id)}`));
+      const session = opencodeData(
+        await this.request("GET", `/api/session/${encodeURIComponent(id)}`)
+      );
+      const messages: unknown[] = [];
+      let cursor: string | undefined;
+      for (let page = 0; page < 100; page++) {
+        const query = new URLSearchParams({ limit: "100", ...(cursor ? { cursor } : {}) });
+        const envelope = object(
+          await this.request("GET", `/api/session/${encodeURIComponent(id)}/message?${query}`)
+        );
+        const response = opencodeData(envelope);
+        if (!Array.isArray(response)) {
+          if (page === 0) {
+            return { session, messages: [] };
+          }
+          throw new Error("Invalid opencode cost message response");
+        }
+        messages.push(...response);
+        const previous = object(envelope.cursor).previous;
+        if (typeof previous !== "string" || !previous || previous === cursor) {
+          break;
+        }
+        if (page === 99) {
+          throw new Error("OpenCode cost history exceeds pagination limit");
+        }
+        cursor = previous;
+      }
+      return { session, messages };
     } catch (error) {
       if (error instanceof OpencodeError && error.status === 404) {
         return undefined;

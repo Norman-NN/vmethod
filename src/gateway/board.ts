@@ -236,6 +236,7 @@ export class BoardService implements BoardIO {
     const repo = object(content.repository).nameWithOwner;
     const result: Card = {
       id: text(card.id),
+      archived: card.isArchived === true,
       repo: typeof repo === "string" ? repo : null,
       kind: String(content.__typename),
       assignees: content.assignees
@@ -322,7 +323,7 @@ export class BoardService implements BoardIO {
     const snapshot = await this.snapshot();
     const data = object(
       await this.github.graphql(
-        `query BoardItem($id: ID!) { node(id: $id) { ... on ProjectV2Item { id project { id } ${contentSelection} ${initialValues} } } }`,
+        `query BoardItem($id: ID!) { node(id: $id) { ... on ProjectV2Item { id isArchived project { id } ${contentSelection} ${initialValues} } } }`,
         { id: itemId }
       )
     );

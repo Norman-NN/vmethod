@@ -26,6 +26,9 @@
     "task": { "type": "string" },
     "kind": { "type": "string" },
     "usd": { "type": ["number", "null"], "minimum": 0 },
+    "costSource": { "enum": ["backfill"] },
+    "costBasis": { "enum": ["api-list"] },
+    "costCoverage": { "enum": ["complete", "partial"] },
     "segments": {
       "type": "array",
       "minItems": 1,

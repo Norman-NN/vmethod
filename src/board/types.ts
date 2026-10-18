@@ -16,6 +16,7 @@ export interface Card {
   contentId?: string;
   number?: number;
   closedAt?: string | null;
+  archived?: boolean;
   id: string;
   repo: string | null;
   kind: string;

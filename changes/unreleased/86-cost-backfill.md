@@ -1,3 +1,3 @@
 ### Features
 
-- Add an orchestrator-only `cost backfill` command for recovering Cost from recorded worker sessions.
+- Add an orchestrator-only `cost backfill` command that recovers per-PR Cost from worker state, legacy sessions, and model-log records, with dry-run reporting and archived-card handling.

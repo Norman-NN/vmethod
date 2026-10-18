@@ -209,7 +209,26 @@ class GatewayServer {
         env: this.env,
         models,
         readSession: (id) => this.workers.readSessionForCost(id),
+        inspectCard: async (pr) => {
+          const item = await this.richThread(pr, "pr");
+          const value = this.projectValue(item, "Cost");
+          return {
+            cost: typeof value === "string" ? value : null,
+            archived: this.projectCard(item).isArchived === true,
+          };
+        },
         setCost: (pr, cost) => this.setWorkerField(pr, "pr", "Cost", cost),
+        listPrs: async () => {
+          const snapshot = await this.board.snapshot();
+          return (await this.board.cards(snapshot.id))
+            .filter(
+              (card) =>
+                card.kind === "PullRequest" &&
+                card.repo?.toLowerCase() === String(this.config.repo).toLowerCase() &&
+                Number.isSafeInteger(card.number)
+            )
+            .map((card) => card.number!);
+        },
         report: this.deps.report,
       },
       { dryRun, prs }
@@ -281,7 +300,7 @@ class GatewayServer {
       throw new Error("No accepted task thread");
     }
     const type = kind === "pr" ? "PullRequest" : "Issue";
-    const fields = `title body state ${kind === "pr" ? "isDraft merged headRefName closingIssuesReferences(first: 100) { nodes { number repository { nameWithOwner } } pageInfo { hasNextPage } }" : "labels(first: 100) { nodes { name } } blockedBy(first: 100) { nodes { state } pageInfo { hasNextPage } }"} projectItems(first: 100) { nodes { id project { number owner { ... on Organization { login } ... on User { login } } } fieldValues(first: 100) { nodes { ... on ProjectV2ItemFieldNumberValue { number field { ... on ProjectV2Field { name } } } ... on ProjectV2ItemFieldSingleSelectValue { name field { ... on ProjectV2SingleSelectField { name } } } } pageInfo { hasNextPage } } } pageInfo { hasNextPage } }`;
+    const fields = `title body state ${kind === "pr" ? "isDraft merged headRefName closingIssuesReferences(first: 100) { nodes { number repository { nameWithOwner } } pageInfo { hasNextPage } }" : "labels(first: 100) { nodes { name } } blockedBy(first: 100) { nodes { state } pageInfo { hasNextPage } }"} projectItems(first: 100) { nodes { id isArchived project { number owner { ... on Organization { login } ... on User { login } } } fieldValues(first: 100) { nodes { ... on ProjectV2ItemFieldTextValue { text field { ... on ProjectV2Field { name } } } ... on ProjectV2ItemFieldNumberValue { number field { ... on ProjectV2Field { name } } } ... on ProjectV2ItemFieldSingleSelectValue { name field { ... on ProjectV2SingleSelectField { name } } } } pageInfo { hasNextPage } } } pageInfo { hasNextPage } }`;
     const result = await this.node(String(item.id), fields, type);
     if (!this.filter.accept(result, repoOf(result).owner, link)) {
       throw new Error("Task identity changed during read");
@@ -301,6 +320,12 @@ class GatewayServer {
     const card = this.projectCard(item);
     if (typeof card.id !== "string") {
       throw new Error("Task has no card on configured board");
+    }
+    if (field === "Cost" && this.projectValue(item, field) === value) {
+      return;
+    }
+    if (field === "Cost" && card.isArchived === true) {
+      throw new Error("The item is archived and cannot be updated");
     }
     await this.board.set({ itemId: card.id, field, value });
   }

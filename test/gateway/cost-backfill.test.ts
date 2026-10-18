@@ -1,9 +1,10 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import { backfillCosts } from "../../src/gateway/cost-backfill.js";
-import capture from "../..//.tmp/captures/opencode/session.json" with { type: "json" };
+import { gatewayVerb } from "../../src/cli/gateway.js";
+import capture from "../fixtures/usage/opencode-session.json" with { type: "json" };
 
 const roots: string[] = [];
 afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
@@ -22,8 +23,11 @@ test("prices recorded worker sessions using the recorded OpenCode session shape"
       model: { kind: "opencode", family: "sol" },
     })
   );
-  const setCost = vi.fn(async (pr: number, value: string) => void [pr, value]);
-  const result = await backfillCosts({
+  const currentCost = new Map<number, string>();
+  const setCost = vi.fn(async (pr: number, value: string) => {
+    currentCost.set(pr, value);
+  });
+  const deps = {
     root,
     config: { repo: "vworlds/vmethod", stateName: "test" },
     env: { XDG_STATE_HOME: join(root, "state") },
@@ -34,12 +38,34 @@ test("prices recorded worker sessions using the recorded OpenCode session shape"
         price: { input: 2, output: 10, cached: 0.1 },
       },
     ],
-    readSession: async () => (capture as { body: { data: unknown } }).body.data,
+    readSession: async () => capture.data,
+    inspectCard: async (pr: number) => ({ cost: currentCost.get(pr), archived: false }),
     setCost,
-  });
+  };
+  const result = await backfillCosts(deps);
+  const rerun = await backfillCosts(deps);
   expect(result).toContain("#41: $");
+  expect(rerun).toContain("#41: $");
   expect(setCost).toHaveBeenCalledOnce();
   expect(setCost.mock.calls[0][0]).toBe(41);
+});
+
+test("parses repeated PR selectors and keeps the command orchestrator-scoped", async () => {
+  const calls: unknown[] = [];
+  const transport = {
+    call: async (operation: string, input: unknown, context: unknown) => {
+      calls.push({ operation, input, context });
+      return "ok";
+    },
+  } as never;
+  await gatewayVerb(transport, "cost", ["backfill", "--dry-run", "--pr", "41", "--pr", "42"], {
+    VMETHOD_ROLE: "orchestrator",
+  });
+  expect(calls[0]).toMatchObject({
+    operation: "costBackfill",
+    input: { dryRun: true, prs: [41, 42] },
+    context: { role: "orchestrator" },
+  });
 });
 
 test("dry-run reports unknown sessions without writing", async () => {
@@ -70,4 +96,118 @@ test("dry-run reports unknown sessions without writing", async () => {
   );
   expect(result).toContain("#42: unknown");
   expect(setCost).not.toHaveBeenCalled();
+});
+
+test("discovers legacy worktree sessions and prices assistant messages by family", async () => {
+  const root = mkdtempSync(join(tmpdir(), "vmethod-cost-"));
+  roots.push(root);
+  const legacy = join(root, "state/old");
+  mkdirSync(legacy, { recursive: true });
+  writeFileSync(join(legacy, "job.worktrees_auto-43-test"), "ses_legacy\n");
+  const messages = [
+    {
+      type: "assistant",
+      model: { providerID: "codexbal", id: "gpt-6.1-sol" },
+      tokens: { input: 1_000_000, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+    },
+    {
+      type: "assistant",
+      model: { providerID: "ollama-cloud", id: "glm-5.3" },
+      tokens: { input: 0, output: 1_000_000, reasoning: 0, cache: { read: 0, write: 0 } },
+    },
+  ];
+  const result = await backfillCosts({
+    root,
+    config: {
+      repo: "vworlds/vmethod",
+      stateName: "test",
+      legacyWorkers: ["old"],
+      branches: { worktreePrefix: "auto-" },
+    },
+    env: { XDG_STATE_HOME: join(root, "state") },
+    models: [
+      {
+        family: "sol",
+        model: "codexbal/gpt-6.1-sol",
+        price: { input: 2, output: 10, cached: 0.1 },
+      },
+      {
+        family: "glm",
+        model: "ollama-cloud/glm-5.3",
+        price: { input: 0.079, output: 2.5, cached: 0.078 },
+      },
+    ],
+    readSession: async () => ({
+      session: { model: { providerID: "codexbal", id: "gpt-6.1-sol" } },
+      messages,
+    }),
+    setCost: async () => undefined,
+  });
+  expect(result).toContain("$4.50");
+  expect(result).toContain("partial: latest session only");
+});
+
+test("fills missing model-log usd with backfill provenance", async () => {
+  const root = mkdtempSync(join(tmpdir(), "vmethod-cost-"));
+  roots.push(root);
+  const workers = join(root, "state/vmethod/test/workers");
+  mkdirSync(workers, { recursive: true });
+  writeFileSync(
+    join(workers, "44.json"),
+    JSON.stringify({
+      pr: 44,
+      repo: "vworlds/vmethod",
+      id: "ses_log",
+      model: { kind: "opencode", family: "sol" },
+    })
+  );
+  mkdirSync(join(root, ".vmethod"));
+  writeFileSync(
+    join(root, ".vmethod/model-log.jsonl"),
+    JSON.stringify({
+      date: "2026-10-18",
+      repo: "vworlds/vmethod",
+      pr: 44,
+      task: "task",
+      kind: "tooling",
+      segments: [{ family: "sol", model: "codexbal/gpt-6.1-sol", rounds: [1], why: "start" }],
+      points_open: 1,
+      points_final: 1,
+      rounds: 1,
+      round_causes: [],
+      outcome: "merged",
+      prompt_defects: [],
+      stalls: [],
+      findings: [],
+      notes: "",
+    }) + "\n"
+  );
+  const setCost = vi.fn(async () => undefined);
+  const report = await backfillCosts({
+    root,
+    config: { repo: "vworlds/vmethod", stateName: "test" },
+    env: { XDG_STATE_HOME: join(root, "state") },
+    models: [
+      {
+        family: "sol",
+        model: "codexbal/gpt-6.1-sol",
+        price: { input: 2, output: 10, cached: 0.1 },
+      },
+    ],
+    readSession: async () => ({
+      tokens: { input: 1_000_000, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      model: { providerID: "codexbal", id: "gpt-6.1-sol" },
+    }),
+    inspectCard: async () => ({ cost: null, archived: true }),
+    setCost,
+  });
+  expect(report).toContain("#44: archived; $2.00 recorded in the model log only");
+  expect(setCost).not.toHaveBeenCalled();
+  const log = JSON.parse(readFileSync(join(root, ".vmethod/model-log.jsonl"), "utf8"));
+  expect(log).toMatchObject({
+    usd: 2,
+    costSource: "backfill",
+    costBasis: "api-list",
+    costCoverage: "complete",
+  });
 });
