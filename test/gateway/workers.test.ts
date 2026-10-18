@@ -134,6 +134,7 @@ function fixture(requests: Request[] = [], priced = false) {
     setEstimate: vi.fn(async () => {}),
     setCost: vi.fn(async () => {}),
     gradeComment: vi.fn(async () => {}),
+    submitLearnings: vi.fn(async () => "Learning submission complete"),
     workerIdentity: vi.fn(async () => ({ GH_TOKEN: "worker-token", PATH: "fake-path" })),
     issue: vi.fn(async () => ({ estimate: 3, kind: "tooling" })),
   };
@@ -952,7 +953,10 @@ test("model gate refuses before mutation; switch keeps id and grade writes issue
   expect(f.hooks.setModel).toHaveBeenLastCalledWith(31, "sol");
   f.meta.state = "MERGED";
   f.meta.merged = true;
-  expect(await f.service.grade(31, 20)).toContain("issue #9 Estimate 20");
+  vi.mocked(f.hooks.submitLearnings!).mockRejectedValueOnce(new Error("Submission unavailable"));
+  await expect(f.service.grade(31, 20)).rejects.toThrow("Submission unavailable");
+  expect(f.record().finalized).toBe(true);
+  expect(f.record().gradePosted).toBe(true);
   expect(f.hooks.setEstimate).toHaveBeenCalledWith(9, 20);
   const records = readFileSync(join(f.root, ".vmethod/model-log.jsonl"), "utf8").trim().split("\n");
   expect(records).toHaveLength(1);
@@ -968,7 +972,11 @@ test("model gate refuses before mutation; switch keeps id and grade writes issue
       { family: "sol", why: "quota", rounds: [2] },
     ],
   });
-  await f.service.grade(31, 20);
+  const summary = await f.service.grade(31, 20);
+  expect(summary).toContain("issue #9 Estimate 20");
+  expect(summary).toContain("Learning submission complete");
+  expect(f.hooks.submitLearnings).toHaveBeenCalledTimes(2);
+  expect(f.hooks.gradeComment).toHaveBeenCalledTimes(1);
   expect(
     readFileSync(join(f.root, ".vmethod/model-log.jsonl"), "utf8").trim().split("\n")
   ).toHaveLength(1);

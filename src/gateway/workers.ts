@@ -102,6 +102,8 @@ export interface WorkerHooks {
   setCost?(pr: number, cost: string | null): Promise<void>;
   /** Post the validated GRADE summary on the originating issue. */
   gradeComment?(issue: number, text: string): Promise<void>;
+  /** Submit locally staged grades through the same privacy and rolling-PR pipeline. */
+  submitLearnings?(): Promise<string>;
   workerIdentity(): Promise<NodeJS.ProcessEnv>;
   issue(ref: number): Promise<{ estimate?: number; kind: string }>;
 }
@@ -1027,7 +1029,8 @@ export class WorkerService {
         session.gradePosted = true;
         this.save(session);
       }
-      return summary;
+      const submission = await this.hooks.submitLearnings?.();
+      return [summary, submission].filter(Boolean).join("\n");
     });
   }
   async suggest(issue: number): Promise<string> {
