@@ -6,6 +6,7 @@ import { configValue, getConfig } from "../config.js";
 import { init } from "../init.js";
 import { verbs } from "../registry.js";
 import { createGateway } from "../gateway/server.js";
+import { checkOnline } from "../gateway/identity.js";
 import { gatewayVerb } from "./gateway.js";
 import { workerVerb } from "./worker.js";
 import { taskFlowVerb } from "./task-flow.js";
@@ -140,13 +141,31 @@ try {
       break;
     }
     case "check": {
-      if (args.length && (args.length !== 1 || args[0] !== "--defer-permissions")) {
-        throw new Error("Usage: vmethod check [--defer-permissions] (offline)");
+      if (
+        args.some((arg) => !["--online", "--defer-permissions"].includes(arg)) ||
+        new Set(args).size !== args.length
+      ) {
+        throw new Error("Usage: vmethod check [--online] [--defer-permissions]");
       }
       const result = check(root(), process.env, {
         deferPermissions: args.includes("--defer-permissions"),
         version: __VERSION__,
       });
+      if (args.includes("--online")) {
+        const online = await checkOnline(root(), process.env, {
+          fetch,
+          exec: async () => {
+            throw new Error("Unexpected identity-check exec");
+          },
+          now: Date.now,
+          sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+          report: (message) => console.error(message),
+        });
+        result.messages.push(...online.messages);
+        if (online.code && !result.code) {
+          result.code = online.code;
+        }
+      }
       console.log(result.messages.length ? result.messages.join("\n") : "vmethod check: ok");
       process.exitCode = result.code;
       break;

@@ -35,7 +35,7 @@ Adopt the pinned package in one reviewed change without copying shared methodolo
       orchestrator wrapper environment. Identity kept only in git config is not
       used. `VMETHOD_ROLE=orchestrator vmethod check` reports missing identities.
 - [ ] Migrate in-flight opencode sessions with `worker adopt <pr> <session-id>`,
-      or configure `legacyWorkers` directory names and run `worker adopt --from-legacy`
+      or configure `legacyWorkers` relative directory paths and run `worker adopt --from-legacy`
       (see [worker management](gateway.md#worker-management-orchestrator-only)). Review every skipped record;
       adoption verifies the PR worktree and existing session model, never starts a turn.
 - [ ] Route the consumer's agent entry point with the [routing template](../templates/AGENTS.md).
@@ -70,6 +70,50 @@ Adopt the pinned package in one reviewed change without copying shared methodolo
       For a `button-merge` event, the orchestrator runs `merge-task <n>` explicitly.
       This replaces legacy Bash watchers' automatic follow-up (vecs#358): the same
       end result, with one explicit step. See the [watch guide](orchestrator-guide.md#watch-without-wasting-budget).
+
+## Legacy worker transition
+
+Configure only the legacy directories belonging to your project, relative to
+`$XDG_STATE_HOME` (default `~/.local/state`), for example:
+
+```yaml
+legacyWorkers:
+  - vecs-orchestrator/workers
+  - vecs-orchestrator/claude-workers
+```
+
+SpaceRocks uses `spacerocks-orchestrator/workers` and
+`spacerocks-orchestrator/claude-workers`. Do not move or rewrite old files. Paths
+must have nonempty alphanumeric-leading segments containing only letters,
+digits, dots, underscores and hyphens; absolute paths, `.`/`..` segments and
+symlinks escaping the state root are refused. With a track, the existing
+`-<track>` suffix applies to the configured directory path.
+
+Run `worker adopt --from-legacy` as the orchestrator and review every result.
+Worktree-keyed bash files encode `/` as `_`; the importer takes the PR number
+after the last `.worktrees_` and your literal `branches.worktreePrefix`. Bare
+`ses_…` records and existing `<pr>.json` records are verified against the open
+task PR, existing worktree/branch, session directory and actual opencode model.
+Only the session id is taken from the record; file metadata cannot authorize
+adoption. The importer never creates missing worktrees or changes legacy files.
+If a legacy PR has no opening Estimate snapshot, the importer resolves its linked
+issue (including `Agent task for #n` / `Closes #n` legacy headers) and snapshots
+that issue's **current** board Estimate. The adoption segment records
+`legacy snapshot at adoption` in worker state and the eventual grade; subsequent
+issue edits do not change this opening value. An issue without an Estimate is
+skipped with `linked issue #n has no Estimate; estimate it, then rerun`.
+This exception applies only to `--from-legacy`: normal `worker adopt`, worker
+launch and `open-task` retain their opening-snapshot requirements.
+Closed/merged PRs, probes, missing worktrees, unknown or mismatched sessions,
+invalid records and already-recorded sessions are reported skips.
+
+Headless Claude `key=value` records are **not adoptable**: there is no verified
+server session lookup. The importer reports the PR and recorded id but does not
+contact opencode, trust the recorded model/directory, or adopt the session. If
+the task is still open, explicitly relaunch it with
+`worker start <pr> --model <claude-family>` using your configured Claude family
+and any required owner approval. This starts a new worker, not a continuation
+of the legacy Claude process; coordinate stopping that process before relaunching.
 
 ## Every upgrade
 

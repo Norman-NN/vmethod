@@ -22,6 +22,8 @@ export const people: Person[] = [
     events: ["check_run", "workflow_run"],
   },
 ];
+// Projected GraphQL viewer shape from fixtures/github/learnings-recorded.json
+// (learnings-PROVENANCE.md); login/id/type are sanitized to the fixture's pins.
 export const actor = (index = 0): ObjectData => ({
   login: people[index].login,
   databaseId: people[index].id,
@@ -115,7 +117,7 @@ export function fakeServer(requests: Request[]) {
   };
 }
 
-export function fixtureServer(requests: Request[]) {
+export function fixtureServer(requests: Request[], viewer = actor(2)) {
   const root = validProject();
   writeFileSync(join(root, "people.yaml"), stringify(people));
   const fake = fakeServer(requests);
@@ -123,7 +125,17 @@ export function fixtureServer(requests: Request[]) {
   const sleeps: number[] = [];
   const reports: string[] = [];
   const deps: Dependencies = {
-    fetch: fake.fetch,
+    fetch: async (url, init) => {
+      if (
+        String(url) === "https://api.github.com/graphql" &&
+        JSON.parse(String(init?.body)).query ===
+          "query GatewayIdentity { viewer { databaseId login __typename } }"
+      ) {
+        expect((init?.headers as Record<string, string>).authorization).toBe("Bearer fake-token");
+        return Response.json({ data: { viewer } });
+      }
+      return fake.fetch(url, init);
+    },
     exec: async () => {
       throw new Error("Unexpected git/exec request");
     },
@@ -162,6 +174,11 @@ export function fixtureServer(requests: Request[]) {
     gateway,
     done: fake.done,
   };
+}
+
+/** A gateway fixture whose configured token belongs to the pinned worker. */
+export function workerFixtureServer(requests: Request[]) {
+  return fixtureServer(requests, actor(1));
 }
 
 export function graph(json: unknown): Request {

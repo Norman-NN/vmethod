@@ -124,6 +124,22 @@ test("check returns 0 for a valid project, 1 for findings, 2 for a missing depen
   });
 }, 15000);
 
+test("Claude families require a separately configured worker token", () => {
+  const root = validProject();
+  writeFileSync(
+    join(root, "models.yaml"),
+    "- family: sonnet\n  model: claude-test\n  kind: claude\n  gate: none\n  tier: standard\n"
+  );
+  const path = join(root, "vmethod.yaml");
+  const original = readFileSync(path, "utf8");
+  expect(original).toContain("  workerGithubToken: EXAMPLE_WORKER_GITHUB_TOKEN\n");
+  writeFileSync(path, original.replace("  workerGithubToken: EXAMPLE_WORKER_GITHUB_TOKEN\n", ""));
+  expect(check(root)).toMatchObject({ code: 1 });
+  expect(check(root).messages.join("\n")).toContain("credentials.workerGithubToken");
+  writeFileSync(path, original);
+  expect(check(root)).toEqual({ code: 0, messages: [] });
+});
+
 test("permissions, numeric ids, model families and secret-looking values are checked without leaking secrets", () => {
   const root = validProject();
   writeFileSync(join(root, ".claude/settings.json"), "{}");
