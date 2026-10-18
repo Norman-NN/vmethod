@@ -32,6 +32,7 @@ import { object, type ObjectData, type PeopleFilter, type Person } from "./peopl
 import { repoOf, restActor, actorFields } from "./queries.js";
 import { WriteJournal } from "./write-journal.js";
 import { workerWorktree } from "./worker-path.js";
+import { taskIssueNumbers } from "./task-flow-types.js";
 import { resolveSession, type ResolvedSession, type SessionInput } from "./watch-scope.js";
 export { resolveSession, type ResolvedSession, type SessionInput } from "./watch-scope.js";
 
@@ -42,6 +43,8 @@ const SILENT_MS = 40 * 60_000;
 const BUTTON_RETRY_MS = 10 * 60_000;
 const TRACKS_TTL_MS = 30_000;
 const NEXT_RECHECK_MS = 60_000;
+const CURSOR_OVERLAP_MS = 10 * 60_000;
+const MARKER_MARGIN_MS = 2 * 60_000;
 const MIGRATION_WINDOW_MS = 60 * 60_000;
 const HOLD_MAX_AGE_MS = 120_000;
 const GRADE_SETTLE_MS = 60_000;
@@ -334,6 +337,8 @@ export class EventLoop {
   private nextAt = 0;
   private opencode?: OpencodeClient;
   private opencodeError = "";
+  private launchedIssues = new Set<number>();
+  private workerPollErrors = new Map<number, Set<string>>();
   private reading = false;
   private budgetDeferred = false;
   private releaseLock?: () => void;
@@ -453,11 +458,36 @@ export class EventLoop {
     if (!ID.test(name)) {
       throw new Error(`Invalid watcher state marker: ${name}`);
     }
-    writeFileSync(join(this.dir, name), "", { mode: 0o600 });
+    writeFileSync(
+      join(this.dir, name),
+      this.windowMarker(name) ? new Date(this.host.deps.now()).toISOString() : "",
+      { mode: 0o600 }
+    );
   }
 
   private marked(name: string): boolean {
     return existsSync(join(this.dir, name));
+  }
+
+  private windowMarker(name: string): boolean {
+    return /^c-[a-f\d]{16}$/.test(name) || name.startsWith("new-");
+  }
+
+  private pruneWindowMarkers(cursor: string): void {
+    const cutoff = Date.parse(cursor) - CURSOR_OVERLAP_MS - MARKER_MARGIN_MS;
+    for (const name of readdirSync(this.dir)) {
+      if (!this.windowMarker(name)) {
+        continue;
+      }
+      const stamp = this.readMarker(name);
+      const at = stamp ? Date.parse(stamp) : statSync(join(this.dir, name)).mtimeMs;
+      if (!Number.isFinite(at)) {
+        throw new Error(`Invalid watcher marker timestamp: ${name}`);
+      }
+      if (at < cutoff) {
+        remove(join(this.dir, name));
+      }
+    }
   }
 
   private readMarker(name: string): string {
@@ -550,21 +580,62 @@ export class EventLoop {
   }
 
   private buildBatch(): WatchEvent[] {
-    const events = this.pending();
-    if (events.length) {
-      const lines = readLines(join(this.dir, "quiet"));
-      if (lines.length) {
-        events[0] = { ...events[0], quiet: [...(events[0].quiet ?? []), ...lines] };
-        this.savePending(events);
-        writeFileSync(join(this.dir, "quiet"), "", { mode: 0o600 });
+    const events: PendingEvent[] = [];
+    const orphanedQuiet: string[] = [];
+    for (const event of this.pending()) {
+      const quiet = (event.quiet ?? []).filter((line) => !this.journaledCommentLine(line));
+      if (this.journaledCommentLine(event.line)) {
+        if (event.once) {
+          this.mark(event.id);
+        }
+        orphanedQuiet.push(...quiet);
+      } else {
+        events.push({ ...event, ...(event.quiet ? { quiet } : {}) });
       }
     }
+    for (const line of orphanedQuiet) {
+      this.quiet(line);
+    }
+    if (events.length) {
+      const lines = readLines(join(this.dir, "quiet")).filter(
+        (line) => !this.journaledCommentLine(line)
+      );
+      if (lines.length) {
+        events[0] = { ...events[0], quiet: [...(events[0].quiet ?? []), ...lines] };
+      }
+      writeFileSync(join(this.dir, "quiet"), "", { mode: 0o600 });
+    }
+    this.savePending(events);
     return events.map(({ id, kind, line, quiet }) => ({
       id,
       kind,
       line,
       ...(quiet ? { quiet } : {}),
     }));
+  }
+
+  /** Revalidate persisted delivery after a separate writer's response is journaled.
+   * Only exact same-account comment IDs can suppress a replay; no timestamp is
+   * inferred from display text. Legacy quiet lines have this same generated form.
+   */
+  private journaledCommentLine(line: string): boolean {
+    const author =
+      /^COMMENT (\S+) from ([\w-]+) \(orchestrator\) \(this account, another session\)/.exec(line);
+    if (!author) {
+      return false;
+    }
+    const match =
+      / https:\/\/github\.com\/([^/\s]+\/[^/\s]+)\/(?:pull|issues)\/(\d+)#issuecomment-(\d+)$/.exec(
+        line
+      );
+    return (
+      !!match &&
+      author[1] === this.ref(match[1], Number(match[2])) &&
+      this.writes.matches(
+        { kind: "comment", repo: match[1], number: Number(match[2]), commentId: Number(match[3]) },
+        ""
+      )
+    );
   }
 
   private readCursor(): string | null {
@@ -1072,6 +1143,9 @@ export class EventLoop {
     await this.start();
     this.firstRun = this.readCursor() === null;
     const startedAt = new Date(this.host.deps.now()).toISOString();
+    if (this.firstRun && !this.marked("listing-baseline")) {
+      this.writeMarker("listing-baseline", startedAt);
+    }
     this.cycle++;
     this.cycleStale.clear();
     this.cycleOwnMoves.clear();
@@ -1117,6 +1191,7 @@ export class EventLoop {
     if (commentsOk && itemsOk && (!this.firstRun || ok)) {
       // Do not leave first-run mode until every baseline succeeded.
       this.writeMarker("cursor", startedAt);
+      this.pruneWindowMarkers(startedAt);
     }
     if (!ok && !this.budgetDeferred) {
       this.recordFailure();
@@ -1198,6 +1273,18 @@ export class EventLoop {
       (data) => this.list(data)
     );
     const open = new Set<number>();
+    const launched = new Set<number>();
+    for (const item of items) {
+      if (this.host.filter.identity(restActor(item.user)) !== undefined) {
+        for (const issue of taskIssueNumbers(str(item.body)) ?? []) {
+          launched.add(issue);
+        }
+      }
+    }
+    if ([...launched].sort().join(",") !== [...this.launchedIssues].sort().join(",")) {
+      this.nextSignature = "";
+    }
+    this.launchedIssues = launched;
     for (const item of items) {
       const number = count(item.number);
       const head = object(item.head);
@@ -1545,7 +1632,10 @@ export class EventLoop {
   // ---------------------------------------------------------------- comments
 
   private async pollComments(): Promise<void> {
-    const since = this.readCursor() ?? new Date(this.host.deps.now()).toISOString();
+    const cursor = this.readCursor();
+    const since = cursor
+      ? new Date(Date.parse(cursor) - CURSOR_OVERLAP_MS).toISOString()
+      : this.readMarker("listing-baseline") || new Date(this.host.deps.now()).toISOString();
     for (const repo of this.subscriptions) {
       const comments = await this.restPages(
         (page) =>
@@ -1553,7 +1643,10 @@ export class EventLoop {
         (data) => this.list(data)
       );
       for (const comment of comments) {
-        if (this.firstRun && str(comment.created_at) <= since) {
+        if (
+          Date.parse(str(comment.created_at)) <=
+          Date.parse(this.readMarker("listing-baseline") || (this.firstRun ? since : ""))
+        ) {
           this.mark(`c-${key(str(comment.html_url))}`);
           continue;
         }
@@ -1614,7 +1707,17 @@ export class EventLoop {
     const edited = created !== str(comment.updated_at) ? " (edited: verify editor)" : "";
     const taskPr = own && this.marked(`open-${number}`);
     const selfWrite =
-      this.isSelf(comment) && this.writes.matches({ kind: "comment", repo, number }, created);
+      this.isSelf(comment) &&
+      this.writes.matches(
+        {
+          kind: "comment",
+          repo,
+          number,
+          ...(count(comment.id) !== null ? { commentId: Number(comment.id) } : {}),
+          ...(typeof comment.node_id === "string" ? { nodeId: comment.node_id } : {}),
+        },
+        created
+      );
     if (this.isSelf(comment)) {
       // Only the watching orchestrator's own comments are skipped; matched by id.
       if (taskPr) {
@@ -1710,10 +1813,11 @@ export class EventLoop {
   // ---------------------------------------------------------------- subscribed items
 
   private async pollSubscribedItems(): Promise<void> {
-    const since = this.readCursor();
-    if (since === null) {
+    const cursor = this.readCursor();
+    if (cursor === null) {
       return;
     }
+    const since = new Date(Date.parse(cursor) - CURSOR_OVERLAP_MS).toISOString();
     for (const repo of this.subscriptions) {
       if (this.isOwn(repo)) {
         continue;
@@ -1726,7 +1830,12 @@ export class EventLoop {
       for (const item of items) {
         const number = count(item.number);
         const created = str(item.created_at);
-        if (number === null || !created || created < since) {
+        if (
+          number === null ||
+          !created ||
+          Date.parse(created) < Date.parse(since) ||
+          Date.parse(created) <= Date.parse(this.readMarker("listing-baseline"))
+        ) {
           continue;
         }
         if (this.muted(repo, number)) {
@@ -2326,7 +2435,9 @@ export class EventLoop {
       remove(join(this.dir, "recheck-next"));
     }
     const next = await this.firstUnblocked(ready);
-    const launch = await this.firstUnblocked(approved);
+    const launch = await this.firstUnblocked(
+      approved.filter((card) => card.kind !== "ISSUE" || !this.launchedIssues.has(card.number))
+    );
     this.recordStartable(
       "next",
       next,
@@ -2432,7 +2543,12 @@ export class EventLoop {
       return null;
     }
     try {
-      this.opencode = new OpencodeClient(this.host.env, this.host.deps.fetch);
+      this.opencode = new OpencodeClient(
+        this.host.env,
+        this.host.deps.fetch,
+        this.host.deps.now,
+        this.host.deps.report
+      );
       return this.opencode;
     } catch (error) {
       this.opencodeError = (error as Error).message;
@@ -2449,7 +2565,6 @@ export class EventLoop {
     if (this.cycle % WORKER_EVERY !== 1) {
       return;
     }
-    const failures: Error[] = [];
     for (const pr of this.inprogress) {
       if (this.muted(this.own, pr.number)) {
         continue;
@@ -2492,9 +2607,17 @@ export class EventLoop {
           status = await client.status(dir);
         }
       } catch (error) {
-        failures.push(error as Error);
+        const message = (error as Error).message;
+        const signature = message.split(": ")[0];
+        const seen = this.workerPollErrors.get(pr.number) ?? new Set<string>();
+        if (!seen.has(signature)) {
+          this.host.deps.report(`watcher: worker #${pr.number} poll failed: ${message}`);
+          seen.add(signature);
+          this.workerPollErrors.set(pr.number, seen);
+        }
         continue;
       }
+      this.workerPollErrors.delete(pr.number);
       const stopPath = join(this.dir, `worker-stop-${pr.number}`);
       const stop = this.stopKey(status, updated);
       const previous = this.readMarker(`worker-stop-${pr.number}`);
@@ -2536,9 +2659,6 @@ export class EventLoop {
         this.queueProgress(pr.number, { state: "idle", if: ["working", "silent"] });
       }
       atomicWrite(stopPath, `${stop}\n`);
-    }
-    if (failures.length) {
-      throw failures[0];
     }
   }
 

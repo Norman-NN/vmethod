@@ -24,6 +24,8 @@ export interface WriteRecord {
   kind: string;
   repo: string;
   number: number;
+  commentId?: number;
+  nodeId?: string;
   itemId?: string;
   field?: string;
   value?: string | number | null;
@@ -35,7 +37,7 @@ export interface WriteRecord {
 export class WriteJournal {
   private readonly path: string;
   private readonly repo: string;
-  private readonly nodes = new Map<string, { repo: string; number: number }>();
+  private readonly nodes = new Map<string, { repo: string; number: number; nodeId?: string }>();
   private readonly fields = new Map<string, ObjectData>();
 
   constructor(
@@ -48,14 +50,12 @@ export class WriteJournal {
     this.repo = String(config.repo).toLowerCase();
   }
 
-  /** Match the event's server timestamp, not the time a delayed poll observes it.
-   * Missing timestamps fail open (report), never hide somebody else's activity.
+  /** Match comment response IDs first, with server time only for id-less writes.
+   * Other writes still need time and field/value correlation: a board item ID is
+   * not the identity of a particular field change. Missing evidence reports.
    */
   matches(event: Omit<WriteRecord, "at">, at: string): boolean {
     const time = Date.parse(at);
-    if (!Number.isFinite(time)) {
-      return false;
-    }
     return this.read().some(
       (entry) =>
         entry.kind === event.kind &&
@@ -64,7 +64,11 @@ export class WriteJournal {
         (!event.itemId || entry.itemId === event.itemId) &&
         entry.field === event.field &&
         entry.value === event.value &&
-        Math.abs(Date.parse(entry.at) - time) <= MATCH_MS
+        (entry.kind === "comment" && (entry.commentId !== undefined || entry.nodeId !== undefined)
+          ? entry.commentId !== undefined && event.commentId !== undefined
+            ? entry.commentId === event.commentId
+            : entry.nodeId !== undefined && entry.nodeId === event.nodeId
+          : Number.isFinite(time) && Math.abs(Date.parse(entry.at) - time) <= MATCH_MS)
     );
   }
 
@@ -85,7 +89,7 @@ export class WriteJournal {
     const result = object(response);
     const number = item ? Number(item[1]) : typeof result.number === "number" ? result.number : 0;
     if (number > 0 && typeof result.node_id === "string") {
-      this.nodes.set(result.node_id, { repo, number });
+      this.nodes.set(result.node_id, { repo, number, nodeId: result.node_id });
     }
     if (method === "GET") {
       return;
@@ -114,7 +118,16 @@ export class WriteJournal {
         }
       }
     } else {
-      this.append({ at, kind, repo, number });
+      this.append({
+        at,
+        kind,
+        repo,
+        number,
+        ...(kind === "comment" && Number.isSafeInteger(result.id)
+          ? { commentId: Number(result.id) }
+          : {}),
+        ...(typeof result.node_id === "string" ? { nodeId: result.node_id } : {}),
+      });
     }
   }
 
@@ -174,7 +187,12 @@ export class WriteJournal {
         const input = object(inputArg ? valueFromASTUntyped(inputArg.value, variables) : {});
         const result = object(object(response.data)[selection.alias?.value ?? name]);
         const id = String(
-          input.itemId ?? input.contentId ?? input.pullRequestId ?? input.issueId ?? ""
+          input.itemId ??
+            input.contentId ??
+            input.pullRequestId ??
+            input.issueId ??
+            input.subjectId ??
+            ""
         );
         const subject = this.nodes.get(id);
         const entry: WriteRecord = {
@@ -182,7 +200,20 @@ export class WriteJournal {
           kind: name,
           repo: subject?.repo.toLowerCase() ?? this.repo,
           number: subject?.number ?? 0,
+          ...(id ? { nodeId: subject?.nodeId ?? id } : {}),
         };
+        if (name === "addComment") {
+          const comment = object(object(result.commentEdge).node);
+          entry.kind = "comment";
+          if (Number.isSafeInteger(comment.databaseId)) {
+            entry.commentId = Number(comment.databaseId);
+          }
+          if (typeof comment.id === "string") {
+            entry.nodeId = comment.id;
+          } else {
+            delete entry.nodeId;
+          }
+        }
         if (["updateProjectV2ItemFieldValue", "clearProjectV2ItemFieldValue"].includes(name)) {
           const field = this.fields.get(String(input.fieldId));
           const value = object(input.value);
@@ -203,6 +234,9 @@ export class WriteJournal {
           const itemId = object(result.item).id;
           if (typeof itemId === "string" && subject) {
             this.nodes.set(itemId, subject);
+          }
+          if (typeof itemId === "string") {
+            entry.itemId = itemId;
           }
         }
         this.append(entry);
@@ -228,7 +262,11 @@ export class WriteJournal {
     if (typeof subject.number === "number" && typeof repo === "string") {
       for (const id of [node.id, node.node_id, subject.id]) {
         if (typeof id === "string") {
-          this.nodes.set(id, { repo, number: subject.number });
+          this.nodes.set(id, {
+            repo,
+            number: subject.number,
+            ...(typeof subject.id === "string" ? { nodeId: subject.id } : {}),
+          });
         }
       }
     }
@@ -281,7 +319,11 @@ export class WriteJournal {
             Number.isSafeInteger(number) &&
             number > 0
           ) {
-            this.nodes.set(node.id, { repo: `${args.owner}/${args.name}`, number });
+            this.nodes.set(node.id, {
+              repo: `${args.owner}/${args.name}`,
+              number,
+              nodeId: node.id,
+            });
           }
         }
       }
@@ -309,7 +351,10 @@ export class WriteJournal {
           typeof entry.kind !== "string" ||
           typeof entry.repo !== "string" ||
           !Number.isSafeInteger(entry.number) ||
-          Number(entry.number) < 0
+          Number(entry.number) < 0 ||
+          (entry.commentId !== undefined &&
+            (!Number.isSafeInteger(entry.commentId) || Number(entry.commentId) < 1)) ||
+          (entry.nodeId !== undefined && (typeof entry.nodeId !== "string" || !entry.nodeId))
         ) {
           throw new Error("Invalid gateway write journal");
         }

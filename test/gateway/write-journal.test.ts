@@ -3,8 +3,95 @@ import { join } from "node:path";
 import { expect, test } from "vitest";
 import { getConfig } from "../../src/config.js";
 import { GitHubClient } from "../../src/gateway/client.js";
+import { WriteJournal } from "../../src/gateway/write-journal.js";
 import { fixtureServer } from "./helpers.js";
 import boardRecording from "../fixtures/github/board-write-inputs.json" with { type: "json" };
+import commentRecording from "../fixtures/github/review-comment.json" with { type: "json" };
+
+test.each([
+  [58, commentRecording.created_at, "2026-10-17T23:09:05.668Z"],
+  [73, "2026-10-18T11:43:02Z", "2026-10-18T11:43:03.119Z"],
+])(
+  "supplied legacy incident #%s matches without widening the time window",
+  (number, created, at) => {
+    const f = fixtureServer([]);
+    const config = { ...getConfig(f.root, {}), repo: "vworlds/vmethod" };
+    const dir = join(f.env.XDG_STATE_HOME, "vmethod", "example-state");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "writes.jsonl"),
+      `${JSON.stringify({ at, kind: "comment", repo: "vworlds/vmethod", number })}\n`
+    );
+    const reader = new WriteJournal(config, f.env, () => Date.parse(at) + 60_000);
+    expect(reader.matches({ kind: "comment", repo: "vworlds/vmethod", number }, created)).toBe(
+      true
+    );
+    f.done();
+  }
+);
+
+test("GraphQL comment database/node ids use the same exact attribution as REST", async () => {
+  const f = fixtureServer([
+    { path: "/graphql", json: { data: { repository: { issue: { id: "issue-node" } } } } },
+    {
+      path: "/graphql",
+      json: {
+        data: {
+          addComment: {
+            commentEdge: {
+              node: { id: commentRecording.node_id, databaseId: commentRecording.id },
+            },
+          },
+        },
+      },
+    },
+  ]);
+  const client = new GitHubClient(getConfig(f.root, {}), f.env, f.deps);
+  await client.graphql(
+    'query { repository(owner: "example", name: "project") { issue(number: 58) { id } } }'
+  );
+  await client.graphql(
+    'mutation { addComment(input: { subjectId: "issue-node", body: "review" }) { commentEdge { node { id databaseId } } } }'
+  );
+  const event = { kind: "comment", repo: "example/project", number: 58 };
+  expect(client.writes.matches({ ...event, commentId: commentRecording.id }, "")).toBe(true);
+  expect(client.writes.matches({ ...event, nodeId: commentRecording.node_id }, "")).toBe(true);
+  expect(
+    client.writes.matches(
+      { ...event, commentId: commentRecording.id + 1 },
+      new Date(f.deps.now()).toISOString()
+    )
+  ).toBe(false);
+  f.done();
+});
+
+test("comment ids override time, distinguish concurrent same-account comments, and reread writes from another client", async () => {
+  const f = fixtureServer([
+    {
+      path: "/repos/example/project/issues/58/comments",
+      json: { id: 6242861295, node_id: "IC_comment" },
+    },
+  ]);
+  f.deps.now = () => Date.parse("2026-10-17T23:09:05.668Z");
+  const config = getConfig(f.root, {});
+  const reader = new WriteJournal(config, f.env, f.deps.now);
+  const event = { kind: "comment", repo: "example/project", number: 58, commentId: 6242861295 };
+  expect(reader.matches(event, "2026-10-17T23:09:05Z")).toBe(false);
+  const client = new GitHubClient(config, f.env, f.deps);
+  await client.rest("/repos/example/project/issues/58/comments", "POST", { body: "review" });
+  const entries = readFileSync(
+    join(f.env.XDG_STATE_HOME, "vmethod", "example-state", "writes.jsonl"),
+    "utf8"
+  );
+  expect(JSON.parse(entries)).toMatchObject({ commentId: 6242861295, nodeId: "IC_comment" });
+  expect(reader.matches(event, "2026-10-17T23:09:05Z")).toBe(true);
+  expect(reader.matches(event, "2026-10-17T23:00:00Z")).toBe(true);
+  expect(reader.matches(event, "")).toBe(true);
+  expect(reader.matches({ ...event, commentId: 6242861296 }, "2026-10-17T23:09:05Z")).toBe(false);
+  expect(reader.matches({ ...event, number: 59 }, "2026-10-17T23:09:05Z")).toBe(false);
+  expect(reader.matches({ ...event, repo: "other/project" }, "2026-10-17T23:09:05Z")).toBe(false);
+  f.done();
+});
 
 test("GraphQL aliases/fragments decode recorded board IDs into exact field/value writes; query POSTs and refused mutations do not stamp", async () => {
   const recording = structuredClone(boardRecording);
@@ -46,6 +133,7 @@ test("GraphQL aliases/fragments decode recorded board IDs into exact field/value
     .map((line) => JSON.parse(line));
   expect(entries).toHaveLength(2);
   expect(entries.map((entry) => entry.value)).toEqual(["Done", null]);
+  expect(entries[0]).toMatchObject({ itemId: card.id, nodeId: card.content.id });
   const event = {
     kind: "board",
     repo: "example/project",
