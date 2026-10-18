@@ -1,33 +1,39 @@
 # Worker model families for vmethod. Family names must match the board's Model options.
-# Configure verified API USD/million rates as price: { input: n, output: n, cached: n }.
-# Until rates are supplied, check warns and delivery costs remain unknown (not free).
+# price: API list rates in USD per million tokens { input, output, cached }, from OpenRouter
+# (https://openrouter.ai/api/v1/models, fetched 2026-10-18). big-pickle has no OpenRouter
+# listing, so its cost stays unknown (not free).
 - family: sol
   tier: standard
   model: codexbal/gpt-6.1-sol
+  price: { input: 2.0, output: 10.0, cached: 0.1 } # openrouter openai/gpt-6.1-sol
   kind: opencode
   gate: none
   fallback: [luna, glm]
 - family: luna
   tier: standard
   model: codexbal/gpt-6-luna
+  price: { input: 0.1, output: 0.5, cached: 0.01 } # openrouter openai/gpt-6-luna
   kind: opencode
   gate: none
   fallback: [sol, glm]
 - family: astra
   tier: expensive
   model: codexbal/gpt-6-astra
+  price: { input: 10.0, output: 50.0, cached: 1.0 } # openrouter openai/gpt-6-astra
   kind: opencode
   gate: owner
   fallback: [sol]
 - family: glm
   tier: standard
   model: ollama-cloud/glm-5.3
+  price: { input: 0.079, output: 2.5, cached: 0.078 } # openrouter z-ai/glm-5.3
   kind: opencode
   gate: none
   fallback: [glm-flash, sol]
 - family: glm-flash
   tier: standard
   model: ollama-cloud/glm-5.3-flash
+  price: { input: 0.048, output: 0.2, cached: 0.006 } # openrouter z-ai/glm-5.3-flash
   kind: opencode
   gate: none
   fallback: [glm, sol]
