@@ -173,7 +173,14 @@ segments and reasons, rounds and causes, outcome, prompt defects, stalls and fin
 Separate worker defects from design changes, owner questions, integration and prompt
 defects so calibration is fair. Grade outcomes rather than task size; owner rejection
 despite green metrics is valuable evidence. Revise model guidance from experience.
-Submit reduced private learnings using the [change process](change-process.md).
+`grade` stages the raw record in the ignored, untracked `.vmethod/model-log.jsonl`
+and automatically submits through the [learning pipeline](learnings.md#submit-delivery-records),
+including private reduction. New grades append immutable files to the project's
+one open learning PR; after merge, the next grade opens a fresh PR. Do not commit
+the staging log or merge from this command: the vmethod orchestrator reviews and
+merges learning PRs. Submission failures do not fail the saved grade: its summary
+includes a warning and retry guidance. Retry `grade`
+or `learnings submit` after addressing the error.
 
 ## Watch without wasting budget
 

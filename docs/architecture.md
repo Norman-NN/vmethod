@@ -362,9 +362,13 @@ pools these, so a lesson paid for in one project is free in the others.
 
 ### The model log (per project, shared format)
 
-Each project keeps its raw log at `.vmethod/model-log.jsonl`. It is project data, written by
-`grade.sh` after every closed delivery (merged or not). One record per delivery, in a format
-vmethod defines and validates:
+Each project stages its raw log at `.vmethod/model-log.jsonl`, ignored and untracked.
+`grade` appends after every closed delivery (merged or not), then runs the same
+[submission pipeline](learnings.md#submit-delivery-records) as `learnings submit`.
+Reviewed durable records live in vmethod's per-submission project files, batched into
+one open learning PR per project. Only the vmethod orchestrator merges it; the next
+grade after a merge starts a fresh PR without duplicating shared records.
+One record per delivery, in a format vmethod defines and validates:
 
 ```json
 {"date":"2026-10-15","repo":"vworlds/spacerocks","pr":319,"task":"…","kind":"gameplay",

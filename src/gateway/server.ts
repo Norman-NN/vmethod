@@ -174,6 +174,7 @@ class GatewayServer {
           { body }
         );
       },
+      submitLearnings: () => this.learningService().command({ action: "submit" }),
       workerIdentity: () => this.workerIdentity(),
       issue: (issue) => this.workerIssue(issue),
     }));
