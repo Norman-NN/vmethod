@@ -273,6 +273,7 @@ function fixture() {
         data = { number: 27, node_id: "pr" };
       } else if (method === "PATCH" && path === "/repos/example/project/pulls/27") {
         expect(typeof payload.body).toBe("string");
+        body = String(payload.body);
         data = { number: 27, node_id: "pr" };
       } else if (
         method === "POST" &&
@@ -479,6 +480,7 @@ function fixture() {
       dirty?: boolean;
       changed?: boolean;
       issueNumber?: number;
+      issueClosed?: boolean;
       references?: ObjectData;
     }) => {
       approved = values.approved ?? approved;
@@ -494,6 +496,7 @@ function fixture() {
       dirty = values.dirty ?? dirty;
       changed = values.changed ?? changed;
       issueNumber = values.issueNumber ?? issueNumber;
+      issueClosed = values.issueClosed ?? issueClosed;
       references = values.references ?? references;
     },
     red: () => {
@@ -561,7 +564,153 @@ test("open-task --part records matching structured relations without closing syn
   const body = String(f.writes.find((w) => w.path.endsWith("/pulls"))!.body.body);
   expect(body).toContain("# Task: feat: task (part of issue #8)");
   expect(body).toContain('<!-- vmethod-task {"issues":[8],"part":true} -->');
-  expect(body).not.toMatch(/(?:closes|fixes|resolves|part of)\s+#8/i);
+  expect(body).not.toMatch(/(?:closes|fixes|resolves)\s+#8/i);
+  expect(body.match(/^Part of #8$/gm)).toHaveLength(1);
+  f.done();
+});
+
+test("two partial deliveries and one completing delivery link only the completing PR natively", async () => {
+  for (const part of [true, true, false]) {
+    const f = fixture();
+    await f.flow().open({ issue: "8", part });
+    for (const write of f.writes.filter((w) => typeof w.body.body === "string")) {
+      const body = String(write.body.body);
+      expect(body.match(/^Closes #8$/gm) ?? []).toHaveLength(part ? 0 : 1);
+      expect(body.match(/^Part of #8$/gm) ?? []).toHaveLength(part ? 1 : 0);
+    }
+    f.done();
+  }
+});
+
+test("direct tasks never derive generated closing links from title or specification text", async () => {
+  const f = fixture();
+  await f.flow().open({ direct: "feat: title mentions (issue #99)" });
+  for (const write of f.writes.filter((w) => typeof w.body.body === "string")) {
+    expect(String(write.body.body)).not.toMatch(/^(?:Closes|Part of) #/m);
+  }
+  f.done();
+});
+
+test("link-task promotes a header-only task and normalizes duplicate generated references", async () => {
+  const f = fixture();
+  f.set({
+    body: "# Task: feat: task (part of issue #8)\n\nPart of #8\nPart of #8\n\nYou are a worker.\nPrompt unchanged.",
+  });
+  await f.flow().link("27", true);
+  await f.flow().link("27", true);
+  const writes = f.writes.filter((w) => w.path.endsWith("/pulls/27"));
+  expect(writes).toHaveLength(1);
+  const body = String(writes[0].body.body);
+  expect(body).toContain("# Task: feat: task (issue #8)");
+  expect(body.match(/^Closes #8$/gm)).toHaveLength(1);
+  expect(body).not.toContain("Part of #8");
+  expect(body).toContain("You are a worker.\nPrompt unchanged.");
+  f.done();
+});
+
+test.each([
+  '# Task: feat: task (issue #8)\n\nYou are a worker.\nKeep this prompt.\n<!-- vmethod-task {"issues":[8]} -->',
+  '# Task: feat: task (part of issue #8)\n\nYou are a worker.\nKeep this prompt.\n<!-- vmethod-task {"issues":[8],"part":true} -->',
+  '<!-- vmethod-task {"issues":[8]} -->',
+  '<!-- vmethod-task {"issues":[8],"part":true} -->',
+  '<!-- vmethod-task {"issues":[]} -->',
+])("link-task backfills structured relations idempotently: %s", async (body) => {
+  const f = fixture();
+  f.set({ body });
+  await f.flow().link("27");
+  await f.flow().link("27");
+  const writes = f.writes.filter((w) => w.path.endsWith("/pulls/27"));
+  if (body.includes('"issues":[]')) {
+    expect(writes).toEqual([]);
+  } else {
+    expect(writes).toHaveLength(1);
+    const linked = String(writes[0].body.body);
+    const part = body.includes('"part":true');
+    expect(linked.match(/^Closes #8$/gm) ?? []).toHaveLength(part ? 0 : 1);
+    expect(linked.match(/^Part of #8$/gm) ?? []).toHaveLength(part ? 1 : 0);
+    if (body.includes("You are a worker.")) {
+      expect(linked.slice(linked.indexOf("You are a worker."))).toBe(
+        body.slice(body.indexOf("You are a worker."))
+      );
+    }
+  }
+  f.done();
+});
+
+test.each([true, false])(
+  "link-task --complete promotes partial header and marker (header=%s)",
+  async (header) => {
+    const f = fixture();
+    f.set({
+      body: `${header ? "# Task: feat: task (part of issue #8)\n\n" : ""}<!-- vmethod-task {"issues":[8],"part":true} -->`,
+    });
+    await f.flow().link("27");
+    await f.flow().link("27", true);
+    await f.flow().link("27", true);
+    const writes = f.writes.filter((w) => w.path.endsWith("/pulls/27"));
+    expect(writes).toHaveLength(2);
+    const body = String(writes[1].body.body);
+    expect(body.match(/^Closes #8$/gm)).toHaveLength(1);
+    expect(body).not.toContain("Part of #8");
+    expect(body).not.toContain("part of issue");
+    expect(body).toContain('"part":false');
+    await f.flow().merge("27");
+    expect(f.touched).toContainEqual(expect.objectContaining({ id: "issue", value: "Done" }));
+    f.done();
+  }
+);
+
+test.each(["MERGED", "CLOSED"])("link-task refuses %s PRs before writes", async (state) => {
+  const f = fixture();
+  f.set({ state });
+  await expect(f.flow().link("27")).rejects.toThrow("not open");
+  expect(f.writes).toEqual([]);
+  f.done();
+});
+
+test.each([
+  "Legacy prose",
+  '<!-- vmethod-task {"issues":[0]} -->',
+  '<!-- vmethod-task {"issues":[8],"part":"yes"} -->',
+])("link-task refuses missing/invalid structured relations: %s", async (body) => {
+  const f = fixture();
+  f.set({ body });
+  await expect(f.flow().link("27")).rejects.toThrow();
+  expect(f.writes).toEqual([]);
+  f.done();
+});
+
+test("merge follow-up completes a GitHub-auto-closed issue without closing or commenting again", async () => {
+  const f = fixture();
+  f.set({ issueClosed: true });
+  await f.flow().merge("27");
+  await f.flow().merge("27");
+  expect(f.writes.filter((w) => w.body.state === "closed" || w.path.endsWith("/comments"))).toEqual(
+    []
+  );
+  expect(
+    f.touched.filter((w) => w.id === "issue" && w.field === "Status" && w.value === "Done")
+  ).toHaveLength(1);
+  f.done();
+});
+
+test.each(["Closes #8", "Part of #8", "Fixes #8"])(
+  "open-task still guards source prose: %s",
+  async (body) => {
+    const f = fixture();
+    f.set({ body });
+    await expect(f.flow().open({ issue: "8" })).rejects.toThrow();
+    expect(f.writes).toEqual([]);
+    f.done();
+  }
+);
+
+test("orchestrator reviews cannot use task-body keyword exceptions", async () => {
+  const f = fixture();
+  const file = join(f.root, "review.md");
+  writeFileSync(file, "Closes #8");
+  await expect(f.flow().review({ ref: "27", outcome: "answer", file })).rejects.toThrow();
+  expect(f.writes).toEqual([]);
   f.done();
 });
 
@@ -770,7 +919,7 @@ test.each(["unapproved", "gated", "handoff"])(
   }
 );
 
-test("open-task creates a draft, links without closing syntax, clears issue Progress and never estimates PRs", async () => {
+test("open-task creates a draft with one native closing link, clears issue Progress and never estimates PRs", async () => {
   const f = fixture();
   f.set({ body: "## Approved spec\n\nImplement the test." });
   await expect(f.flow().open({ issue: "8", model: "sol", hold: true })).resolves.toContain(
@@ -781,7 +930,10 @@ test("open-task creates a draft, links without closing syntax, clears issue Prog
   expect(create.body.body).toContain("https://github.com/example/project/issues/8");
   expect(create.body.body).toContain("# Task: feat: task (issue #8)");
   expect(create.body.body).toContain("<!-- points_open: 13 -->");
-  expect(create.body.body).not.toMatch(/(?:closes|part of)\s+#8/i);
+  expect(String(create.body.body).match(/^Closes #8$/gm)).toHaveLength(1);
+  expect(String(create.body.body).indexOf("Closes #8")).toBeLessThan(
+    String(create.body.body).indexOf("You are a worker.")
+  );
   expect(create.body.body).not.toContain("<specifics>");
   expect(f.touched).toContainEqual(
     expect.objectContaining({ id: "pr", field: "Status", value: "In progress", progress: "⛔" })

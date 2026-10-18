@@ -1,6 +1,31 @@
 import { expect, test } from "vitest";
 import { actor, fixtureServer, graph, item, sha } from "./helpers.js";
 
+test("link-task reaches the authenticated body-edit path as an orchestrator", async () => {
+  const body = "# Task: feat: task (issue #8)\n\nYou are a worker.\nPrompt.";
+  const f = fixtureServer([
+    graph({ repository: { pullRequest: item() } }),
+    graph({
+      node: item({
+        body,
+        title: "feat: task",
+        state: "OPEN",
+        headRefName: "8-task",
+        baseRefName: "dev",
+        headRepository: { nameWithOwner: "example/project" },
+        labels: { nodes: [], pageInfo: { hasNextPage: false } },
+      }),
+    }),
+    {
+      path: "/repos/example/project/pulls/27",
+      method: "PATCH",
+      body: { body: "# Task: feat: task (issue #8)\n\nCloses #8\n\nYou are a worker.\nPrompt." },
+    },
+  ]);
+  await expect(f.transport.call("linkTask", { ref: "27" })).resolves.toBe("Linked task #27");
+  f.done();
+});
+
 test("open-task checks the issue timeline actor at the server, not the card's Status", async () => {
   const f = fixtureServer([
     graph({ repository: { issue: item() } }),

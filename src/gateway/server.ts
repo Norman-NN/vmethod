@@ -604,6 +604,7 @@ class GatewayServer {
   openTask: Handlers["openTask"] = async (input) => this.flow.open(input);
   reviewTask: Handlers["reviewTask"] = async (input) => this.flow.review(input);
   mergeTask: Handlers["mergeTask"] = async (input) => this.flow.merge(input.ref, input.mergeCommit);
+  linkTask: Handlers["linkTask"] = async (input) => this.flow.link(input.ref, input.complete);
   releaseHold: Handlers["releaseHold"] = async (input) => this.flow.release(input.ref);
   workerStatus: Handlers["workerStatus"] = async (input) => {
     await this.flowThread(input.ref, "pr");
@@ -1443,6 +1444,7 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     openTask: server.openTask,
     reviewTask: server.reviewTask,
     mergeTask: server.mergeTask,
+    linkTask: server.linkTask,
     releaseHold: server.releaseHold,
     workerStatus: server.workerStatus,
     nextEvents: server.nextEvents,
@@ -1480,6 +1482,7 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     openTask: ["orchestrator"],
     reviewTask: ["orchestrator"],
     mergeTask: ["orchestrator"],
+    linkTask: ["orchestrator"],
     releaseHold: ["orchestrator"],
     workerStatus: ["orchestrator"],
     nextEvents: ["orchestrator"],

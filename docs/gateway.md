@@ -509,13 +509,26 @@ These commands require `VMETHOD_ROLE=orchestrator`:
   The header is `# Task: <title> (issue #N)` and `<!-- points_open: N -->`
   freezes the issue's opening Estimate for grading; it is never copied onto the PR card.
   `open-task --direct "<title>"` also works without an issue. It records a structured
-  issue relation without closing prose, sets Model/Progress and never estimates a PR.
+  issue relation, sets Model/Progress and never estimates a PR. Full relations add
+  one gateway-generated `Closes #N` line outside the worker prompt. GitHub uses it
+  for the issue's Development panel and the board's linked-PR field, and closes
+  the issue when the completing PR merges into the repository's default branch.
   Gates and expensive-only Handoff breakpoints are enforced server-side.
   Existing conforming title prefixes are preserved. An issue-only `bug:` alias
   becomes `fix:`; prose/nonconforming titles receive `feat:` without broadening
   the accepted delivery-title types. `--part` requires an issue and records
   `# Task: <title> (part of issue #N)` plus `"part":true` in the structured marker.
-  A partial delivery leaves the issue and its card unchanged during merge follow-up.
+  Its generated `Part of #N` line provides an issue-timeline cross-reference, not
+  a native closing link or board linked-PR entry. A partial delivery leaves the
+  issue and its card unchanged during merge follow-up. For multi-PR issues, use
+  `--part` for intermediate deliveries; only the completing PR gets a closing link.
+- `link-task <pr> [--complete]` idempotently backfills an open task PR's generated
+  reference from its structured header or marker, never from prose or branch numbers.
+  Use it on existing open task PRs after upgrading. `--complete` promotes a partial
+  PR by updating its structured relation and replacing its partial reference with
+  a closing reference. The orchestrator decides which PR completes an issue.
+  Direct tasks without an issue need no reference. Workers cannot edit PR bodies
+  or call this command; agent comments and reviews still reject both keyword forms.
 - `review <pr> changes|owner|answer|ask|approve <file> [--in-reply-to <comment-url>]`
   posts the protocol header and sets the next actor. Owner review always names the
   full current SHA and marks the draft ready. `approve` posts an orchestrator
@@ -526,10 +539,12 @@ These commands require `VMETHOD_ROLE=orchestrator`:
   conflict-free green-head squash onto a moved base. Pack heads require merge
   commits and are retained. Track/pack-base deliveries leave linked issues and the
   main checkout alone. A final-base delivery closes linked issues and reports
-  `revise estimates: …` for own-repository dependents.
+  `revise estimates: …` for own-repository dependents. Missing native links never
+  block merging. If GitHub already closed the issue, follow-up still sets its card
+  to Done without another close write or duplicate comment.
 - `release-hold <pr>` posts GO, updates Progress and resumes the worker.
 
-The transport operations are `openTask`, `reviewTask`, `mergeTask`, `releaseHold`
+The transport operations are `openTask`, `linkTask`, `reviewTask`, `mergeTask`, `releaseHold`
 and `workerStatus`; `src/gateway/task-flow-types.ts` and `transport.ts` own their
 signatures. The gateway wires worker status, stop and resume to the recorded opencode
 or Claude session. Missing records remain unknown, never interpreted as stopped.

@@ -5,6 +5,22 @@ import { gatewayVerb } from "../../src/cli/gateway.js";
 import type { CallContext } from "../../src/gateway/transport.js";
 import { actor, fixtureServer, graph, item } from "./helpers.js";
 
+test.each(["worker", "orchestrator"] as const)(
+  "%s comments cannot use task-body keyword exceptions",
+  async (role) => {
+    const f = fixtureServer([]);
+    const file = join(f.root, "post.md");
+    for (const reference of ["Closes #3", "Part of #3", "Fixes #3"]) {
+      writeFileSync(file, `[${role}] ACK\n\n${reference}\n`);
+      await expect(
+        f.gateway.call("post", { ref: "3", file }, { role, taskPr: 3 })
+      ).rejects.toThrow();
+    }
+    f.done();
+  },
+  15000
+);
+
 test("workers cannot call orchestrator-only operations, even with a taskPr", async () => {
   const fixture = fixtureServer([]);
   for (const ctx of [{ role: "worker" }, { role: "worker", taskPr: 3 }] as const) {
@@ -17,6 +33,9 @@ test("workers cannot call orchestrator-only operations, even with a taskPr", asy
       fixture.gateway.call("reviewTask", { ref: "3", outcome: "owner", file: "unread" }, ctx)
     ).rejects.toThrow("denied");
     await expect(fixture.gateway.call("mergeTask", { ref: "3" }, ctx)).rejects.toThrow("denied");
+    await expect(
+      fixture.gateway.call("linkTask", { ref: "3", complete: true }, ctx)
+    ).rejects.toThrow("denied");
     await expect(fixture.gateway.call("releaseHold", { ref: "3" }, ctx)).rejects.toThrow("denied");
     await expect(fixture.gateway.call("workerStatus", { ref: "3" }, ctx)).rejects.toThrow("denied");
     await expect(fixture.gateway.call("ownerApproved", { ref: "3" }, ctx)).rejects.toThrow(

@@ -11,6 +11,7 @@ import { checkMarkdown, guardClosingKeywords } from "./markdown.js";
 import { GitTransport, taskBranch, validateBranch } from "./git.js";
 import { cleanBaseMerges } from "./clean-base.js";
 import type { OpenTaskInput, ReviewInput } from "./task-flow-types.js";
+import { taskRelation } from "./task-flow-types.js";
 
 interface Host {
   thread(ref: string, kind: "pr" | "issue"): Promise<ObjectData>;
@@ -318,9 +319,18 @@ export class TaskFlow {
         ? "\nAt each defined breakpoint post `[worker] HANDOFF` with what is done, uncommitted files and remaining mechanical steps, then end your turn.\n"
         : "") +
       `\n<!-- vmethod-task ${JSON.stringify({ issues: issue ? [Number(input.issue)] : [], ...(input.part ? { part: true } : {}) })} -->\n`;
-    const body = renderBody("<task PR number>");
-    await checkMarkdown(this.root, body);
-    guardClosingKeywords(body);
+    const checkedBody = async (taskPr: string): Promise<string> => {
+      const prompt = renderBody(taskPr);
+      // Validate all agent/source prose before adding the gateway-owned reference.
+      guardClosingKeywords(prompt);
+      const body = this.linkBody(prompt, {
+        issues: input.issue ? [this.number(input.issue)] : [],
+        part: input.part === true,
+      });
+      await checkMarkdown(this.root, body);
+      return body;
+    };
+    const body = await checkedBody("<task PR number>");
     if (input.unapproved && issue) {
       await this.post(input.issue!, `[orchestrator] Unapproved exception\n\n${input.unapproved}`);
     }
@@ -354,9 +364,7 @@ export class TaskFlow {
     const ref = String(created.number);
     this.number(ref);
     // GitHub assigns the task PR number on creation, independently of the issue number.
-    const finalBody = renderBody(ref);
-    await checkMarkdown(this.root, finalBody);
-    guardClosingKeywords(finalBody);
+    const finalBody = await checkedBody(ref);
     try {
       await this.host.github.rest(this.path(ref, "pulls"), "PATCH", { body: finalBody }, false);
     } catch (error) {
@@ -380,6 +388,69 @@ export class TaskFlow {
       await this.turn(input.issue!, false);
     }
     return `Opened draft PR #${ref} (${branch})`;
+  }
+
+  /** Backfill an open structured task; --complete promotes a partial relation. */
+  async link(ref: string, complete = false): Promise<string> {
+    if (typeof complete !== "boolean") {
+      throw new Error("Invalid complete flag");
+    }
+    const item = await this.pr(ref);
+    if (item.state !== "OPEN") {
+      throw new Error("PR is not open");
+    }
+    let body = String(item.body);
+    const relation = taskRelation(body);
+    if (!relation) {
+      throw new Error("Missing structured task relation");
+    }
+    if (complete && relation.part) {
+      relation.part = false;
+      body = body.replace(/^(# Task: [^\r\n]*) \(part of issue #([1-9]\d*)\)/, "$1 (issue #$2)");
+      body = body.replace(/<!-- vmethod-task (\{[^\n]*\}) -->/, (_match, json: string) => {
+        const marker = object(JSON.parse(json));
+        return `<!-- vmethod-task ${JSON.stringify({ ...marker, issues: relation.issues, part: false })} -->`;
+      });
+    }
+    body = this.linkBody(body, relation);
+    if (body === item.body) {
+      return `Task #${ref} links already current`;
+    }
+    await checkMarkdown(this.root, body);
+    // Existing prompt prose is preserved, not reposted through the agent-post path.
+    await this.host.github.rest(this.path(ref, "pulls"), "PATCH", { body }, false);
+    return `Linked task #${ref}${complete ? " as completing" : ""}`;
+  }
+
+  private linkBody(body: string, relation: { issues: number[]; part: boolean }): string {
+    if (!relation.issues.length) {
+      return body;
+    }
+    // Only the script-written header is managed; the worker prompt is untouched.
+    const boundary = body.indexOf("You are a worker.");
+    let header = boundary < 0 ? body : body.slice(0, boundary);
+    const prompt = boundary < 0 ? "" : body.slice(boundary);
+    const lines = relation.issues.map(
+      (issue) => `${relation.part ? "Part of" : "Closes"} #${issue}`
+    );
+    const existing = header.split(/\r?\n/);
+    if (
+      lines.every((line) => existing.filter((value) => value === line).length === 1) &&
+      !relation.issues.some((issue) =>
+        existing.includes(`${relation.part ? "Closes" : "Part of"} #${issue}`)
+      )
+    ) {
+      return body;
+    }
+    header = header.replace(
+      /^(?:Closes|Part of) #([1-9]\d*)(?:\r?\n|$)/gm,
+      (line, number: string) => (relation.issues.includes(Number(number)) ? "" : line)
+    );
+    const first = /^(# Task: [^\r\n]*)(?:\r?\n|$)/.exec(header);
+    const links = lines.join("\n");
+    return first
+      ? `${first[1]}\n\n${links}\n\n${header.slice(first[0].length).replace(/^\s*\n/, "")}${prompt}`
+      : `${links}\n\n${header}${prompt}`;
   }
 
   async review(input: ReviewInput): Promise<string> {
@@ -530,55 +601,38 @@ export class TaskFlow {
   }
 
   private async issues(item: ObjectData): Promise<number[]> {
-    const header = /^# Task: [^\r\n]* \((part of )?issue #([1-9]\d*)\)[\t ]*(?:\r?\n|$)/.exec(
-      String(item.body)
-    );
-    if (header) {
-      if (!Number.isSafeInteger(Number(header[2]))) {
-        throw new Error("Invalid task header issue");
-      }
-      return header[1] ? [] : [Number(header[2])];
+    const relation = taskRelation(String(item.body));
+    if (relation) {
+      return relation.part ? [] : relation.issues;
     }
-    const match = /<!-- vmethod-task (\{[^\n]*\}) -->/.exec(String(item.body));
-    if (!match) {
-      if (/^[\t ]*(?:>[\t ]*)?(?:\*\*)?Part of\s+#([1-9]\d*)\b/im.test(String(item.body))) {
-        return [];
-      }
-      const references = object(item.closingIssuesReferences);
-      if (object(references.pageInfo).hasNextPage === true) {
-        throw new Error("Too many legacy issue links");
-      }
-      const linked = Array.isArray(references.nodes)
-        ? references.nodes
-            .map(object)
-            .filter((node) => object(node.repository).nameWithOwner === this.repo)
-            .map((node) => Number(node.number))
-        : [];
-      const headers = [
-        ...String(item.body).matchAll(
-          /^[\t ]*(?:>[\t ]*)?(?:\*\*)?(?:Closes|Agent task for)\s+#([1-9]\d*)\b/gim
-        ),
-      ].map((match) => Number(match[1]));
-      const legacy = linked.length ? linked : headers;
-      if (legacy.some((number) => !Number.isSafeInteger(number))) {
-        throw new Error("Invalid legacy issue link");
-      }
-      if (legacy.length) {
-        this.deps.report("legacy link: using pre-adoption issue relation");
-      } else {
-        this.deps.report("no linked issue");
-      }
-      return [...new Set(legacy)];
+    if (/^[\t ]*(?:>[\t ]*)?(?:\*\*)?Part of\s+#([1-9]\d*)\b/im.test(String(item.body))) {
+      return [];
     }
-    const relation = object(JSON.parse(match[1]));
-    if (relation.part !== undefined && typeof relation.part !== "boolean") {
-      throw new Error("Invalid partial task relation");
+    const references = object(item.closingIssuesReferences);
+    if (object(references.pageInfo).hasNextPage === true) {
+      throw new Error("Too many legacy issue links");
     }
-    const issues: unknown = relation.issues;
-    if (!Array.isArray(issues) || issues.some((n) => !Number.isSafeInteger(n) || n < 1)) {
-      throw new Error("Invalid task issue relation");
+    const linked = Array.isArray(references.nodes)
+      ? references.nodes
+          .map(object)
+          .filter((node) => object(node.repository).nameWithOwner === this.repo)
+          .map((node) => Number(node.number))
+      : [];
+    const headers = [
+      ...String(item.body).matchAll(
+        /^[\t ]*(?:>[\t ]*)?(?:\*\*)?(?:Closes|Agent task for)\s+#([1-9]\d*)\b/gim
+      ),
+    ].map((match) => Number(match[1]));
+    const legacy = linked.length ? linked : headers;
+    if (legacy.some((number) => !Number.isSafeInteger(number))) {
+      throw new Error("Invalid legacy issue link");
     }
-    return relation.part ? [] : [...new Set(issues as number[])];
+    if (legacy.length) {
+      this.deps.report("legacy link: using pre-adoption issue relation");
+    } else {
+      this.deps.report("no linked issue");
+    }
+    return [...new Set(legacy)];
   }
   private stateFile(ref: string): string {
     const name = String(this.config.stateName ?? this.repo.replace("/", "-"));
