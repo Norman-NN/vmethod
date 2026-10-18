@@ -11,6 +11,7 @@ import { object, type ObjectData, type Person } from "./people.js";
 import { checkMarkdown, guardClosingKeywords } from "./markdown.js";
 import { GitTransport, taskBranch, validateBranch } from "./git.js";
 import { cleanBaseMerges } from "./clean-base.js";
+import { approvalCarryFiles } from "./carry-approval.js";
 import type { OpenTaskInput, ReviewInput } from "./task-flow-types.js";
 import { taskRelation } from "./task-flow-types.js";
 
@@ -722,9 +723,16 @@ export class TaskFlow {
     renameSync(`${file}.tmp`, file);
   }
 
-  async merge(ref: string, mergeCommit = false): Promise<string> {
+  /** Merge a stopped task; carryApproval certifies no behaviour change after base merges. */
+  async merge(ref: string, mergeCommit = false, carryApproval?: string): Promise<string> {
     if (typeof mergeCommit !== "boolean") {
       throw new Error("Invalid merge-commit flag");
+    }
+    if (
+      carryApproval !== undefined &&
+      (typeof carryApproval !== "string" || !carryApproval.trim() || /[\r\n]/.test(carryApproval))
+    ) {
+      throw new Error("Approval carry requires a nonempty single-line reason");
     }
     const item = await this.pr(ref);
     if (!["OPEN", "MERGED"].includes(String(item.state))) {
@@ -759,7 +767,30 @@ export class TaskFlow {
       ) {
         throw new Error("Fetch failed");
       }
-      if ((await this.host.approved(ref)) !== true) {
+      let certification: string | undefined;
+      if (carryApproval !== undefined) {
+        for (const approved of await this.host.candidates(ref)) {
+          if ((await this.host.approved(ref, approved)) !== true) {
+            continue;
+          }
+          const files = await approvalCarryFiles(
+            (...args) => git.run(...args),
+            approved,
+            head,
+            baseSha
+          );
+          if (files === null) {
+            continue;
+          }
+          certification = `[orchestrator] APPROVAL CARRIED from ${approved} to ${head}: ${carryApproval}\n\nI certify there is no behaviour change or algorithmic revamp.\n\nRemerge-diff files:\n${files.length ? files.map((file) => `- ${JSON.stringify(file)}`).join("\n") : "- (none)"}`;
+          break;
+        }
+        if (!certification) {
+          throw new Error(
+            "Owner approval cannot be carried: an earlier approval and only base-merge commits are required; re-ask the owner"
+          );
+        }
+      } else if ((await this.host.approved(ref)) !== true) {
         let survived = false;
         for (const approved of await this.host.candidates(ref)) {
           if (
@@ -798,6 +829,9 @@ export class TaskFlow {
       }
       if (item.isDraft) {
         await this.ready(item, false);
+      }
+      if (certification) {
+        await this.post(ref, certification);
       }
       const merged = object(
         await this.host.github.rest(

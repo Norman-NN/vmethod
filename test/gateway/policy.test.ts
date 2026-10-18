@@ -34,6 +34,9 @@ test("workers cannot call orchestrator-only operations, even with a taskPr", asy
     ).rejects.toThrow("denied");
     await expect(fixture.gateway.call("mergeTask", { ref: "3" }, ctx)).rejects.toThrow("denied");
     await expect(
+      fixture.gateway.call("mergeTask", { ref: "3", carryApproval: "Conflict only" }, ctx)
+    ).rejects.toThrow("denied");
+    await expect(
       fixture.gateway.call("linkTask", { ref: "3", complete: true }, ctx)
     ).rejects.toThrow("denied");
     await expect(fixture.gateway.call("releaseHold", { ref: "3" }, ctx)).rejects.toThrow("denied");
