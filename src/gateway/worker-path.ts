@@ -19,10 +19,7 @@ export function workerWorktree(
     String(branches.mainCheckout ?? root),
     String(branches.worktreeRoot ?? ".worktrees")
   );
-  const prefix = branches.worktreePrefix ?? "auto-";
-  if (typeof prefix !== "string" || /[/\\\r\n]/.test(prefix)) {
-    throw new Error("Invalid branches.worktreePrefix");
-  }
+  const prefix = workerWorktreePrefix(config);
   const recorded = typeof task === "string" ? "" : relative(parent, resolve(task.directory));
   const branch =
     typeof task === "string"
@@ -47,4 +44,13 @@ export function workerWorktree(
   const legacy = target(branch);
   const preferred = target(`${prefix}${branch}`);
   return !existsSync(preferred) && existsSync(legacy) ? legacy : preferred;
+}
+
+/** Return the literal worktree prefix shared by path lookup and legacy key decoding. */
+export function workerWorktreePrefix(config: Config): string {
+  const prefix = object(config.branches).worktreePrefix ?? "auto-";
+  if (typeof prefix !== "string" || /[/\\\r\n]/.test(prefix)) {
+    throw new Error("Invalid branches.worktreePrefix");
+  }
+  return prefix;
 }

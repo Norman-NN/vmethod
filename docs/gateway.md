@@ -213,12 +213,18 @@ Estimate, and a session whose directory matches the verified task worktree. The
 actual session model must match a configured opencode model (or the `other` policy).
 Existing records are never overwritten, including their grading history. Adoption
 does not apply launch gates because it does not start or change the existing model.
-`worker adopt --from-legacy` reads `<pr>.json` files containing
-`{"sessionId":"ses_…"}` (or `{"id":"ses_…"}`) under each `legacyWorkers`
-directory in `$XDG_STATE_HOME` (default `~/.local/state`), with the same `-<track>`
-suffix convention as `legacyState`. Optional `repo` and `pr` fields must match.
-Only successfully verified records are adopted; every adopted or skipped PR is
-reported. Unconfigured directories are never scanned and source files are unchanged.
+`worker adopt --from-legacy` reads bare-id bash records keyed by encoded worktree
+paths and `<pr>.json` files containing `{"sessionId":"ses_…"}` (or
+`{"id":"ses_…"}`) under each safe relative `legacyWorkers` directory in
+`$XDG_STATE_HOME` (default `~/.local/state`). The same `-<track>` suffix convention
+as `legacyState` applies. Optional JSON `repo` and `pr` fields must match but never
+authorize adoption. The importer requires an existing worktree before invoking
+the normal repository/branch verification; missing worktrees are not created.
+Every skipped record is reported with its reason, including non-task filenames.
+Unconfigured directories are never scanned and source files are unchanged.
+Claude records are reported as non-adoptable skips, never sent to opencode.
+See [legacy worker transition](adoption.md#legacy-worker-transition) for formats,
+path constraints and the explicit Claude relaunch procedure.
 
 Capture `<!-- points_open: 8 -->` **when creating the task PR**, using the issue's
 Estimate then; do not revise this snapshot. Legacy prompts can retain their original
