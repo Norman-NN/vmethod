@@ -523,7 +523,6 @@ export class OpencodeClient {
         const session = object(opencodeData(await this.request("GET", path)));
         const recorded = sessionDirectory(session);
         if (!recorded || resolve(recorded) !== resolve(directory)) {
-          this.pollErrors.delete(id);
           continue;
         }
         const permissions = listed(

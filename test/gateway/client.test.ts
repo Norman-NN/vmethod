@@ -108,6 +108,7 @@ test("opencode poll isolates a session's 400, reports it once per status, and co
   );
   expect(reports[0]).not.toContain("secret");
   expect(reports[0].split(": ").at(-1)!.length).toBeLessThanOrEqual(200);
+  expect(await client.status("/other-worktree")).toEqual({ state: "other" });
   await client.status("/work");
   expect(reports).toHaveLength(1);
   status = 403;
