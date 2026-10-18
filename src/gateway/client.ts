@@ -352,7 +352,8 @@ export interface WorkerStatus {
   detail?: string;
 }
 
-function listed(value: unknown, field: string): ObjectData[] {
+function listed(value: unknown, field: string, path: string): ObjectData[] {
+  value = opencodeData(value);
   const items = Array.isArray(value)
     ? value
     : value !== null &&
@@ -360,7 +361,10 @@ function listed(value: unknown, field: string): ObjectData[] {
         !Array.isArray(value) &&
         Array.isArray((value as Record<string, unknown>)[field])
       ? ((value as Record<string, unknown>)[field] as unknown[])
-      : [];
+      : null;
+  if (items === null) {
+    throw new Error(`Invalid opencode response on GET ${path}: expected ${field} list`);
+  }
   return items.map(object);
 }
 
@@ -374,29 +378,41 @@ function str(value: unknown): string {
 }
 
 function sessionIds(value: unknown): string[] {
+  value = opencodeData(value);
   if (Array.isArray(value)) {
-    return value
-      .map((entry) => (typeof entry === "string" ? entry : str(object(entry).id)))
-      .filter(Boolean);
+    return value.map((entry) => (typeof entry === "string" ? entry : str(object(entry).id)));
   }
   if (value !== null && typeof value === "object" && !Array.isArray(value)) {
     const inner = (value as Record<string, unknown>).sessions;
     if (Array.isArray(inner)) {
       return sessionIds(inner);
     }
-    return Object.keys(value).filter(Boolean);
+    return Object.keys(value);
   }
-  return [];
+  throw new Error("Invalid opencode response on GET /api/session/active: expected session map");
+}
+
+function opencodeData(value: unknown): unknown {
+  return value !== null && typeof value === "object" && Object.hasOwn(value, "data")
+    ? object(value).data
+    : value;
+}
+
+function validSessionId(id: string): boolean {
+  return /^ses_[A-Za-z0-9_-]+$/.test(id);
 }
 
 export class OpencodeClient {
   private readonly url: URL;
   private readonly authorization: string;
+  private readonly secrets: string[];
+  private readonly pollErrors = new Map<string, Set<string>>();
 
   constructor(
     env: NodeJS.ProcessEnv,
     private fetcher: typeof fetch,
-    private now: () => number = Date.now
+    private now: () => number = Date.now,
+    private report: (message: string) => void = console.error
   ) {
     if (!env.OPENCODE_BASE_URL || !env.OPENCODE_SERVER_USERNAME || !env.OPENCODE_SERVER_PASSWORD) {
       throw new Error(
@@ -414,6 +430,12 @@ export class OpencodeClient {
       throw new Error("Invalid opencode base URL");
     }
     this.authorization = `Basic ${Buffer.from(`${env.OPENCODE_SERVER_USERNAME}:${env.OPENCODE_SERVER_PASSWORD}`).toString("base64")}`;
+    this.secrets = [
+      this.authorization,
+      this.authorization.slice(6),
+      env.OPENCODE_SERVER_PASSWORD,
+      env.OPENCODE_SERVER_USERNAME,
+    ].sort((a, b) => b.length - a.length);
   }
 
   async request(
@@ -426,9 +448,10 @@ export class OpencodeClient {
       throw new Error("Invalid opencode path");
     }
     const url = new URL(`${this.url.toString().replace(/\/$/, "")}${path}`);
+    const context = `${method} ${this.redact(path)}`;
     const timeout = Math.min(30000, deadline === undefined ? 30000 : deadline - this.now());
     if (timeout <= 0) {
-      throw new Error("opencode deadline exceeded");
+      throw new Error(`opencode deadline exceeded on ${context}`);
     }
     let response: Response;
     try {
@@ -443,10 +466,21 @@ export class OpencodeClient {
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
     } catch {
-      throw new Error("opencode network request failed");
+      throw new Error(`opencode network request failed on ${context}`);
     }
     if (!response.ok) {
-      throw new OpencodeError(response.status);
+      let message = "";
+      try {
+        const data = object(await response.json());
+        const error = data.error;
+        message = str(error) || str(object(error).message) || str(data.message);
+      } catch {
+        // Non-JSON errors have no safe structured message to expose.
+      }
+      message = this.redact(message)
+        .replace(/[\r\n\t]/g, " ")
+        .slice(0, 200);
+      throw new OpencodeError(response.status, method, this.redact(path), message);
     }
     if (response.status === 204) {
       return {};
@@ -454,7 +488,7 @@ export class OpencodeClient {
     try {
       return await response.json();
     } catch {
-      throw new Error("opencode returned invalid JSON");
+      throw new Error(`opencode returned invalid JSON on ${context}`);
     }
   }
 
@@ -472,27 +506,61 @@ export class OpencodeClient {
 
   private async watchStatus(directory: string): Promise<WorkerStatus> {
     const active = sessionIds(await this.request("GET", "/api/session/active"));
+    for (const id of this.pollErrors.keys()) {
+      if (!active.includes(id)) {
+        this.pollErrors.delete(id);
+      }
+    }
     let stopped: WorkerStatus = { state: "other" };
     for (const id of active) {
-      const path = `/api/session/${encodeURIComponent(id)}`;
-      const session = object(await this.request("GET", path));
-      const recorded = sessionDirectory(session);
-      if (!recorded || resolve(recorded) !== resolve(directory)) {
-        continue;
-      }
-      const permissions = listed(await this.request("GET", `${path}/permission`), "permissions");
-      if (permissions.length) {
-        const permission = permissions[0];
-        return {
-          state: "permission",
-          detail: str(permission.type) || str(permission.title) || undefined,
-        };
-      }
-      const messages = listed(await this.request("GET", `${path}/message?limit=20`), "messages");
-      const idle = [...messages].reverse().find((message) => str(message.type) === "idle");
-      if (idle !== undefined && str(idle.outcome) === "failed") {
-        const error = object(idle.error);
-        stopped = { state: "failed", detail: str(error.message) || str(error.name) || undefined };
+      try {
+        if (!validSessionId(id)) {
+          throw new Error(
+            "Invalid opencode session id on GET /api/session/active: expected ses_ prefix"
+          );
+        }
+        const path = `/api/session/${encodeURIComponent(id)}`;
+        const session = object(opencodeData(await this.request("GET", path)));
+        const recorded = sessionDirectory(session);
+        if (!recorded || resolve(recorded) !== resolve(directory)) {
+          continue;
+        }
+        const permissions = listed(
+          await this.request("GET", `${path}/permission`),
+          "permissions",
+          this.redact(`${path}/permission`)
+        );
+        if (permissions.length) {
+          const permission = permissions[0];
+          stopped = {
+            state: "permission",
+            detail: str(permission.type) || str(permission.title) || undefined,
+          };
+          this.pollErrors.delete(id);
+          continue;
+        }
+        const messages = listed(
+          await this.request("GET", `${path}/message?limit=20`),
+          "messages",
+          this.redact(`${path}/message?limit=20`)
+        );
+        const idle = messages.find((message) => str(message.type) === "idle") ?? session;
+        if (stopped.state !== "permission" && str(idle.outcome) === "failed") {
+          const error = object(idle.error);
+          stopped = { state: "failed", detail: str(error.message) || str(error.name) || undefined };
+        }
+        this.pollErrors.delete(id);
+      } catch (error) {
+        const status =
+          error instanceof OpencodeError ? String(error.status) : (error as Error).message;
+        const seen = this.pollErrors.get(id) ?? new Set<string>();
+        if (!seen.has(status)) {
+          this.report(
+            `watcher: worker session ${validSessionId(id) ? this.redact(id) : "(invalid id)"} failed: ${(error as Error).message}`
+          );
+          seen.add(status);
+          this.pollErrors.set(id, seen);
+        }
       }
     }
     return stopped;
@@ -504,17 +572,20 @@ export class OpencodeClient {
     deadline?: number
   ): Promise<WorkerSessionStatus> {
     const active = object(
-      object(await this.request("GET", "/api/session/active", undefined, deadline)).data
+      opencodeData(await this.request("GET", "/api/session/active", undefined, deadline))
     );
     if (!id) {
       return { reason: "session unknown", active: false };
     }
+    if (!validSessionId(id)) {
+      throw new Error("Invalid opencode session id on GET /api/session/:id: expected ses_ prefix");
+    }
     let session: ObjectData;
     try {
       session = object(
-        object(
+        opencodeData(
           await this.request("GET", `/api/session/${encodeURIComponent(id)}`, undefined, deadline)
-        ).data
+        )
       );
     } catch (error) {
       if (error instanceof OpencodeError && error.status === 404) {
@@ -525,22 +596,22 @@ export class OpencodeClient {
     if (!session.id) {
       return { reason: "session unknown", active: false };
     }
-    const permissions = object(
+    const permissions = opencodeData(
       await this.request(
         "GET",
         `/api/session/${encodeURIComponent(id)}/permission`,
         undefined,
         deadline
       )
-    ).data;
-    const messages = object(
+    );
+    const messages = opencodeData(
       await this.request(
         "GET",
         `/api/session/${encodeURIComponent(id)}/message?limit=20`,
         undefined,
         deadline
       )
-    ).data;
+    );
     if (!Array.isArray(permissions) || !Array.isArray(messages)) {
       throw new Error("Invalid opencode status response");
     }
@@ -570,11 +641,23 @@ export class OpencodeClient {
     }
     return { ...classifyTurn(latest ?? session), ...detail };
   }
+
+  private redact(text: string): string {
+    for (const secret of this.secrets) {
+      text = text.split(secret).join("[redacted]");
+    }
+    return text;
+  }
 }
 
 class OpencodeError extends Error {
-  constructor(readonly status: number) {
-    super(`opencode HTTP ${status}`);
+  constructor(
+    readonly status: number,
+    method: string,
+    path: string,
+    message: string
+  ) {
+    super(`opencode HTTP ${status} on ${method} ${path}${message ? `: ${message}` : ""}`);
   }
 }
 

@@ -8,6 +8,7 @@ import {
   statSync,
   openSync,
   copyFileSync,
+  unlinkSync,
 } from "node:fs";
 import { join } from "node:path";
 import {
@@ -26,6 +27,7 @@ import { createGateway } from "../../src/gateway/server.js";
 import { stringify } from "yaml";
 import { people } from "./helpers.js";
 import recordedActions from "../fixtures/github/watch-actions.json" with { type: "json" };
+import recordedComment from "../fixtures/github/review-comment.json" with { type: "json" };
 import { GitHubClient } from "../../src/gateway/client.js";
 
 test("a closed card held in Backlog across three polls is noted only once", async () => {
@@ -165,6 +167,59 @@ test("idle after an unanswered amendment reports stopped without reply using obs
   expect(f.reports).toEqual([]);
 });
 
+test.each(["live", "backfill", "pending", "quiet", "restart-pending", "restart-quiet"])(
+  "recorded own comment is suppressed on %s delivery",
+  async (path) => {
+    const f = setup();
+    f.task();
+    let loop = f.loop();
+    await f.tick(loop);
+    f.advance();
+    const comment = {
+      ...recordedComment,
+      user: { login: "me", id: 999, type: "User" },
+      issue_url: "https://api.github.com/repos/example/project/issues/24",
+      html_url: `https://github.com/example/project/pull/24#issuecomment-${recordedComment.id}`,
+      created_at: f.iso().replace(/\.\d{3}Z$/, "Z"),
+      updated_at: f.iso().replace(/\.\d{3}Z$/, "Z"),
+    };
+    writeFileSync(
+      join(f.dir, "writes.jsonl"),
+      `${JSON.stringify({ at: f.iso(600_000), kind: "comment", repo: "example/project", number: 24, commentId: comment.id, nodeId: comment.node_id })}\n`
+    );
+    const line = `COMMENT #24 from me (orchestrator) (this account, another session) ${comment.html_url}`;
+    if (path.endsWith("pending")) {
+      writeFileSync(
+        join(f.dir, "pending.json"),
+        JSON.stringify([{ id: "queued-own-comment", kind: "comment", line, once: true }])
+      );
+    } else if (path.endsWith("quiet")) {
+      writeFileSync(join(f.dir, "quiet"), `${line}\nNOTE: retained\n`);
+      writeFileSync(
+        join(f.dir, "pending.json"),
+        JSON.stringify([{ id: "wake", kind: "note", line: "wake", once: true }])
+      );
+    } else {
+      f.comments["example/project"] = path === "live" ? [comment] : [];
+      if (path === "backfill") {
+        f.history = [comment];
+        unlinkSync(join(f.dir, "worker-prompts-seeded-24"));
+      }
+    }
+    if (path.startsWith("restart-")) {
+      loop.close();
+      loop = f.loop();
+    }
+    const events = await f.tick(loop);
+    if (path.endsWith("quiet")) {
+      expect(events).toHaveLength(1);
+      expect(events[0].quiet).toEqual(["NOTE: retained"]);
+    } else {
+      expect(events).toEqual([]);
+    }
+  }
+);
+
 test("an older in-flight board listing cannot turn a completed Done write into Done → In review", async () => {
   const f = setup();
   f.cards = [f.card(24, "In review", "PullRequest")];
@@ -179,6 +234,58 @@ test("an older in-flight board listing cannot turn a completed Done write into D
   expect((await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true })).events).toEqual([]);
   expect(readFileSync(join(f.dir, "board", "PVTI_24"), "utf8").trim()).toBe("Done");
   expect(f.reports).toEqual([expect.stringContaining("discarded stale BOARD #24")]);
+});
+
+test("late-indexed comments behind the prior cursor are delivered once across overlapping listings", async () => {
+  const f = setup();
+  f.task();
+  const loop = f.loop();
+  await f.tick(loop);
+  f.advance();
+  const late = f.comment("Owner comment indexed late", 0);
+  f.comments["example/project"] = [];
+  f.advance();
+  expect(await f.tick(loop)).toEqual([]);
+  f.comments["example/project"] = [late];
+  f.advance();
+  const events = await f.tick(loop);
+  expect(events.map((event) => event.kind)).toEqual(["comment"]);
+  await f.ack(loop, events);
+  f.advance();
+  expect(await f.tick(loop)).toEqual([]);
+  expect(f.reports).toEqual([]);
+});
+
+test("subscribed issue overlap catches delayed indexing and bounds only window dedupe markers", async () => {
+  const f = setup();
+  const loop = f.loop();
+  await f.tick(loop);
+  f.advance();
+  const item = {
+    number: 88,
+    created_at: f.iso(),
+    updated_at: f.iso(),
+    user: user(0),
+    html_url: "https://github.com/vworlds/vmethod/issues/88",
+  };
+  f.advance();
+  expect(await f.tick(loop)).toEqual([]);
+  f.newItems = [item];
+  f.advance();
+  const events = await f.tick(loop);
+  expect(events.map((event) => event.kind)).toEqual(["new"]);
+  await f.ack(loop, events);
+  expect(await f.tick(loop)).toEqual([]);
+  const marker = join(f.dir, "new-vworlds_vmethod#88");
+  expect(existsSync(marker)).toBe(true);
+  const old = f.iso(-13 * 60_000);
+  writeFileSync(join(f.dir, "c-1111111111111111"), old);
+  writeFileSync(join(f.dir, "worker-prompts-seeded-88"), "");
+  f.advance(13 * 60_000);
+  expect(await f.tick(loop)).toEqual([]);
+  expect(existsSync(marker)).toBe(false);
+  expect(existsSync(join(f.dir, "c-1111111111111111"))).toBe(false);
+  expect(existsSync(join(f.dir, "worker-prompts-seeded-88"))).toBe(true);
 });
 
 test.each([true, false])(
@@ -574,6 +681,32 @@ test("board Ready/Approved, NEXT, LAUNCH, assignments and owner completion wake;
   expect(events.map((e) => e.kind)).toEqual(["assigned"]);
   expect(events[0].line).toContain("other/project#7");
   expect(f.writes.every((write) => write.itemId !== "PVTI_7")).toBe(true);
+});
+
+test.each([
+  ['<!-- vmethod-task {"issues":[6]} -->', false],
+  ["# Task: delivery (issue #6)\n", false],
+  ['<!-- vmethod-task {"issues":[6],"part":true} -->', false],
+  ['<!-- vmethod-task {"issues":[7]} -->', true],
+  ["References #6", true],
+  ['<!-- vmethod-task {"issues":["6"]} -->', true],
+])("LAUNCH excludes open structured task relations: %s", async (body, launches) => {
+  const f = setup();
+  f.task();
+  f.pulls[0].body = body;
+  f.cards = [f.card(6)];
+  const loop = f.loop();
+  await f.tick(loop);
+  f.advance();
+  object(f.cards[0].status).name = "Approved";
+  const events = await f.tick(loop);
+  expect(events.some((event) => event.kind === "launch")).toBe(launches);
+  if (!launches) {
+    await f.ack(loop, events);
+    f.pulls = [];
+    f.advance();
+    expect((await f.tick(loop)).some((event) => event.kind === "launch")).toBe(true);
+  }
 });
 
 test("own remembered moves and migration-stamped changes stay quiet", async () => {
@@ -1078,6 +1211,40 @@ test("STALE after my review and SILENT after inactivity are distinct, once per a
     await f.ack(loop, events);
   }
   expect(wakes.map((e) => e.kind)).toEqual(["silent"]);
+});
+
+test("recorded-worker poll failures are once per status and do not block a healthy task", async () => {
+  const f = setup();
+  f.task();
+  f.worktree();
+  mkdirSync(join(f.root, ".worktrees/auto-7-watch"), { recursive: true });
+  f.pulls.push({ ...f.pulls[0], number: 31, head: { ref: "7-watch", sha } });
+  f.issues.push({ number: 7, labels: [] }, { number: 31, pull_request: {}, labels: [] });
+  f.cards.push(f.card(31, "In progress", "PullRequest"));
+  let status = 400;
+  f.workerStatus = async (pr) => {
+    if (pr === 24) {
+      throw new Error(
+        `opencode HTTP ${status} on GET /api/session/ses_bad/message?limit=20: invalid request`
+      );
+    }
+    return { reason: "permission-wait", active: true };
+  };
+  const loop = f.loop();
+  const events = await f.once(loop);
+  expect(events.map((event) => event.line)).toEqual([expect.stringContaining("WORKER #31")]);
+  for (let i = 0; i < 12; i++) {
+    expect(await f.once(loop)).toEqual([]);
+  }
+  expect(f.reports).toEqual([
+    expect.stringContaining("opencode HTTP 400 on GET /api/session/ses_bad/message?limit=20"),
+  ]);
+  status = 403;
+  for (let i = 0; i < 6; i++) {
+    await f.once(loop);
+  }
+  expect(f.reports).toHaveLength(2);
+  expect(f.staleWorkerReads.filter((pr) => pr === 31).length).toBeGreaterThan(1);
 });
 
 test.each(["permission", "failed"])(

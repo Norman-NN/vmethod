@@ -1,0 +1,44 @@
+{
+  "active": { "data": { "ses_recorded": { "type": "running" } } },
+  "session": {
+    "data": {
+      "id": "ses_recorded",
+      "model": { "id": "gpt-6.1-sol", "providerID": "codexbal", "variant": "default" },
+      "cost": 0,
+      "tokens": {
+        "input": 118893,
+        "output": 13085,
+        "reasoning": 4361,
+        "cache": { "read": 3907968, "write": 0 }
+      },
+      "outcome": "succeeded",
+      "time": { "created": 1792322403027, "updated": 1792323215195, "idle": 1792322649497 },
+      "location": { "directory": "/work/recorded" }
+    }
+  },
+  "permission": { "data": [] },
+  "message": {
+    "data": [
+      {
+        "id": "msg_recorded1",
+        "type": "assistant",
+        "time": { "created": 1792323212962, "streamed": 1792323215711 }
+      },
+      {
+        "id": "msg_recorded2",
+        "type": "assistant",
+        "time": { "created": 1792323204484, "streamed": 1792323208863, "completed": 1792323212915 }
+      },
+      {
+        "id": "msg_recorded3",
+        "type": "assistant",
+        "time": { "created": 1792323182301, "streamed": 1792323190227, "completed": 1792323204445 }
+      }
+    ]
+  },
+  "invalidRequest": {
+    "_tag": "InvalidRequestError",
+    "message": "Expected a string starting with \"ses\"\n  at [\"sessionID\"]",
+    "kind": "Params"
+  }
+}

@@ -44,21 +44,29 @@ export function taskRelation(body: string): { issues: number[]; part: boolean } 
 
 /** Recognize a task header or a valid structured task marker, including direct tasks. */
 export function isTaskPrompt(body: string): boolean {
-  if (/^# Task: [^\r\n]+ \((?:part of )?issue #[1-9]\d*\)[\t ]*(?:\r?\n|$)/m.test(body)) {
-    return true;
-  }
+  return taskIssueNumbers(body) !== undefined;
+}
+
+/** Issue relations from a task header/marker; an empty list is a valid direct task. */
+export function taskIssueNumbers(body: string): number[] | undefined {
+  const header = /^# Task: [^\r\n]+ \((?:part of )?issue #([1-9]\d*)\)[\t ]*(?:\r?\n|$)/m.exec(
+    body
+  );
+  const issues = header && Number.isSafeInteger(Number(header[1])) ? [Number(header[1])] : [];
   const marker = /<!-- vmethod-task (\{[^\r\n]*\}) -->/.exec(body);
-  if (!marker) {
-    return false;
+  if (marker) {
+    try {
+      const value = JSON.parse(marker[1]);
+      if (
+        Array.isArray(value.issues) &&
+        value.issues.every((n: unknown) => Number.isSafeInteger(n) && Number(n) > 0) &&
+        (value.part === undefined || typeof value.part === "boolean")
+      ) {
+        return [...new Set<number>([...issues, ...value.issues])];
+      }
+    } catch {
+      // A malformed marker is not a relation; a valid header still is.
+    }
   }
-  try {
-    const value = JSON.parse(marker[1]);
-    return (
-      Array.isArray(value.issues) &&
-      value.issues.every((n: unknown) => Number.isSafeInteger(n) && Number(n) > 0) &&
-      (value.part === undefined || typeof value.part === "boolean")
-    );
-  } catch {
-    return false;
-  }
+  return issues.length ? issues : undefined;
 }
