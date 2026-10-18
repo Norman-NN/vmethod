@@ -501,7 +501,7 @@ class GatewayServer {
   };
   boardItem: Handlers["boardItem"] = async ({ itemId }) => this.board.item(itemId);
   boardSet: Handlers["boardSet"] = async (input) => this.board.set(input);
-  /** Set a numeric/select field on an accepted own-repository issue already on our board. */
+  /** Set an issue board field, or clear Progress/Estimate with a null value. */
   boardSetIssue: Handlers["boardSetIssue"] = async ({ ref, field, value }) => {
     this.localNumber(ref);
     const issue = await this.flowThread(ref, "issue");

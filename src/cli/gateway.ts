@@ -114,11 +114,11 @@ async function existingVerb(
     case "board": {
       if (args[0] === "set") {
         if (args.length !== 4) {
-          throw new Error("Usage: board set <issue> <field> <value>");
+          throw new Error("Usage: board set <issue> <field> <value>|--clear");
         }
         return transport.call(
           "boardSetIssue",
-          { ref: args[1], field: args[2], value: args[3] },
+          { ref: args[1], field: args[2], value: args[3] === "--clear" ? null : args[3] },
           ctx
         );
       }

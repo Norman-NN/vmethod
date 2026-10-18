@@ -76,7 +76,7 @@ and explicit `repos` bindings. See [shared learnings](learnings.md).
 - `vmethod board migrate [--dry-run] [--steal]`
 - `vmethod issue create <title> <body-file> [--label l] [--estimate n] [--status name]`
 - `vmethod issue close <n> [--comment file]`
-- `vmethod board set <issue> <field> <value>`
+- `vmethod board set <issue> <field> <value>|--clear`
 
 Thread references also accept `org/repo#n` within the configured org. Invoke the
 installed package with `npm exec --no -- vmethod`, never a downloading fallback.
@@ -153,7 +153,12 @@ people filter and already belong to the configured board. Choose a single-select
 option by its exact name, supply a finite numeric value, or set the Progress text
 field to a known state emoji (including board README aliases), optionally followed
 by a keycap round and red-CI marker, for example `👤❓ 🔁2️⃣ 🔴`. Other text fields
-and unknown Progress values are refused. Status writes clear Progress first; the gateway client journals the
+and unknown Progress values are refused. Use `board set <issue> Progress --clear`
+or `board set <issue> Estimate --clear` to empty those fields explicitly. An empty
+string is still rejected, and other fields do not support `--clear`. The typed
+`boardSetIssue` operation takes `value: null` for these clears; it uses GitHub's
+native field-clear mutation rather than an empty text or numeric zero.
+Status writes clear Progress first; the gateway client journals the
 successful mutations like other writes. No housekeeping command changes repository/board scope.
 The typed operations are `issueCreate({title, file, labels?, estimate?, status?})`,
 `issueClose({ref, comment?})` and `boardSetIssue({ref, field, value})` in

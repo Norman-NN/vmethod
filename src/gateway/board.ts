@@ -430,12 +430,20 @@ export class BoardService implements BoardIO {
     return "Board field updated";
   }
   /** Set a single-select/number field or validated Progress by issue content ID.
+   * A null value clears only Progress or Estimate through the native field-clear mutation.
    * Estimates must use the shared points scale. Status writes clear Progress;
    * GitHubClient journals the successful mutations.
    */
-  async setIssueField(contentId: string, name: string, value: string): Promise<string> {
-    if (typeof name !== "string" || !name || typeof value !== "string" || !value.trim()) {
+  async setIssueField(contentId: string, name: string, value: string | null): Promise<string> {
+    if (
+      typeof name !== "string" ||
+      !name ||
+      (value !== null && (typeof value !== "string" || !value.trim()))
+    ) {
       throw new Error("Invalid board field/value");
+    }
+    if (value === null && !["Progress", "Estimate"].includes(name)) {
+      throw new Error("Only Progress and Estimate support --clear");
     }
     const snapshot = await this.snapshot();
     compatibility(readState(snapshot.readme), this.boardVersion, this.report);
@@ -447,7 +455,7 @@ export class BoardService implements BoardIO {
     ) {
       throw new Error("Expected a single-select or number board field, or Progress");
     }
-    if (name === "Progress") {
+    if (name === "Progress" && value !== null) {
       const states = new Set([
         ...Object.values(progressStates),
         ...Object.values(readState(snapshot.readme).aliases),
@@ -465,11 +473,11 @@ export class BoardService implements BoardIO {
       throw new Error("Issue is not on configured board");
     }
     this.scope(card);
-    let parsed: string | number = value;
-    if (name === "Estimate") {
+    let parsed: string | number | null = value;
+    if (name === "Estimate" && value !== null) {
       assertEstimate(value.trim() ? Number(value) : NaN);
     }
-    if (field.type === "number") {
+    if (field.type === "number" && value !== null) {
       if (
         !/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(value) ||
         !Number.isFinite(Number(value))

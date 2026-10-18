@@ -106,6 +106,93 @@ const acceptedIssue = () =>
     labels: { nodes: [], pageInfo: { hasNextPage: false } },
   });
 
+test.each(["Progress", "Estimate"])(
+  "board set %s then --clear leaves the field empty",
+  async (field) => {
+    const card = boardRecording.items.nodes[0];
+    const fieldId = boardRecording.fields.nodes.find((entry) => entry.name === field)!.id;
+    const value = field === "Progress" ? "👤❓" : "5";
+    let stored: string | number | null = null;
+    const metadata = () => [
+      graph({ repository: { issue: item({ id: card.content.id }) } }),
+      graph({ node: { ...acceptedIssue(), id: card.content.id } }),
+      ...boardReads(),
+    ];
+    const f = fixtureServer([
+      ...metadata(),
+      {
+        path: "/graphql",
+        checkQuery(query, variables) {
+          expect(query).toContain("updateProjectV2ItemFieldValue");
+          expect(variables).toEqual({
+            m0: {
+              projectId: boardRecording.id,
+              itemId: card.id,
+              fieldId,
+              value: field === "Progress" ? { text: value } : { number: 5 },
+            },
+          });
+          stored = field === "Progress" ? value : 5;
+        },
+        json: { data: { m0: { projectV2Item: { id: card.id } } } },
+      },
+      ...metadata(),
+      {
+        path: "/graphql",
+        checkQuery(query, variables) {
+          expect(query).toContain("clearProjectV2ItemFieldValue");
+          expect(variables).toEqual({
+            m0: { projectId: boardRecording.id, itemId: card.id, fieldId },
+          });
+          stored = null;
+        },
+        json: { data: { m0: { projectV2Item: { id: card.id } } } },
+      },
+    ]);
+    const env = { VMETHOD_ROLE: "orchestrator" };
+    await gatewayVerb(f.transport, "board", ["set", "39", field, value], env);
+    expect(stored).toBe(field === "Progress" ? value : 5);
+    await gatewayVerb(f.transport, "board", ["set", "39", field, "--clear"], env);
+    expect(stored).toBeNull();
+    f.done();
+  },
+  15000
+);
+
+test.each(["Status", "Model", "Missing"])(
+  "board set %s --clear refuses unsupported clears before mutation",
+  async (field) => {
+    const card = boardRecording.items.nodes[0];
+    const f = fixtureServer([
+      graph({ repository: { issue: item({ id: card.content.id }) } }),
+      graph({ node: { ...acceptedIssue(), id: card.content.id } }),
+    ]);
+    await expect(
+      gatewayVerb(f.transport, "board", ["set", "39", field, "--clear"], {
+        VMETHOD_ROLE: "orchestrator",
+      })
+    ).rejects.toThrow("Only Progress and Estimate support --clear");
+    f.done();
+  },
+  15000
+);
+
+test.each(["Progress", "Estimate"])(
+  "board set %s rejects an accidental empty string",
+  async (field) => {
+    const card = boardRecording.items.nodes[0];
+    const f = fixtureServer([
+      graph({ repository: { issue: item({ id: card.content.id }) } }),
+      graph({ node: { ...acceptedIssue(), id: card.content.id } }),
+    ]);
+    await expect(
+      gatewayVerb(f.transport, "board", ["set", "39", field, ""], { VMETHOD_ROLE: "orchestrator" })
+    ).rejects.toThrow("Invalid board field/value");
+    f.done();
+  },
+  15000
+);
+
 test("issue create sends validated file content and repeated labels to the configured repository", async () => {
   const recording = createdCard();
   const f = fixtureServer([
@@ -299,6 +386,8 @@ test.each([
   ["issue", ["close", "37", "--comment"]],
   ["issue", ["close", "37", "--wrong", "file"]],
   ["board", ["set", "39", "Estimate"]],
+  ["board", ["set", "39", "Progress", "👤❓", "--clear"]],
+  ["board", ["set", "39", "Estimate", "--clear", "5"]],
   ["board", ["set", "39", "Estimate", "5", "--repo", "foreign"]],
 ])(
   "housekeeping CLI rejects malformed %s arguments %j without networking",
