@@ -202,7 +202,11 @@ test.each(
         writeFileSync(file, "Review body\n");
         await taskFlowVerb(transport, "review", ["27", verb.split(" ")[1], file], commandEnv);
       }
-      const events = await once();
+      let events = await once();
+      if (verb === "merge-task" && identity === "sibling") {
+        expect(events.some((event) => event.kind === "button-merge")).toBe(false);
+        events = await once();
+      }
       if (verb.startsWith("review ")) {
         const ownerTurn = ["review owner", "review ask"].includes(verb);
         const prCard = w.cards.find((card) => object(card.content).number === 27)!;

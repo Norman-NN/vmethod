@@ -343,6 +343,10 @@ export class EventLoop {
   private opencodeError = "";
   private launchedIssues = new Set<number>();
   private workerPollErrors = new Map<number, Set<string>>();
+  private reportedFailures = new Map<
+    string,
+    { message: string; since: number; reminded: number }
+  >();
   private reading = false;
   private budgetDeferred = false;
   private releaseLock?: () => void;
@@ -1120,11 +1124,32 @@ export class EventLoop {
   private async step(name: string, run: () => Promise<void>): Promise<boolean> {
     try {
       await run();
+      for (const [signature, failure] of this.reportedFailures) {
+        if (signature.startsWith(`${name}:`)) {
+          this.host.deps.report(
+            `watcher: ${name} recovered after failing since ${new Date(failure.since).toISOString()}`
+          );
+          this.reportedFailures.delete(signature);
+        }
+      }
       return true;
     } catch (error) {
       if (error instanceof BudgetPause) {
         this.budgetDeferred = true;
         return false;
+      }
+      const message = (error as Error).message;
+      const signature = `${name}:${message}`;
+      const previous = this.reportedFailures.get(signature);
+      const now = this.host.deps.now();
+      if (!previous) {
+        this.reportedFailures.set(signature, { message, since: now, reminded: now });
+        this.host.deps.report(`watcher: ${name} failed: ${message}`);
+      } else if (now - previous.reminded >= 60 * 60_000) {
+        previous.reminded = now;
+        this.host.deps.report(
+          `watcher: still failing since ${new Date(previous.since).toISOString()}: ${message}`
+        );
       }
       if (error instanceof GraphQLResponseError) {
         this.produceOnce(
@@ -1133,7 +1158,6 @@ export class EventLoop {
           "QUERY ERROR: GraphQL rejected a watcher query; details on stderr"
         );
       }
-      this.host.deps.report(`watcher: ${name} failed: ${(error as Error).message}`);
       return false;
     }
   }
@@ -1564,6 +1588,11 @@ export class EventLoop {
         return;
       }
       const at = Math.floor(this.host.deps.now() / 1000);
+      const pending = `merge-pending-${number}`;
+      if (self && !complete && !this.marked(pending)) {
+        this.writeMarker(pending, String(at));
+        return;
+      }
       const merger = str(object(data.merged_by).login);
       const sibling = self && !matched ? " (this account, another session)" : "";
       const action =
@@ -1605,6 +1634,7 @@ export class EventLoop {
       `ci-${number}`,
       `conflict-${number}`,
       `merge-attempt-${number}`,
+      `merge-pending-${number}`,
       `activity-${number}`,
       `review-${number}`,
       `seeded-${number}`,
@@ -2833,6 +2863,9 @@ export class EventLoop {
         }
       } catch (error) {
         const message = (error as Error).message;
+        if (/^Worker #\d+ is locked;/.test(message)) {
+          continue;
+        }
         const signature = message.split(": ")[0];
         const seen = this.workerPollErrors.get(pr.number) ?? new Set<string>();
         if (!seen.has(signature)) {

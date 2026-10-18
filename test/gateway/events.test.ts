@@ -513,6 +513,8 @@ test.each([false, true])(
         `${JSON.stringify({ at: f.iso(), kind: "merged", repo: "example/project", number: 24 })}\n`
       );
     }
+    expect((await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true })).events).toEqual([]);
+    f.advance();
     const events = (await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true })).events;
     expect(events).toHaveLength(1);
     expect(events[0].line).toContain("follow-up not run: run merge-task");
