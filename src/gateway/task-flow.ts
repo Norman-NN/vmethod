@@ -598,7 +598,11 @@ export class TaskFlow {
       await this.turn(String(number), null);
       await this.card(issue, owner ? "In review" : "In progress", null);
     }
-    return `Posted ${heading} on #${input.ref}`;
+    const wake =
+      input.outcome === "changes" || input.outcome === "answer"
+        ? await this.wake(input.ref, heading)
+        : undefined;
+    return `Posted ${heading} on #${input.ref}${wake ? `\n${wake}` : ""}`;
   }
 
   /** Ask the owner on an issue without a live task PR; task questions belong on that PR. */
@@ -637,20 +641,21 @@ export class TaskFlow {
     if (item.state !== "OPEN") {
       throw new Error("PR is not open");
     }
-    if (!this.deps.workers) {
-      throw new Error("Worker control unavailable (#9)");
-    }
     const comments = await this.host.comments(String(item.id));
     if (!comments.some((c) => /^\[orchestrator\] GO(?:\s|$)/.test(String(c.body)))) {
       await this.post(ref, "[orchestrator] GO\n\nThe hold is lifted; work may begin.");
     }
     await this.card(item, "In progress", "🤖🔨");
     await this.turn(ref, null);
-    await this.deps.workers.resume(
+    const wake = await this.wake(ref, "GO");
+    return `Released #${ref}${wake ? `\n${wake}` : ""}`;
+  }
+
+  private async wake(ref: string, heading: string): Promise<string | void> {
+    return this.deps.workers?.resume(
       this.number(ref),
-      "[orchestrator] GO\nRead your task PR; the hold is lifted."
+      `[orchestrator] ${heading} is on your PR; read it with vmethod read pr ${ref} and act.`
     );
-    return `Released #${ref}`;
   }
 
   private async green(ref: string, head: string): Promise<void> {
