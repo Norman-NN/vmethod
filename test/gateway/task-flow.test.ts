@@ -11,6 +11,7 @@ import { validProject } from "../helpers.js";
 import { people, sha } from "./helpers.js";
 import legacyBodies from "../fixtures/github/legacy-task-bodies.json" with { type: "json" };
 import closingReferences from "../fixtures/github/task-closing-references.json" with { type: "json" };
+import developmentLinks from "../fixtures/github/task-development-links.json" with { type: "json" };
 import { BoardService } from "../../src/gateway/board.js";
 import { WatchFake } from "./watch-fake.js";
 import { writeState } from "../../src/board/readme.js";
@@ -220,7 +221,9 @@ function fixture() {
     branch = "8-task";
   let body = '<!-- vmethod-task {"issues":[8]} -->';
   let issueNumber = 8;
-  let references: ObjectData = { nodes: [], pageInfo: { hasNextPage: false } };
+  let references: ObjectData = structuredClone(
+    developmentLinks.before.data.repository.pullRequest.closingIssuesReferences
+  );
   let checks = [
     {
       id: 1,
@@ -272,14 +275,20 @@ function fixture() {
             : undefined;
         if (mutation) {
           expect(payload.variables).toEqual({ issueId: "issue", pullRequestIds: ["pr"] });
-          references = {
-            nodes:
-              mutation === "addCloseIssueReferences"
-                ? [{ number: issueNumber, repository: { nameWithOwner: "example/project" } }]
-                : [],
-            pageInfo: { hasNextPage: false },
-          };
-          data = { data: { [mutation]: { clientMutationId: null } } };
+          references = structuredClone(
+            (mutation === "addCloseIssueReferences"
+              ? developmentLinks.afterAdd
+              : developmentLinks.afterRemove
+            ).data.repository.pullRequest.closingIssuesReferences
+          );
+          references.nodes = (references.nodes as ObjectData[]).map((node) => ({
+            ...node,
+            number: issueNumber,
+            repository: { nameWithOwner: "example/project" },
+          }));
+          data = structuredClone(
+            mutation === "addCloseIssueReferences" ? developmentLinks.add : developmentLinks.remove
+          );
         } else {
           data = { data: {} };
         }
@@ -1084,6 +1093,119 @@ test("recorded native closing connection decodes through GraphQL and completes o
     expect.objectContaining({ id: "issue", field: "Status", value: "Done" })
   );
   expect(f.events).not.toContain("read issue 8");
+  f.done();
+});
+
+test("recorded Development add/remove lifecycle backfills, re-reads idempotently and promotes without body references", async () => {
+  const f = fixture();
+  const originalBody =
+    '# Task: feat: task (issue #68)\n\nYou are a worker.\nPrompt unchanged.\n<!-- vmethod-task {"issues":[68]} -->';
+  f.set({ body: originalBody, issueNumber: 68 });
+  const captures = structuredClone(developmentLinks);
+  for (const read of [
+    captures.before,
+    captures.afterAdd,
+    captures.afterIdempotentAdd,
+    captures.afterRemove,
+    captures.final,
+  ]) {
+    for (const node of read.data.repository.pullRequest.closingIssuesReferences.nodes) {
+      node.repository.nameWithOwner = String(f.config.repo);
+    }
+  }
+  const reads = [
+    captures.before,
+    captures.afterAdd,
+    captures.afterIdempotentAdd,
+    captures.afterRemove,
+    captures.afterRemove,
+    captures.afterRemove,
+    captures.final,
+  ];
+  const mutations = [captures.add, captures.remove, captures.finalAdd];
+  const mutationNames = [
+    "addCloseIssueReferences",
+    "removeCloseIssueReferences",
+    "addCloseIssueReferences",
+  ];
+  let readIndex = 0,
+    mutationIndex = 0;
+  const fetch = f.deps.fetch;
+  f.deps.fetch = async (input, init) => {
+    if (String(input) !== "https://api.github.com/graphql") {
+      return fetch(input, init);
+    }
+    const payload = object(JSON.parse(String(init?.body)));
+    const query = String(payload.query);
+    parse(query);
+    if (query.includes("query RecordedDevelopment")) {
+      expect(payload.variables).toEqual({ owner: "vworlds", repo: "vmethod", pr: 74 });
+      const read = reads[readIndex++];
+      if (!read) {
+        throw new Error("Unexpected recorded read");
+      }
+      return Response.json(read);
+    }
+    const mutation = mutationNames[mutationIndex];
+    const response = mutations[mutationIndex++];
+    if (!response) {
+      throw new Error("Unexpected recorded mutation");
+    }
+    expect(query).toContain(
+      `${mutation}(input: {issueId: $issueId, pullRequestIds: $pullRequestIds})`
+    );
+    expect(payload.variables).toEqual({ issueId: "issue", pullRequestIds: ["pr"] });
+    return Response.json(response);
+  };
+  const thread = f.host.thread;
+  f.host.thread = async (ref, kind) => {
+    const item = await thread(ref, kind);
+    if (kind !== "pr") {
+      return item;
+    }
+    const decoded = object(
+      await f.host.github.graphql(
+        `query RecordedDevelopment($owner: String!, $repo: String!, $pr: Int!) {
+        repository(owner: $owner, name: $repo) {
+          pullRequest(number: $pr) {
+            number
+            closingIssuesReferences(first: 100) {
+              nodes { number repository { nameWithOwner } }
+              pageInfo { hasNextPage }
+            }
+          }
+        }
+      }`,
+        { owner: "vworlds", repo: "vmethod", pr: 74 }
+      )
+    );
+    return {
+      ...item,
+      closingIssuesReferences: object(object(decoded.repository).pullRequest)
+        .closingIssuesReferences,
+    };
+  };
+  await expect(f.flow().link("27")).resolves.toBe("Linked task #27");
+  await expect(f.flow().link("27")).resolves.toContain("already current");
+  expect(f.writes.filter((w) => w.path.endsWith("/pulls/27"))).toEqual([]);
+  await expect(f.flow().link("27", false, true)).resolves.toBe("Unlinked task #27");
+  await expect(f.flow().link("27")).resolves.toContain("already current");
+  await expect(f.flow().link("27", true)).resolves.toBe("Linked task #27 as completing");
+  await expect(f.flow().link("27")).resolves.toContain("already current");
+  expect(readIndex).toBe(reads.length);
+  expect(mutationIndex).toBe(mutations.length);
+  const bodies = f.writes
+    .filter((w) => w.path.endsWith("/pulls/27"))
+    .map((w) => String(w.body.body));
+  expect(bodies).toHaveLength(2);
+  expect(bodies[0]).toContain("(part of issue #68)");
+  expect(bodies[1]).toContain("(issue #68)");
+  for (const body of bodies) {
+    expect(body).not.toMatch(/(?:closes|part of)\s+#68/i);
+    expect(body).toContain("You are a worker.\nPrompt unchanged.");
+  }
+  expect(captures.addAgain).toEqual(captures.add);
+  expect(captures.afterIdempotentAdd).toEqual(captures.afterAdd);
   f.done();
 });
 

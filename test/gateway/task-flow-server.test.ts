@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
 import { actor, fixtureServer, graph, item, sha } from "./helpers.js";
+import developmentLinks from "../fixtures/github/task-development-links.json" with { type: "json" };
 
 test("link-task reaches the authenticated Development mutation path without editing the body", async () => {
   const body = "# Task: feat: task (issue #8)\n\nYou are a worker.\nPrompt.";
@@ -28,7 +29,7 @@ test("link-task reaches the authenticated Development mutation path without edit
     }),
     {
       path: "/graphql",
-      json: { data: { addCloseIssueReferences: { clientMutationId: null } } },
+      json: developmentLinks.add,
       checkQuery(query, variables) {
         expect(query).toContain(
           "addCloseIssueReferences(input: {issueId: $issueId, pullRequestIds: $pullRequestIds})"
