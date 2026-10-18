@@ -102,7 +102,8 @@ test.each(
       const originalFetch = f.deps.fetch;
       f.deps.fetch = (input, init) => {
         const path = new URL(String(input)).pathname;
-        return /\/git\/(matching-refs|refs)\/|\/dependencies\/blocking$/.test(path)
+        return /\/git\/(matching-refs|refs)\/|\/dependencies\/blocking$/.test(path) ||
+          String(init?.body).includes("TaskClosingLink")
           ? originalFetch(input, init)
           : w.deps.fetch(input, init);
       };
@@ -263,7 +264,25 @@ function fixture() {
       let data: unknown;
       if (method === "POST" && path === "/graphql") {
         parse(String(payload.query));
-        data = { data: {} };
+        const query = String(payload.query);
+        const mutation = query.includes("addCloseIssueReferences")
+          ? "addCloseIssueReferences"
+          : query.includes("removeCloseIssueReferences")
+            ? "removeCloseIssueReferences"
+            : undefined;
+        if (mutation) {
+          expect(payload.variables).toEqual({ issueId: "issue", pullRequestIds: ["pr"] });
+          references = {
+            nodes:
+              mutation === "addCloseIssueReferences"
+                ? [{ number: issueNumber, repository: { nameWithOwner: "example/project" } }]
+                : [],
+            pageInfo: { hasNextPage: false },
+          };
+          data = { data: { [mutation]: { clientMutationId: null } } };
+        } else {
+          data = { data: {} };
+        }
       } else if (method === "GET" && path.includes("/check-runs?")) {
         data = { check_runs: checks };
       } else if (method === "PUT" && path === "/repos/example/project/pulls/27/merge") {
@@ -566,19 +585,21 @@ test("open-task --part records matching structured relations without closing syn
   expect(body).toContain("# Task: feat: task (part of issue #8)");
   expect(body).toContain('<!-- vmethod-task {"issues":[8],"part":true} -->');
   expect(body).not.toMatch(/(?:closes|fixes|resolves)\s+#8/i);
-  expect(body.match(/^Part of #8$/gm)).toHaveLength(1);
+  expect(body).not.toMatch(/^Part of #8$/m);
   f.done();
 });
 
-test("two partial deliveries and one completing delivery link only the completing PR natively", async () => {
+test("two partial deliveries and one completing delivery mutate only the completing PR without reference prose", async () => {
   for (const part of [true, true, false]) {
     const f = fixture();
     await f.flow().open({ issue: "8", part });
     for (const write of f.writes.filter((w) => typeof w.body.body === "string")) {
       const body = String(write.body.body);
-      expect(body.match(/^Closes #8$/gm) ?? []).toHaveLength(part ? 0 : 1);
-      expect(body.match(/^Part of #8$/gm) ?? []).toHaveLength(part ? 1 : 0);
+      expect(body).not.toMatch(/(?:closes|part of)\s+#8/i);
     }
+    expect(
+      f.writes.filter((w) => String(w.body.query).includes("addCloseIssueReferences"))
+    ).toHaveLength(part ? 0 : 1);
     f.done();
   }
 });
@@ -589,13 +610,14 @@ test("direct tasks never derive generated closing links from title or specificat
   for (const write of f.writes.filter((w) => typeof w.body.body === "string")) {
     expect(String(write.body.body)).not.toMatch(/^(?:Closes|Part of) #/m);
   }
+  expect(f.writes.filter((w) => String(w.body.query).includes("CloseIssueReferences"))).toEqual([]);
   f.done();
 });
 
-test("link-task promotes a header-only task and normalizes duplicate generated references", async () => {
+test("link-task promotes a header-only task without introducing reference prose", async () => {
   const f = fixture();
   f.set({
-    body: "# Task: feat: task (part of issue #8)\n\nPart of #8\nPart of #8\n\nYou are a worker.\nPrompt unchanged.",
+    body: "# Task: feat: task (part of issue #8)\n\nYou are a worker.\nPrompt unchanged.",
   });
   await f.flow().link("27", true);
   await f.flow().link("27", true);
@@ -603,9 +625,22 @@ test("link-task promotes a header-only task and normalizes duplicate generated r
   expect(writes).toHaveLength(1);
   const body = String(writes[0].body.body);
   expect(body).toContain("# Task: feat: task (issue #8)");
-  expect(body.match(/^Closes #8$/gm)).toHaveLength(1);
+  expect(body).not.toMatch(/(?:closes|part of)\s+#8/i);
   expect(body).not.toContain("Part of #8");
   expect(body).toContain("You are a worker.\nPrompt unchanged.");
+  f.done();
+});
+
+test("plan changes preserve marker examples inside the worker prompt", async () => {
+  const f = fixture();
+  const prompt = 'You are a worker.\nExample: <!-- vmethod-task {"issues":[999],"part":true} -->\n';
+  f.set({
+    body: `# Task: feat: task (part of issue #8)\n\n${prompt}\n<!-- vmethod-task {"issues":[8],"part":true} -->`,
+  });
+  await f.flow().link("27", true);
+  const body = String(f.writes.find((w) => w.path.endsWith("/pulls/27"))!.body.body);
+  expect(body).toContain(prompt);
+  expect(body).toMatch(/<!-- vmethod-task {"issues":\[8\],"part":false} -->$/);
   f.done();
 });
 
@@ -620,21 +655,11 @@ test.each([
   f.set({ body });
   await f.flow().link("27");
   await f.flow().link("27");
-  const writes = f.writes.filter((w) => w.path.endsWith("/pulls/27"));
-  if (body.includes('"issues":[]')) {
-    expect(writes).toEqual([]);
-  } else {
-    expect(writes).toHaveLength(1);
-    const linked = String(writes[0].body.body);
-    const part = body.includes('"part":true');
-    expect(linked.match(/^Closes #8$/gm) ?? []).toHaveLength(part ? 0 : 1);
-    expect(linked.match(/^Part of #8$/gm) ?? []).toHaveLength(part ? 1 : 0);
-    if (body.includes("You are a worker.")) {
-      expect(linked.slice(linked.indexOf("You are a worker."))).toBe(
-        body.slice(body.indexOf("You are a worker."))
-      );
-    }
-  }
+  expect(f.writes.filter((w) => w.path.endsWith("/pulls/27"))).toEqual([]);
+  const part = body.includes('"part":true');
+  expect(
+    f.writes.filter((w) => String(w.body.query).includes("addCloseIssueReferences"))
+  ).toHaveLength(part || body.includes('"issues":[]') ? 0 : 1);
   f.done();
 });
 
@@ -649,9 +674,9 @@ test.each([true, false])(
     await f.flow().link("27", true);
     await f.flow().link("27", true);
     const writes = f.writes.filter((w) => w.path.endsWith("/pulls/27"));
-    expect(writes).toHaveLength(2);
-    const body = String(writes[1].body.body);
-    expect(body.match(/^Closes #8$/gm)).toHaveLength(1);
+    expect(writes).toHaveLength(1);
+    const body = String(writes[0].body.body);
+    expect(body).not.toMatch(/(?:closes|part of)\s+#8/i);
     expect(body).not.toContain("Part of #8");
     expect(body).not.toContain("part of issue");
     expect(body).toContain('"part":false');
@@ -666,6 +691,107 @@ test.each(["MERGED", "CLOSED"])("link-task refuses %s PRs before writes", async 
   f.set({ state });
   await expect(f.flow().link("27")).rejects.toThrow("not open");
   expect(f.writes).toEqual([]);
+  f.done();
+});
+
+test.each([true, false])(
+  "link-task --unlink removes a manual link and demotes the structured plan (header=%s)",
+  async (header) => {
+    const f = fixture();
+    f.set({
+      body: `${header ? "# Task: feat: task (issue #8)\n\n" : ""}<!-- vmethod-task {"issues":[8]} -->`,
+    });
+    await f.flow().link("27");
+    await f.flow().link("27", false, true);
+    await f.flow().link("27", false, true);
+    await f.flow().link("27");
+    expect(
+      f.writes.filter((w) => String(w.body.query).includes("addCloseIssueReferences"))
+    ).toHaveLength(1);
+    expect(
+      f.writes.filter((w) => String(w.body.query).includes("removeCloseIssueReferences"))
+    ).toHaveLength(1);
+    const writes = f.writes.filter((w) => w.path.endsWith("/pulls/27"));
+    expect(writes).toHaveLength(1);
+    const body = String(writes[0].body.body);
+    expect(body).toContain('"part":true');
+    if (header) {
+      expect(body).toContain("(part of issue #8)");
+    }
+    expect(body).not.toMatch(/(?:closes|part of)\s+#8/i);
+    await f.flow().merge("27");
+    expect(f.writes.some((w) => w.body.state === "closed")).toBe(false);
+    expect(f.touched.some((w) => w.id === "issue")).toBe(false);
+    f.done();
+  }
+);
+
+test("link-task refuses conflicting flags before reading or writing", async () => {
+  const f = fixture();
+  await expect(f.flow().link("27", true, true)).rejects.toThrow("conflicting");
+  expect(f.events).toEqual([]);
+  f.done();
+});
+
+test("unlinking a direct task without an issue is a no-op", async () => {
+  const f = fixture();
+  f.set({ body: '<!-- vmethod-task {"issues":[]} -->' });
+  await f.flow().link("27", false, true);
+  expect(f.writes).toEqual([]);
+  f.done();
+});
+
+test.each([
+  { nodes: [], pageInfo: { hasNextPage: true } },
+  {},
+  { nodes: [{ number: 8 }], pageInfo: { hasNextPage: false } },
+])("link-task refuses incomplete or malformed connection data: %j", async (references) => {
+  const f = fixture();
+  f.set({ references });
+  await expect(f.flow().link("27")).rejects.toThrow();
+  expect(f.writes).toEqual([]);
+  f.done();
+});
+
+test("a failed Development mutation preserves the plan and can be retried", async () => {
+  const f = fixture();
+  f.set({
+    body: '# Task: feat: task (part of issue #8)\n<!-- vmethod-task {"issues":[8],"part":true} -->',
+    fail: "/graphql",
+  });
+  await expect(f.flow().link("27", true)).rejects.toThrow();
+  expect(f.writes.filter((w) => w.path.endsWith("/pulls/27"))).toEqual([]);
+  f.set({ fail: "" });
+  await f.flow().link("27", true);
+  expect(f.writes.filter((w) => w.path.endsWith("/pulls/27"))).toHaveLength(1);
+  f.done();
+});
+
+test("unlink reports an automatic reference that the manual-removal mutation cannot remove", async () => {
+  const f = fixture();
+  const references = {
+    nodes: [{ number: 8, repository: { nameWithOwner: "example/project" } }],
+    pageInfo: { hasNextPage: false },
+  };
+  f.set({ references });
+  const thread = f.host.thread;
+  f.host.thread = async (ref, kind) => ({
+    ...(await thread(ref, kind)),
+    ...(kind === "pr" ? { closingIssuesReferences: references } : {}),
+  });
+  await expect(f.flow().link("27", false, true)).rejects.toThrow("manual links only");
+  expect(f.writes.filter((w) => w.path.endsWith("/pulls/27"))).toEqual([]);
+  f.done();
+});
+
+test("open-task reports a created PR's linking failure and names the recovery command", async () => {
+  const f = fixture();
+  f.set({ fail: "/graphql" });
+  await expect(f.flow().open({ issue: "8" })).rejects.toThrow(
+    "Development linking failed; retry link-task 27"
+  );
+  expect(f.writes.filter((w) => w.path.endsWith("/pulls"))).toHaveLength(1);
+  expect(f.touched).toEqual([]);
   f.done();
 });
 
@@ -981,7 +1107,7 @@ test.each(["unapproved", "gated", "handoff"])(
   }
 );
 
-test("open-task creates a draft with one native closing link, clears issue Progress and never estimates PRs", async () => {
+test("open-task creates a draft with a manual Development link, clears issue Progress and never estimates PRs", async () => {
   const f = fixture();
   f.set({ body: "## Approved spec\n\nImplement the test." });
   await expect(f.flow().open({ issue: "8", model: "sol", hold: true })).resolves.toContain(
@@ -992,10 +1118,10 @@ test("open-task creates a draft with one native closing link, clears issue Progr
   expect(create.body.body).toContain("https://github.com/example/project/issues/8");
   expect(create.body.body).toContain("# Task: feat: task (issue #8)");
   expect(create.body.body).toContain("<!-- points_open: 13 -->");
-  expect(String(create.body.body).match(/^Closes #8$/gm)).toHaveLength(1);
-  expect(String(create.body.body).indexOf("Closes #8")).toBeLessThan(
-    String(create.body.body).indexOf("You are a worker.")
-  );
+  expect(String(create.body.body)).not.toMatch(/(?:closes|part of)\s+#8/i);
+  expect(
+    f.writes.filter((w) => String(w.body.query).includes("addCloseIssueReferences"))
+  ).toHaveLength(1);
   expect(create.body.body).not.toContain("<specifics>");
   expect(f.touched).toContainEqual(
     expect.objectContaining({ id: "pr", field: "Status", value: "In progress", progress: "⛔" })

@@ -59,10 +59,18 @@ export async function taskFlowVerb(
     );
   }
   if (verb === "link-task") {
-    if (!args.length || args.length > 2 || (args[1] && args[1] !== "--complete")) {
-      throw new Error("Usage: link-task <pr> [--complete]");
+    if (
+      !args.length ||
+      args.length > 2 ||
+      (args[1] && !["--complete", "--unlink"].includes(args[1]))
+    ) {
+      throw new Error("Usage: link-task <pr> [--complete|--unlink]");
     }
-    return transport.call("linkTask", { ref: args[0], complete: args[1] === "--complete" }, ctx);
+    return transport.call(
+      "linkTask",
+      { ref: args[0], complete: args[1] === "--complete", unlink: args[1] === "--unlink" },
+      ctx
+    );
   }
   if (verb === "merge-task") {
     if (!args.length || args.length > 2 || (args[1] && args[1] !== "--merge-commit")) {

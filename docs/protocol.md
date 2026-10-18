@@ -43,8 +43,9 @@ posts: forms of close, fix, resolve and the phrase “part of” are guarded. Le
 task/merge wrappers manage structured issue relations. Quote or rephrase hostile
 input rather than forwarding a closing phrase unchanged.
 
-Only the gateway's task-body generation and `link-task` backfill may insert a
-validated relation reference in the script-written PR header. This exception does
-not apply to agent-supplied text, comments or reviews; workers cannot edit PR bodies.
+Task wrappers establish native Development relations through the issue-side API,
+not keyword text in PR bodies. `link-task` promotion/demotion may update vmethod's
+structured task header and marker only. There is no task-body keyword exception;
+workers cannot edit PR bodies.
 
 `post` adds no footer. Keep attribution boilerplate out of the body.

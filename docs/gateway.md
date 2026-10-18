@@ -536,26 +536,38 @@ These commands require `VMETHOD_ROLE=orchestrator`:
   The header is `# Task: <title> (issue #N)` and `<!-- points_open: N -->`
   freezes the issue's opening Estimate for grading; it is never copied onto the PR card.
   `open-task --direct "<title>"` also works without an issue. It records a structured
-  issue relation, sets Model/Progress and never estimates a PR. Full relations add
-  one gateway-generated `Closes #N` line outside the worker prompt. GitHub uses it
-  for the issue's Development panel and the board's linked-PR field, and closes
+  issue relation, sets Model/Progress and never estimates a PR. After creating a
+  completing PR, the gateway establishes its issue-side Development relation with
+  GraphQL `addCloseIssueReferences`, using the issue and PR node IDs. This manual
+  closing link appears in Development and the board's linked-PR field; GitHub closes
   the issue when the completing PR merges into the repository's default branch.
+  No closing-keyword or association-reference text is added to the PR description.
   Gates and expensive-only Handoff breakpoints are enforced server-side.
   Existing conforming title prefixes are preserved. An issue-only `bug:` alias
   becomes `fix:`; prose/nonconforming titles receive `feat:` without broadening
   the accepted delivery-title types. `--part` requires an issue and records
   `# Task: <title> (part of issue #N)` plus `"part":true` in the structured marker.
-  Its generated `Part of #N` line provides an issue-timeline cross-reference, not
-  a native closing link or board linked-PR entry. A partial delivery leaves the
+  Partial PRs have only vmethod's structured relation: no native closing link,
+  added timeline reference or board linked-PR entry. A partial delivery leaves the
   issue and its card unchanged during merge follow-up. For multi-PR issues, use
   `--part` for intermediate deliveries; only the completing PR gets a closing link.
-- `link-task <pr> [--complete]` idempotently backfills an open task PR's generated
-  reference from its structured header or marker, never from prose or branch numbers.
+- `link-task <pr> [--complete|--unlink]` idempotently backfills an open task PR's
+  Development relation from its structured header or marker, never from prose or
+  branch numbers. It reads `closingIssuesReferences` first and skips existing links.
   Use it on existing open task PRs after upgrading. `--complete` promotes a partial
-  PR by updating its structured relation and replacing its partial reference with
-  a closing reference. The orchestrator decides which PR completes an issue.
-  Direct tasks without an issue need no reference. Workers cannot edit PR bodies
-  or call this command; agent comments and reviews still reject both keyword forms.
+  PR by updating its structured relation and adding the manual closing reference.
+  `--unlink` calls `removeCloseIssueReferences` and demotes the structured relation
+  to partial, so merge follow-up will not complete that issue. These flags are exclusive.
+  Removal affects manual links only: automatic body-keyword references are unchanged.
+  If a reference remains after removal, the command fails visibly without demoting
+  the plan; remove that automatic reference through an owner-approved body edit.
+  The orchestrator decides which PR completes an issue. Plain backfill never edits
+  the body; promotion/demotion change only the structured plan, not reference prose.
+  Direct tasks without an issue need no link. Workers cannot edit PR bodies or call
+  this command; agent comments and reviews still reject closing/association keywords.
+  Failed linking after PR creation names the created PR and the `link-task` recovery
+  command; retry that command rather than creating another task. A failed plan edit
+  after a successful mutation can likewise be retried without duplicating links.
 - `review <pr> changes|owner|answer|ask|approve <file> [--in-reply-to <comment-url>]`
   posts the protocol header and sets the next actor. Owner review always names the
   full current SHA and marks the draft ready. `approve` posts an orchestrator

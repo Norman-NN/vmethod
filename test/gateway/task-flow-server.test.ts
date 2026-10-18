@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 import { actor, fixtureServer, graph, item, sha } from "./helpers.js";
 
-test("link-task reaches the authenticated body-edit path as an orchestrator", async () => {
+test("link-task reaches the authenticated Development mutation path without editing the body", async () => {
   const body = "# Task: feat: task (issue #8)\n\nYou are a worker.\nPrompt.";
   const f = fixtureServer([
     graph({ repository: { pullRequest: item() } }),
@@ -14,12 +14,27 @@ test("link-task reaches the authenticated body-edit path as an orchestrator", as
         baseRefName: "dev",
         headRepository: { nameWithOwner: "example/project" },
         labels: { nodes: [], pageInfo: { hasNextPage: false } },
+        closingIssuesReferences: { nodes: [], pageInfo: { hasNextPage: false } },
+      }),
+    }),
+    graph({ repository: { issue: item() } }),
+    graph({
+      node: item({
+        state: "OPEN",
+        title: "feat: issue",
+        body: "Spec",
+        labels: { nodes: [], pageInfo: { hasNextPage: false } },
       }),
     }),
     {
-      path: "/repos/example/project/pulls/27",
-      method: "PATCH",
-      body: { body: "# Task: feat: task (issue #8)\n\nCloses #8\n\nYou are a worker.\nPrompt." },
+      path: "/graphql",
+      json: { data: { addCloseIssueReferences: { clientMutationId: null } } },
+      checkQuery(query, variables) {
+        expect(query).toContain(
+          "addCloseIssueReferences(input: {issueId: $issueId, pullRequestIds: $pullRequestIds})"
+        );
+        expect(variables).toEqual({ issueId: "node-1", pullRequestIds: ["node-1"] });
+      },
     },
   ]);
   await expect(f.transport.call("linkTask", { ref: "27" })).resolves.toBe("Linked task #27");

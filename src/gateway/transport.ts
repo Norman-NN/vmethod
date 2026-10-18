@@ -21,8 +21,8 @@ export interface Operations {
   openTask: { input: OpenTaskInput; output: string };
   reviewTask: { input: ReviewInput; output: string };
   mergeTask: { input: { ref: string; mergeCommit?: boolean }; output: string };
-  /** Orchestrator-only header backfill; complete promotes an open partial task. */
-  linkTask: { input: { ref: string; complete?: boolean }; output: string };
+  /** Orchestrator-only Development links; complete promotes, unlink demotes. Flags are exclusive. */
+  linkTask: { input: { ref: string; complete?: boolean; unlink?: boolean }; output: string };
   releaseHold: { input: { ref: string }; output: string };
   workerStatus: { input: { ref: string }; output: "live" | "stopped" | "unknown" };
   nextEvents: {
