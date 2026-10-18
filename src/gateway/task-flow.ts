@@ -42,6 +42,17 @@ export function conformingTitle(title: string): boolean {
     title
   );
 }
+
+/** Decode pre-adoption Agent task for / Closes header relations, never branch numbers. */
+export function legacyIssueHeaders(body: string): number[] {
+  const numbers = [
+    ...body.matchAll(/^[\t ]*(?:>[\t ]*)?(?:\*\*)?(?:Closes|Agent task for)\s+#([1-9]\d*)\b/gim),
+  ].map((match) => Number(match[1]));
+  if (numbers.some((number) => !Number.isSafeInteger(number))) {
+    throw new Error("Invalid legacy issue link");
+  }
+  return numbers;
+}
 const roundText = (round: number) =>
   String(round).replace(/\d/g, (digit) => `${digit}\uFE0F\u20E3`);
 
@@ -554,12 +565,7 @@ export class TaskFlow {
             .filter((node) => object(node.repository).nameWithOwner === this.repo)
             .map((node) => Number(node.number))
         : [];
-      const headers = [
-        ...String(item.body).matchAll(
-          /^[\t ]*(?:>[\t ]*)?(?:\*\*)?(?:Closes|Agent task for)\s+#([1-9]\d*)\b/gim
-        ),
-      ].map((match) => Number(match[1]));
-      const legacy = linked.length ? linked : headers;
+      const legacy = linked.length ? linked : legacyIssueHeaders(String(item.body));
       if (legacy.some((number) => !Number.isSafeInteger(number))) {
         throw new Error("Invalid legacy issue link");
       }

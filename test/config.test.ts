@@ -115,6 +115,37 @@ test.each(["legacyState", "legacyWorkers"])(
   15000
 );
 
+test("legacyWorkers accepts nested relative paths but rejects traversal and empty segments", () => {
+  const root = validProject();
+  const path = join(root, "vmethod.yaml");
+  const original = readFileSync(path, "utf8");
+  writeFileSync(
+    path,
+    `${original}\nlegacyWorkers: [vecs-orchestrator/workers, spacerocks-orchestrator/claude-workers]\n`
+  );
+  expect(getConfig(root, {}).legacyWorkers).toEqual([
+    "vecs-orchestrator/workers",
+    "spacerocks-orchestrator/claude-workers",
+  ]);
+  for (const value of [
+    "../workers",
+    "a/../workers",
+    "a/./workers",
+    "a//workers",
+    "a/",
+    "/a",
+    "a\\workers",
+    ".",
+    "..",
+    "",
+  ]) {
+    writeFileSync(path, `${original}\nlegacyWorkers: ${JSON.stringify([value])}\n`);
+    expect(() => getConfig(root, {})).toThrow("legacyWorkers");
+  }
+  writeFileSync(path, `${original}\nlegacyState: [vecs-orchestrator/workers]\n`);
+  expect(() => getConfig(root, {})).toThrow("legacyState");
+});
+
 test("VMETHOD overrides config; VECS, SPACEROCKS and bare BASE are ignored", () => {
   const root = validProject();
   expect(

@@ -31,7 +31,7 @@ import {
 } from "./transport.js";
 import { tokenIdentity, tokenViewer } from "./identity.js";
 import { isOwnerApproved, isIssueOwnerApproved } from "./approval.js";
-import { TaskFlow } from "./task-flow.js";
+import { legacyIssueHeaders, TaskFlow } from "./task-flow.js";
 import { isTaskPrompt } from "./task-flow-types.js";
 import { GitTransport, taskBranch, validateBranch } from "./git.js";
 import { realpathSync } from "node:fs";
@@ -297,6 +297,11 @@ class GatewayServer {
     const header = /^# Task:.*?\((?:part of )?issue #([1-9]\d*)\)/m.exec(body);
     if (header) {
       numbers.add(Number(header[1]));
+    }
+    if (!numbers.size) {
+      for (const issue of legacyIssueHeaders(body)) {
+        numbers.add(issue);
+      }
     }
     if (numbers.size > 1) {
       throw new Error("Task PR has ambiguous linked issues");
