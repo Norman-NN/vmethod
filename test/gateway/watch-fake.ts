@@ -22,6 +22,8 @@ import { fixture } from "../helpers.js";
 import { actor, people, sha } from "./helpers.js";
 import recordedActions from "../fixtures/github/watch-actions.json" with { type: "json" };
 import recordedBoard from "../fixtures/github/board-write-inputs.json" with { type: "json" };
+import recordedComment from "../fixtures/github/review-comment.json" with { type: "json" };
+import recordedOpencode from "../fixtures/opencode/watch-status.json" with { type: "json" };
 
 export function proc(start = 42): string {
   return `1 (worker (with spaces)) S ${Array(18).fill("0").join(" ")} ${start} 0`;
@@ -125,7 +127,11 @@ export class WatchFake {
         if (route === "/api/session/active") {
           response = this.active;
         } else if (route === "/api/session/ses_test") {
-          response = { location: { directory: join(this.root, ".worktrees/auto-6-watch") } };
+          response = {
+            ...recordedOpencode.session.data,
+            id: "ses_test",
+            location: { directory: join(this.root, ".worktrees/auto-6-watch") },
+          };
         } else if (route === "/api/session/ses_test/permission") {
           response = this.permissions;
         } else if (route === "/api/session/ses_test/message" && url.search === "?limit=20") {
@@ -133,6 +139,7 @@ export class WatchFake {
         } else {
           return this.unknown(url);
         }
+        response = { data: response };
       } else if (url.origin === "https://api.github.com") {
         if (this.fail) {
           throw new Error("scripted transport failure");
@@ -366,12 +373,15 @@ export class WatchFake {
             }
             if (suffix === "comments" && init?.method === "POST") {
               const comment = {
+                ...recordedComment,
+                id: recordedComment.id + this.comments["example/project"].length,
+                node_id: `${recordedComment.node_id}-${this.comments["example/project"].length}`,
                 user: this.writeActor,
                 body: body.body,
                 issue_url: `https://api.github.com/repos/example/project/issues/${number}`,
-                html_url: `https://github.com/example/project/pull/${number}#issuecomment-${this.comments["example/project"].length + 1}`,
-                created_at: this.iso(),
-                updated_at: this.iso(),
+                html_url: `https://github.com/example/project/pull/${number}#issuecomment-${recordedComment.id + this.comments["example/project"].length}`,
+                created_at: this.iso().replace(/\.\d{3}Z$/, "Z"),
+                updated_at: this.iso().replace(/\.\d{3}Z$/, "Z"),
               };
               this.comments["example/project"].push(comment);
               return new Response(JSON.stringify(comment));
@@ -446,7 +456,9 @@ export class WatchFake {
             response = this.newItems;
           } else if (route === "/repos/example/project/issues/comments") {
             response = this.comments["example/project"].filter(
-              (c) => String(c.updated_at) >= String(url.searchParams.get("since"))
+              (c) =>
+                Date.parse(String(c.updated_at)) >=
+                Date.parse(String(url.searchParams.get("since")))
             );
           } else if (route === "/repos/vworlds/vmethod/issues/comments") {
             response = this.comments["vworlds/vmethod"];
@@ -688,6 +700,9 @@ export class WatchFake {
   }
   comment(body: string, index = 1, id = this.comments["example/project"].length + 1): ObjectData {
     const value = {
+      ...recordedComment,
+      id,
+      node_id: `${recordedComment.node_id}-${id}`,
       body,
       user: user(index),
       issue_url: "https://api.github.com/repos/example/project/issues/24",

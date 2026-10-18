@@ -2,6 +2,180 @@ import { expect, test } from "vitest";
 import { getConfig } from "../../src/config.js";
 import { GitHubClient, OpencodeClient } from "../../src/gateway/client.js";
 import { fakeServer, fixtureServer } from "./helpers.js";
+import recordedOpencode from "../fixtures/opencode/watch-status.json" with { type: "json" };
+
+test.each(["running", "permission", "failed"])(
+  "recorded data envelopes find the worker directory and %s state",
+  async (state) => {
+    const requests: string[] = [],
+      unexpected: string[] = [],
+      reports: string[] = [];
+    const session = structuredClone(recordedOpencode.session);
+    if (state === "failed") {
+      session.data.outcome = "failed";
+    }
+    const client = new OpencodeClient(
+      {
+        OPENCODE_BASE_URL: "http://opencode.invalid",
+        OPENCODE_SERVER_USERNAME: "user",
+        OPENCODE_SERVER_PASSWORD: "pass",
+      },
+      async (input) => {
+        const path = new URL(String(input)).pathname + new URL(String(input)).search;
+        requests.push(path);
+        if (path === "/api/session/active") {
+          return Response.json(recordedOpencode.active);
+        }
+        if (path === "/api/session/ses_recorded") {
+          return Response.json(session);
+        }
+        if (path === "/api/session/ses_recorded/permission") {
+          return Response.json(
+            state === "permission"
+              ? { data: [{ id: "perm_test", type: "permission" }] }
+              : recordedOpencode.permission
+          );
+        }
+        if (path === "/api/session/ses_recorded/message?limit=20") {
+          return Response.json(recordedOpencode.message);
+        }
+        unexpected.push(path);
+        return Response.json(recordedOpencode.invalidRequest, { status: 400 });
+      },
+      Date.now,
+      (message) => reports.push(message)
+    );
+    const status = await client.status("/work/recorded");
+    expect(status.state).toBe(state === "running" ? "other" : state);
+    const single = await client.status("/work/recorded", "ses_recorded");
+    expect(single.reason).toBe(state === "permission" ? "permission-wait" : "running");
+    expect(single.inputTokens).toBe(118893);
+    expect(requests).toContain("/api/session/ses_recorded/permission");
+    expect(unexpected).toEqual([]);
+    expect(reports).toEqual([]);
+  }
+);
+
+test("opencode poll isolates a session's 400, reports it once per status, and continues polling", async () => {
+  const requests: string[] = [],
+    reports: string[] = [];
+  const unexpected: string[] = [];
+  let status = 400;
+  const client = new OpencodeClient(
+    {
+      OPENCODE_BASE_URL: "http://opencode.invalid",
+      OPENCODE_SERVER_USERNAME: "secret-user",
+      OPENCODE_SERVER_PASSWORD: "secret-password",
+    },
+    async (input) => {
+      const url = new URL(String(input));
+      const path = url.pathname + url.search;
+      requests.push(path);
+      if (path === "/api/session/active") {
+        return Response.json({
+          data: { ses_bad: { type: "running" }, ses_good: { type: "running" } },
+        });
+      }
+      if (/^\/api\/session\/ses_(bad|good)$/.test(path)) {
+        return Response.json({
+          data: { ...recordedOpencode.session.data, location: { directory: "/work" } },
+        });
+      }
+      if (path.endsWith("/permission")) {
+        return Response.json(recordedOpencode.permission);
+      }
+      if (path === "/api/session/ses_bad/message?limit=20" && status !== 200) {
+        return Response.json(
+          { error: { message: `secret-user secret-password ${"x".repeat(250)}` } },
+          { status }
+        );
+      }
+      if (/^\/api\/session\/ses_(bad|good)\/message\?limit=20$/.test(path)) {
+        return Response.json({
+          data: [{ type: "idle", outcome: "failed", error: { message: "provider stopped" } }],
+        });
+      }
+      unexpected.push(path);
+      throw new Error(`Unexpected request ${path}`);
+    },
+    Date.now,
+    (message) => reports.push(message)
+  );
+  expect(await client.status("/work")).toEqual({ state: "failed", detail: "provider stopped" });
+  expect(reports).toHaveLength(1);
+  expect(reports[0]).toContain(
+    "opencode HTTP 400 on GET /api/session/ses_bad/message?limit=20: [redacted] [redacted]"
+  );
+  expect(reports[0]).not.toContain("secret");
+  expect(reports[0].split(": ").at(-1)!.length).toBeLessThanOrEqual(200);
+  await client.status("/work");
+  expect(reports).toHaveLength(1);
+  status = 403;
+  await client.status("/work");
+  expect(reports).toHaveLength(2);
+  status = 200;
+  await client.status("/work");
+  status = 400;
+  await client.status("/work");
+  expect(reports).toHaveLength(3);
+  expect(requests.filter((path) => path === "/api/session/ses_good/message?limit=20")).toHaveLength(
+    5
+  );
+  expect(unexpected).toEqual([]);
+});
+
+test("invalid active session ids are diagnosed without requesting them or losing valid sessions", async () => {
+  const reports: string[] = [],
+    unexpected: string[] = [];
+  const client = new OpencodeClient(
+    {
+      OPENCODE_BASE_URL: "http://opencode.invalid",
+      OPENCODE_SERVER_USERNAME: "user",
+      OPENCODE_SERVER_PASSWORD: "pass",
+    },
+    async (input) => {
+      const path = new URL(String(input)).pathname + new URL(String(input)).search;
+      if (path === "/api/session/active") {
+        return Response.json({
+          data: { data: { type: "running" }, ...recordedOpencode.active.data },
+        });
+      }
+      if (path === "/api/session/ses_recorded") {
+        return Response.json(recordedOpencode.session);
+      }
+      if (path === "/api/session/ses_recorded/permission") {
+        return Response.json({ data: [{ id: "perm_test", type: "permission" }] });
+      }
+      unexpected.push(path);
+      return Response.json(recordedOpencode.invalidRequest, { status: 400 });
+    },
+    Date.now,
+    (message) => reports.push(message)
+  );
+  expect((await client.status("/work/recorded")).state).toBe("permission");
+  await client.status("/work/recorded");
+  expect(reports).toEqual([
+    expect.stringContaining("Invalid opencode session id on GET /api/session/active"),
+  ]);
+  expect(unexpected).toEqual([]);
+});
+
+test("recorded opencode validation errors name method/path and flatten the JSON message", async () => {
+  const client = new OpencodeClient(
+    {
+      OPENCODE_BASE_URL: "http://opencode.invalid",
+      OPENCODE_SERVER_USERNAME: "user",
+      OPENCODE_SERVER_PASSWORD: "pass",
+    },
+    async (input) => {
+      expect(new URL(String(input)).pathname).toBe("/api/session/data");
+      return Response.json(recordedOpencode.invalidRequest, { status: 400 });
+    }
+  );
+  await expect(client.request("GET", "/api/session/data")).rejects.toThrow(
+    'opencode HTTP 400 on GET /api/session/data: Expected a string starting with "ses"   at ["sessionID"]'
+  );
+});
 
 test("REST/GraphQL use only the configured token name, no exec, and reject cross-origin requests", async () => {
   const fixture = fixtureServer([

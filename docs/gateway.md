@@ -321,6 +321,15 @@ wake too. Own comments are silent only when their numeric actor ID and this
 session's gateway write journal match.
 System check runs update structured red-CI state, never expose free text.
 
+Cursor-based comment and subscribed-issue listings overlap the previous cursor by
+ten minutes to catch delayed indexing. Comment/new-item markers dedupe
+the overlap and expire after twelve minutes relative to a successfully advanced
+cursor (ten minutes plus a two-minute margin). Initial baselines still suppress
+pre-existing history; pending unacknowledged events are retained independently.
+Review/assignment timelines are read without a time cursor. LAUNCH excludes issues
+with an open, trusted task PR in the configured repository, using its task header or
+structured `vmethod-task` relation, not its branch name or an incidental issue mention.
+
 Worker READY, QUESTION, DESIGN, BLOCKED and HANDOFF wake and update Progress.
 READY moves the task card to In review. HANDOFF uses 🤖🤝 (migration 0002), not the
 🔁 round marker; subsequent worker activity restores working. Other wake events
@@ -348,16 +357,27 @@ when available, with directory-based polling retained for unrecorded legacy work
 An idle session with an unanswered orchestrator protocol comment reports
 `WORKER #n: stopped without reply; send it a nudge`, once per stop. Polling reuses
 the watcher's observed comments; it does not add per-card board queries.
+Both recorded-session and directory fallback polling decode OpenCode's `data`
+envelopes. Invalid session IDs are reported without requesting them. A failing
+session does not stop polling the others; its error is reported once per session
+and status until recovery. HTTP diagnostics include method, path and at most 200
+characters of the structured error message, with credentials redacted.
 
 The GitHub client records successful REST writes and GraphQL mutations in
 `writes.jsonl` in the writing session's state directory, pruning entries older
 than 24 hours on writes. Reads (including GraphQL query POSTs) and refused writes
 do not stamp activity. Records contain timestamp, operation kind, repository and
-item number, plus board item/field/value or affected assignee when applicable;
+item number, plus returned comment database/node IDs, board node/item/field/value
+or affected assignee when applicable;
 non-item operations use number 0 and never match numbered events. No comment
 body, title or credential is stored. Writes use a short exclusive journal lock;
 if journaling fails after a GitHub write, inspect remote state before retrying,
 especially for creation. Remove a crash lock only after confirming no writer runs.
+Comments match the returned ID first; only id-less journal records use the symmetric
+two-minute server-timestamp fallback. Pending comment and quiet-digest delivery
+rechecks exact IDs, so a write journaled after initial observation can silence a
+queued own comment. Replay without an exact ID remains visible rather than guessing
+a timestamp from display text. Journals are reread for each match across processes.
 
 Assignments use the latest relevant assignment timeline actor; merges use
 `merged_by` (GitHub's REST form of `mergedBy`). Their actor must be this account's
