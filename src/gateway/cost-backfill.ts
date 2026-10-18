@@ -404,11 +404,8 @@ function updateLog(
     costBasis: "api-list",
     costCoverage: coverage,
   };
-  const next =
-    records
-      .map((item) => (item === record ? updated : item))
-      .map((item) => JSON.stringify(item))
-      .join("\n") + "\n";
+  Object.assign(record, updated);
+  const next = records.map((item) => JSON.stringify(item)).join("\n") + "\n";
   modelRecords(next);
   const temporary = `${path}.tmp`;
   writeFileSync(temporary, next, { mode: 0o600 });
