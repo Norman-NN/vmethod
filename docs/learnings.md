@@ -92,6 +92,38 @@ credit. `byKind` groups whole deliveries. Filters select before aggregation.
 Distillation remains the orchestrator's work. Use reports and provenance to update
 family advice; do not automate methodology changes or defaults from these metrics.
 
+## Worker cost and model-log migration
+
+Configure each family's API rates in `models.yaml`, in USD per million tokens:
+`price: { input: 2, output: 10, cached: 0.2 }` (illustrative, not recommended rates).
+These are the only three prices; subscription-backed work uses the same API-price
+calculation. `check` warns for missing prices. Never substitute a subscription's
+reported zero cost for the configured API price.
+
+Existing worker polling collects provider usage automatically; workers need no extra
+command or self-reported measurement. OpenCode uses cumulative session tokens,
+falling back to assistant-message totals when absent. Input includes cache writes,
+output includes reasoning, and cached means cache reads. Model switches snapshot
+the cumulative baseline so each segment pays only its delta at its family's rate.
+Claude sums each turn's result-event usage, including cache creation in input.
+Provider cost is retained only as `segments[].reportedUsd`. Claude's reported cost
+is cumulative over resumed turns: keep its latest value per session, never sum
+those repeated cumulative values. Its `modelUsage` totals are not per-turn usage.
+
+`worker status` shows tokens and USD so far. `grade` snapshots final segment
+`tokens: { input, output, cached }`, segment `usd`, and delivery `usd`, and posts a
+GRADE comment on the issue. Unavailable usage or prices produce `null`, never a
+fabricated zero. See [issue Cost](board.md#cost) for the rollup.
+
+**Migration:** old model-log records remain valid without the new fields; absent
+cost is unknown. Do not backfill zero or edit immutable submitted records. New
+grades always emit the cost fields (`tokens: null` when unavailable). Private
+reduction retains these numeric measurements. Reports add `usd` and `usdPerPoint`
+(USD per final estimate point), by kind and family. Family USD includes only that
+family's segments; its denominator counts each participating delivery once. Any
+unknown cost makes the corresponding total and ratio `null`/`n/a`; zero points also
+give an unavailable ratio. Orchestrator usage is excluded.
+
 ## Central automation
 
 Authorized learning submissions do not require a release changelog fragment.

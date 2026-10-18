@@ -69,6 +69,7 @@ export interface BoardStatus {
 export interface MigrationResult extends BoardStatus {
   dryRun: boolean;
   workflows?: string[];
+  /** Human-readable outcome; dry runs list pending operations and version changes without writes. */
   message: string;
 }
 export interface BoardIO {

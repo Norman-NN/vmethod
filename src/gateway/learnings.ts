@@ -74,7 +74,11 @@ export function privateLearning(record: ModelRecord, includeText = false): Model
       model: families.has(segment.family) ? segment.family : "other",
       rounds: segment.rounds,
       why: reasons.has(segment.why) ? segment.why : "redacted",
+      ...(segment.tokens === undefined ? {} : { tokens: segment.tokens }),
+      ...(segment.usd === undefined ? {} : { usd: segment.usd }),
+      ...(segment.reportedUsd === undefined ? {} : { reportedUsd: segment.reportedUsd }),
     })),
+    ...(record.usd === undefined ? {} : { usd: record.usd }),
     points_open: record.points_open,
     points_final: record.points_final,
     rounds: record.rounds,
@@ -714,6 +718,7 @@ function plainReport(report: ReturnType<typeof learningReport>): string {
   ];
   const group = (value: typeof report | (typeof report.byFamily)[string]) => [
     `Deliveries: ${value.deliveries}; rounds: ${value.rounds}; points: ${value.points}; rounds per point: ${ratio(value.roundsPerPoint)}`,
+    `USD: ${ratio(value.usd)}; USD per estimate point: ${ratio(value.usdPerPoint)}`,
     ...counts("Finding rates", value.findingsRate, true),
     ...counts("Caught by", value.caughtBy),
     ...counts("Outcomes", value.outcomes),

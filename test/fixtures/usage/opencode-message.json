@@ -1,0 +1,17 @@
+{
+  "data": [
+    {
+      "id": "msg_recorded",
+      "type": "assistant",
+      "time": { "created": 1792323204484, "streamed": 1792323208863, "completed": 1792323212915 },
+      "model": { "id": "gpt-6.1-sol", "providerID": "codexbal", "variant": "default" },
+      "cost": 0,
+      "tokens": {
+        "input": 722,
+        "output": 1,
+        "reasoning": 64,
+        "cache": { "read": 83712, "write": 0 }
+      }
+    }
+  ]
+}

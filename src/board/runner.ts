@@ -177,7 +177,16 @@ export class MigrationRunner {
         ...initial,
         dryRun,
         workflows: touchesStatus ? await this.io.workflows((await this.io.snapshot()).id) : [],
-        message: "Dry run: no changes",
+        message: initial.pending.length
+          ? [
+              `Dry run: ${initial.state.version} → ${initial.pending.at(-1)!.version}`,
+              ...initial.pending.flatMap((migration) =>
+                migration.up.length
+                  ? migration.up.map((op) => `v${migration.version}: ${describeOperation(op)}`)
+                  : [`v${migration.version}: version only`]
+              ),
+            ].join("; ")
+          : "Dry run: no changes",
       };
     }
     compatibility(initial.state, this.boardVersion, this.io.report);
@@ -384,5 +393,26 @@ export class MigrationRunner {
         await this.io.options(field, options);
       }
     }
+  }
+}
+
+function describeOperation(op: Operation): string {
+  switch (op.op) {
+    case "add_field":
+      return `add field ${op.field} (${op.type})${op.options ? ` with options ${op.options.join(", ")}` : ""}`;
+    case "add_option":
+      return `add option ${op.option} to ${op.field}${op.color !== undefined || op.description !== undefined ? ` (${JSON.stringify({ color: op.color, description: op.description })})` : ""}`;
+    case "set_option_meta":
+      return `set option metadata ${op.field}.${op.option} (${JSON.stringify({ color: op.color, description: op.description })})`;
+    case "rename_option":
+      return `rename option ${op.field}: ${op.from} → ${op.to}`;
+    case "add_progress_alias":
+      return `add Progress alias ${op.from} → ${op.to}`;
+    case "rewrite_progress":
+      return `rewrite Progress prefix ${op.from} → ${op.to}`;
+    case "remove_option":
+      return `remove option ${op.option} from ${op.field}`;
+    case "remove_field":
+      return `remove field ${op.field}`;
   }
 }

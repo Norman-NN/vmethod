@@ -140,6 +140,35 @@ test("a worker idle without reply reports once per stop and again after recovery
   expect(f.reports).toEqual([]);
 });
 
+test("existing worker poll writes rolled-up Cost to the issue, deduplicates and clears unknown values", async () => {
+  const f = setup();
+  f.task();
+  f.worktree();
+  const issue = f.card(6, "In progress");
+  f.cards.push(issue);
+  f.staleWorker = { reason: "running", active: true, issueCost: { issue: 6, usd: 1.25 } };
+  const loop = f.loop();
+  await f.once(loop);
+  expect(f.writes.filter((write) => write.field === "Cost")).toEqual([
+    { itemId: issue.id, field: "Cost", value: 1.25 },
+  ]);
+  for (let i = 0; i < 6; i++) {
+    await f.once(loop);
+  }
+  expect(f.writes.filter((write) => write.field === "Cost")).toHaveLength(1);
+  f.staleWorker = { reason: "running", active: true, issueCost: { issue: 6, usd: null } };
+  for (let i = 0; i < 6; i++) {
+    await f.once(loop);
+  }
+  expect(f.writes.filter((write) => write.field === "Cost")).toHaveLength(2);
+  expect(f.writes.filter((write) => write.field === "Cost").at(-1)).toEqual({
+    itemId: issue.id,
+    field: "Cost",
+    value: null,
+  });
+  expect(f.reports).toEqual([]);
+});
+
 test("idle after an unanswered amendment reports stopped without reply using observed comments", async () => {
   const f = setup();
   f.task();
@@ -1236,6 +1265,10 @@ test.each(["BLOCKED", "QUESTION", "READY FOR REVIEW (round 1)", "DESIGN", "HANDO
   async (tag) => {
     const f = setup();
     f.task();
+    f.worktree();
+    const issue = f.card(6, "In progress");
+    f.cards.push(issue);
+    f.staleWorker = { reason: "idle", active: false, issueCost: { issue: 6, usd: 1.25 } };
     f.pulls[0].created_at = f.iso(-120 * 60_000);
     const waiting = f.comment(`[worker] ${tag}`);
     waiting.created_at = f.iso(-41 * 60_000);
@@ -1252,9 +1285,13 @@ test.each(["BLOCKED", "QUESTION", "READY FOR REVIEW (round 1)", "DESIGN", "HANDO
     f.comments["example/project"] = [];
     let loop = f.loop();
     expect(await f.once(loop)).toEqual([]);
+    expect(f.writes.filter((write) => write.field === "Cost")).toEqual([
+      { itemId: issue.id, field: "Cost", value: 1.25 },
+    ]);
     loop.close();
     loop = f.loop();
     expect(await f.once(loop)).toEqual([]);
+    expect(f.writes.filter((write) => write.field === "Cost")).toHaveLength(1);
     f.advance();
     const answer = f.comment("[orchestrator] ANSWER", 2);
     answer.user = { login: "me", id: 999, type: "User" };
@@ -1337,6 +1374,8 @@ test("recorded-worker poll failures are once per status and do not block a healt
   f.pulls.push({ ...f.pulls[0], number: 31, head: { ref: "7-watch", sha } });
   f.issues.push({ number: 7, labels: [] }, { number: 31, pull_request: {}, labels: [] });
   f.cards.push(f.card(31, "In progress", "PullRequest"));
+  const healthyIssue = f.card(7, "In progress");
+  f.cards.push(healthyIssue);
   let status = 400;
   f.workerStatus = async (pr) => {
     if (pr === 24) {
@@ -1344,11 +1383,14 @@ test("recorded-worker poll failures are once per status and do not block a healt
         `opencode HTTP ${status} on GET /api/session/ses_bad/message?limit=20: invalid request`
       );
     }
-    return { reason: "permission-wait", active: true };
+    return { reason: "permission-wait", active: true, issueCost: { issue: 7, usd: 2.5 } };
   };
   const loop = f.loop();
   const events = await f.once(loop);
   expect(events.map((event) => event.line)).toEqual([expect.stringContaining("WORKER #31")]);
+  expect(f.writes.filter((write) => write.field === "Cost")).toEqual([
+    { itemId: healthyIssue.id, field: "Cost", value: 2.5 },
+  ]);
   for (let i = 0; i < 12; i++) {
     expect(await f.once(loop)).toEqual([]);
   }

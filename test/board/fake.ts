@@ -1,4 +1,5 @@
 import { expect } from "vitest";
+import { fixture } from "../helpers.js";
 import { Kind, parse } from "graphql";
 import { BoardService } from "../../src/gateway/board.js";
 import { GitHubClient, type Dependencies } from "../../src/gateway/client.js";
@@ -16,6 +17,8 @@ export const baseline = loadMigrations()[0];
 /** A stateful server reached only through injected fetch. Unknown requests are
  * recorded independently of client retries so a caught exception cannot hide one. */
 export class FakeBoard {
+  // Each fake owns its journal too; parallel suites must never touch real user state.
+  private readonly state = fixture();
   clock = Date.UTC(2026, 9, 16);
   readme = "Human notes\n";
   fields: Field[] = Object.entries(baseline.expect.fields).map(([name, shape], index) => ({
@@ -447,7 +450,11 @@ export class FakeBoard {
   service(migrations: Migration[] = [baseline]): BoardService {
     return new BoardService(
       this.config,
-      new GitHubClient(this.config, { FAKE_TOKEN: "offline" }, this.deps),
+      new GitHubClient(
+        this.config,
+        { FAKE_TOKEN: "offline", XDG_STATE_HOME: this.state },
+        this.deps
+      ),
       this.deps,
       migrations,
       migrations.length
