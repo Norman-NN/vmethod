@@ -10,9 +10,21 @@ policy permits workers to read and to post only to their own `taskPr` in the
 configured repository. Diagnostic `ghRead`, the dropped digest and approval checks
 are orchestrator-only. The CLI reads `VMETHOD_ROLE` (default `worker`) and
 `VMETHOD_TASK_PR` (a positive PR number) from the launching wrapper's environment.
-Invalid roles or task numbers are refused. In-process context is not independent
-authentication: the owner-controlled wrapper/permissions must protect these
-environment values until the separate server authenticates clients itself.
+Invalid roles or task numbers are refused. Before dispatching an allowed operation,
+the gateway queries the configured token's `viewer { databaseId login __typename }`
+and matches all three pins in `people.yaml`. The lookup is cached for the gateway's
+process lifetime, including concurrent first calls. Only pinned orchestrator and
+worker identities may operate the general gateway. The sole exception permits a
+pinned system identity in Actions (`GITHUB_ACTIONS=true`, no task context) to call
+`learningCheck`, including its validated label write; see [Security](security.md).
+`VMETHOD_ROLE` may narrow an orchestrator
+to worker without a task, but a worker token claiming orchestrator is refused.
+Any task-scoped call (`VMETHOD_TASK_PR`) requires a worker identity, even if the
+requested role is orchestrator. A non-worker token reports
+`worker session holds a non-worker token (<login>); fix the worker environment`.
+Offline `version`, `check`, `config get` and `check-markdown` need no token.
+Owner-controlled wrappers and permissions are still necessary: the in-process
+gateway is not a separate credential sandbox.
 
 When neither variable is set, the CLI in a linked worktree can infer **worker**
 context through read-only `resolveTask({branch}) → number | null`. The gateway
@@ -33,7 +45,12 @@ default trusted application, and missing pins fail configuration validation.
 `vmethod check` reports invalid pins with source line numbers. Do not let agents
 change their own trust list.
 
-Login, numeric ID and type must agree. Edited text is attributed to its verified
+Author/editor login, numeric ID and type must agree. Bot author/editor login comparisons normalize REST's
+trailing `[bot]` suffix to match GraphQL's suffixless spelling; numeric IDs and
+account types still match exactly, and User logins are not normalized. Token
+authentication does not normalize Bot suffixes; its sole Actions viewer-type
+exception is documented in [Security](security.md).
+Edited text is attributed to its verified
 editor; a missing editor on edited text fails closed. Repository ownership must
 match `org`. System comments are dropped. Check runs yield only structured facts
 from applications explicitly pinned to a system entry permitting `check_run`.

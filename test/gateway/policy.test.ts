@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { expect, test } from "vitest";
 import { gatewayVerb } from "../../src/cli/gateway.js";
 import type { CallContext } from "../../src/gateway/transport.js";
-import { actor, fixtureServer, graph, item } from "./helpers.js";
+import { actor, workerFixtureServer as fixtureServer, graph, item } from "./helpers.js";
 
 test("workers cannot call orchestrator-only operations, even with a taskPr", async () => {
   const fixture = fixtureServer([]);
@@ -26,7 +26,7 @@ test("workers cannot call orchestrator-only operations, even with a taskPr", asy
   fixture.done();
 }, 15000);
 
-test("missing worker command context names both environment variables without networking", async () => {
+test("missing worker command context names both environment variables before target networking", async () => {
   const fixture = fixtureServer([]);
   await expect(gatewayVerb(fixture.gateway, "post", ["3", "must-not-read"], {})).rejects.toThrow(
     /own taskPr.*VMETHOD_ROLE.*VMETHOD_TASK_PR/
@@ -37,7 +37,7 @@ test("missing worker command context names both environment variables without ne
   fixture.done();
 }, 15000);
 
-test("worker posting requires its own taskPr in the configured repo before reading files or networking", async () => {
+test("worker posting requires its own taskPr before reading files or target networking", async () => {
   const fixture = fixtureServer([]);
   for (const taskPr of [undefined, 0, -1, 1.5, NaN, 4]) {
     await expect(
@@ -105,11 +105,11 @@ test("CLI defaults to worker and parses its taskPr; worker reads and its own pos
       VMETHOD_TASK_PR: "3",
     })
   ).toContain("Posted");
-  expect(
-    await gatewayVerb(fixture.gateway, "dropped", [], {
+  await expect(
+    gatewayVerb(fixture.gateway, "dropped", [], {
       VMETHOD_ROLE: "orchestrator",
     })
-  ).toContain("Dropped: 1");
+  ).rejects.toThrow("VMETHOD_ROLE=orchestrator refused: token belongs to worker (worker)");
   for (const VMETHOD_ROLE of ["owner", "", "Worker"]) {
     await expect(gatewayVerb(fixture.gateway, "dropped", [], { VMETHOD_ROLE })).rejects.toThrow(
       "Invalid VMETHOD_ROLE"

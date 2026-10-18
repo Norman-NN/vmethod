@@ -35,15 +35,3 @@
   kind: opencode
   gate: none
   fallback: [sol]
-- family: sonnet
-  tier: standard
-  model: claude-sonnet-5-5
-  kind: claude
-  gate: none
-  fallback: [opus]
-- family: opus
-  tier: standard
-  model: claude-opus-5-5
-  kind: claude
-  gate: none
-  fallback: [sonnet]
