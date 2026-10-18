@@ -1054,6 +1054,7 @@ test.each([
   "pagination",
   "modified",
   "legacy",
+  "empty",
 ])(
   "central check gates learning labels using trusted registry and complete metadata (%s)",
   async (scenario) => {
@@ -1065,6 +1066,9 @@ test.each([
     }
     if (scenario === "legacy") {
       files[0] = { filename: modelPath, status: "modified" };
+    }
+    if (scenario === "empty") {
+      files.length = 0;
     }
     if (scenario === "outsider-unrelated") {
       files[0].filename = "docs/example.md";
@@ -1147,7 +1151,10 @@ test.each([
       { TOKEN: "secret" },
       deps
     );
-    if (scenario === "valid") {
+    if (scenario === "empty") {
+      expect(await checkLearningPr(github, 900, true)).toBe("Not a learning submission");
+      expect(writes).toEqual([]);
+    } else if (scenario === "valid") {
       expect(await checkLearningPr(github, 900, true)).toContain("authorized");
       expect(writes).toEqual([{ labels: ["learning"] }]);
     } else if (["master", "outsider-unrelated"].includes(scenario)) {
