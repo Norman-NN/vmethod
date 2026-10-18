@@ -143,6 +143,9 @@ export class WorkerService {
   private client() {
     return new OpencodeClient(this.env, this.deps.fetch, this.deps.now);
   }
+  readSessionForCost(id: string): Promise<unknown | undefined> {
+    return this.client().costSession(id);
+  }
   private file(pr: number) {
     return join(this.state, `${pr}.json`);
   }

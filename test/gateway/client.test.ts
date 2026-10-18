@@ -3,6 +3,75 @@ import { getConfig } from "../../src/config.js";
 import { GitHubClient, OpencodeClient } from "../../src/gateway/client.js";
 import { fakeServer, fixtureServer } from "./helpers.js";
 import recordedOpencode from "../fixtures/opencode/watch-status.json" with { type: "json" };
+import recordedCostSession from "../fixtures/usage/opencode-session.json" with { type: "json" };
+import recordedCostMessage from "../fixtures/usage/opencode-message.json" with { type: "json" };
+
+test("cost lookup unwraps the recorded session and assistant-message envelopes", async () => {
+  const requests: string[] = [];
+  const client = new OpencodeClient(
+    {
+      OPENCODE_BASE_URL: "http://opencode.invalid",
+      OPENCODE_SERVER_USERNAME: "user",
+      OPENCODE_SERVER_PASSWORD: "pass",
+    },
+    async (input) => {
+      const path = new URL(String(input)).pathname + new URL(String(input)).search;
+      requests.push(path);
+      if (path === "/api/session/active") {
+        return Response.json(recordedOpencode.active);
+      }
+      if (path === "/api/session/ses_recorded") {
+        return Response.json(recordedCostSession);
+      }
+      if (path === "/api/session/ses_recorded/message?limit=200") {
+        return Response.json(recordedCostMessage);
+      }
+      return Response.json({}, { status: 500 });
+    }
+  );
+  const result = await client.costSession("ses_recorded");
+  expect(requests).toEqual([
+    "/api/session/ses_recorded",
+    "/api/session/active",
+    "/api/session/ses_recorded/message?limit=200",
+  ]);
+  expect(result).toMatchObject({
+    session: { tokens: { input: 118893 } },
+    messages: expect.any(Array),
+    running: true,
+  });
+});
+
+test("cost lookup follows message cursor pages", async () => {
+  const requests: string[] = [];
+  const client = new OpencodeClient(
+    {
+      OPENCODE_BASE_URL: "http://opencode.invalid",
+      OPENCODE_SERVER_USERNAME: "user",
+      OPENCODE_SERVER_PASSWORD: "pass",
+    },
+    async (input) => {
+      const url = new URL(String(input));
+      requests.push(url.pathname + url.search);
+      if (url.pathname === "/api/session/active") {
+        return Response.json(recordedOpencode.active);
+      }
+      if (url.pathname === "/api/session/ses_recorded") {
+        return Response.json(recordedCostSession);
+      }
+      if (url.searchParams.get("cursor") === "older") {
+        return Response.json({ data: [{ type: "assistant", id: "older" }], cursor: {} });
+      }
+      return Response.json({
+        data: [{ type: "assistant", id: "newer" }],
+        cursor: { previous: "older" },
+      });
+    }
+  );
+  const result = await client.costSession("ses_recorded");
+  expect(requests).toContain("/api/session/ses_recorded/message?limit=200&cursor=older");
+  expect(result).toMatchObject({ messages: [{ id: "newer" }, { id: "older" }] });
+});
 
 test.each(["running", "permission", "failed"])(
   "recorded data envelopes find the worker directory and %s state",

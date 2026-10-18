@@ -24,6 +24,7 @@ test.each([
 
 test("board Cost reads formatted values and leaves malformed values unknown", () => {
   expect(parseBoardCost("$6.11")).toBe(6.11);
+  expect(parseBoardCost("≥ $6.11")).toBe(6.11);
   expect(parseBoardCost("abc")).toBeNull();
 });
 

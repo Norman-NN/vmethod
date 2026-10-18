@@ -18,6 +18,9 @@ export interface ModelRecord {
     reportedUsd?: number;
   }[];
   usd?: number | null;
+  costSource?: "backfill" | "backfill-partial";
+  costBasis?: "api-list";
+  costCoverage?: "complete" | "partial";
   points_open: number;
   points_final: number;
   rounds: number;

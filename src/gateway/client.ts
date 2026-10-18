@@ -505,6 +505,60 @@ export class OpencodeClient {
       : this.sessionStatus(directory, id, deadline);
   }
 
+  /** Read the recorded session envelope for cost recovery; a missing session is unknown. */
+  async costSession(id: string): Promise<unknown | undefined> {
+    if (!validSessionId(id)) {
+      throw new Error("Invalid opencode session id: expected ses_ prefix");
+    }
+    try {
+      const session = opencodeData(
+        await this.request("GET", `/api/session/${encodeURIComponent(id)}`)
+      );
+      const active = sessionIds(await this.request("GET", "/api/session/active"));
+      const messages: unknown[] = [];
+      const seenMessages = new Set<string>();
+      let cursor: string | undefined;
+      for (let page = 0; page < 100; page++) {
+        const query = new URLSearchParams({ limit: "200", ...(cursor ? { cursor } : {}) });
+        const envelope = object(
+          await this.request("GET", `/api/session/${encodeURIComponent(id)}/message?${query}`)
+        );
+        const response = opencodeData(envelope);
+        if (!Array.isArray(response)) {
+          if (page === 0) {
+            return { session, messages: [] };
+          }
+          throw new Error("Invalid opencode cost message response");
+        }
+        let added = 0;
+        for (const message of response) {
+          const id = object(message).id;
+          const key = typeof id === "string" ? id : JSON.stringify(message);
+          if (seenMessages.has(key)) {
+            continue;
+          }
+          seenMessages.add(key);
+          messages.push(message);
+          added++;
+        }
+        const previous = object(envelope.cursor).previous;
+        if (added === 0 || typeof previous !== "string" || !previous || previous === cursor) {
+          break;
+        }
+        if (page === 99) {
+          throw new Error("OpenCode cost history exceeds pagination limit");
+        }
+        cursor = previous;
+      }
+      return { session, messages, running: active.includes(id) };
+    } catch (error) {
+      if (error instanceof OpencodeError && error.status === 404) {
+        return undefined;
+      }
+      throw error;
+    }
+  }
+
   private async watchStatus(directory: string): Promise<WorkerStatus> {
     const active = sessionIds(await this.request("GET", "/api/session/active"));
     for (const id of this.pollErrors.keys()) {
