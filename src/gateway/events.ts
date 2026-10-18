@@ -331,7 +331,7 @@ export class EventLoop {
   private readonly known = new Set<number>();
   private readonly cycleStale = new Set<number>();
   private readonly cycleOwnMoves = new Set<string>();
-  private inprogress: { number: number; branch: string }[] = [];
+  private inprogress: { number: number; branch: string; working: boolean }[] = [];
   private taskIssues = new Map<number, number[]>();
   private observedPrs: PrInfo[] = [];
   private nextBoardAt = 0;
@@ -1371,11 +1371,13 @@ export class EventLoop {
     }
     if (
       (this.firstRun && !this.marked(`seeded-${pr.number}`)) ||
-      !this.marked(`worker-prompts-seeded-${pr.number}`)
+      !this.marked(`worker-prompts-seeded-${pr.number}`) ||
+      !this.marked(`worker-protocol-seeded-${pr.number}`)
     ) {
       await this.seedPrComments(pr);
       this.mark(`seeded-${pr.number}`);
       this.mark(`worker-prompts-seeded-${pr.number}`);
+      this.mark(`worker-protocol-seeded-${pr.number}`);
     }
     const oldHead = this.readMarker(`head-${pr.number}`);
     if (oldHead !== pr.sha) {
@@ -1408,6 +1410,7 @@ export class EventLoop {
     const review = this.readReview(pr.number);
     const activity = this.activityAt(pr.number);
     if (
+      this.workerExpectedActive(pr.number) &&
       review &&
       activity &&
       activity <= review.at &&
@@ -1463,14 +1466,10 @@ export class EventLoop {
         continue;
       }
       this.touchActivity(pr.number, created);
+      this.rememberWorkerProtocol(pr.number, comment);
       if (this.isSelf(comment)) {
         const first = str(comment.body).split(/\r?\n/)[0];
         this.rememberWorkerPrompt(pr.number, first, created, str(comment.html_url));
-        if (/^\[orchestrator\] (?:CHANGES|ANSWER|GO)\b/.test(first)) {
-          if (created >= (this.readReview(pr.number)?.at ?? "")) {
-            this.writeReview(pr.number, { at: created, id: str(comment.html_url) });
-          }
-        }
       }
     }
   }
@@ -1714,6 +1713,9 @@ export class EventLoop {
     const firstLine = body.split(/\r?\n/)[0];
     const edited = created !== str(comment.updated_at) ? " (edited: verify editor)" : "";
     const taskPr = own && this.marked(`open-${number}`);
+    if (taskPr) {
+      this.rememberWorkerProtocol(number, comment);
+    }
     const selfWrite =
       this.isSelf(comment) &&
       this.writes.matches(
@@ -1731,9 +1733,6 @@ export class EventLoop {
       if (taskPr) {
         this.touchActivity(number, created);
         this.rememberWorkerPrompt(number, firstLine, created, url);
-        if (/^\[orchestrator\] (?:CHANGES|ANSWER|GO)\b/.test(firstLine)) {
-          this.writeReview(number, { at: created, id: url });
-        }
       }
       if (own && /^\[orchestrator\] (?:ANSWER|GO)\b/.test(firstLine)) {
         this.queueProgress(number, {
@@ -2098,7 +2097,11 @@ export class EventLoop {
       const pendingProgress = existsSync(join(this.dir, `pending-progress-${card.number}`));
       await this.applyProgress(card);
       if (card.kind === "PR" && card.column === "In progress") {
-        this.inprogress.push({ number: card.number, branch: this.branchOf(card.number) });
+        this.inprogress.push({
+          number: card.number,
+          branch: this.branchOf(card.number),
+          working: parseProgress(card.progress).state === "working",
+        });
       }
       await this.watchAssignees(card);
       if (!(await this.watchColumn(card, migration))) {
@@ -2708,6 +2711,44 @@ export class EventLoop {
     }
   }
 
+  /** Persist the newest verified, unedited protocol turn, independently of activity/CI. */
+  private rememberWorkerProtocol(number: number, comment: ObjectData): void {
+    const at = str(comment.created_at);
+    if (!at || at !== str(comment.updated_at)) {
+      return;
+    }
+    const person = this.host.filter.identity(restActor(comment.user));
+    const role = this.isSelf(comment) ? "orchestrator" : person?.role;
+    const first = str(comment.body).split(/\r?\n/)[0];
+    let active: boolean;
+    if (role === "worker") {
+      active = !/^\[worker\] (?:BLOCKED|QUESTION|READY|DESIGN|HANDOFF)\b/.test(first);
+    } else if (
+      role === "orchestrator" &&
+      /^\[orchestrator\] (?:REVIEW|CHANGES|ANSWER|AMENDMENT|GO)\b/.test(first)
+    ) {
+      active = true;
+      if (at >= (this.readReview(number)?.at ?? "")) {
+        this.writeReview(number, { at, id: str(comment.html_url) });
+      }
+    } else if (role === "owner") {
+      active = true;
+    } else {
+      return;
+    }
+    const previous = object(safeJson(this.readMarker(`worker-protocol-${number}`)));
+    if (at >= str(previous.at)) {
+      this.writeMarker(`worker-protocol-${number}`, JSON.stringify({ at, active }));
+      this.touchActivity(number, at);
+    }
+  }
+
+  private workerExpectedActive(number: number, working = true): boolean {
+    // Without a protocol turn, use working Progress (or the unanswered review for STALE).
+    const active = object(safeJson(this.readMarker(`worker-protocol-${number}`))).active;
+    return typeof active === "boolean" ? active : working;
+  }
+
   private workerClient(): OpencodeClient | null {
     if (this.opencode) {
       return this.opencode;
@@ -2745,6 +2786,7 @@ export class EventLoop {
       const url = this.threadUrl(this.own, pr.number, "PR");
       const activity = this.activityAt(pr.number);
       if (
+        this.workerExpectedActive(pr.number, pr.working) &&
         activity &&
         Date.parse(activity) <= this.host.deps.now() - SILENT_MS &&
         !this.cycleStale.has(pr.number)

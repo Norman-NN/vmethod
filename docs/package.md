@@ -23,7 +23,8 @@ See [CI and integration commands](gateway.md#ci-and-integration-commands) for
 See [gateway commands](gateway.md#commands) for orchestrator-only `issue create`,
 `issue close` and `board set` housekeeping (including validated Progress),
 tracked owner questions with `ask <issue> <file>`, and
-[task flow](gateway.md#task-flow-commands) for structured full/partial deliveries.
+[task flow](gateway.md#task-flow-commands) for structured full/partial deliveries
+and `link-task <pr> [--complete|--unlink]` Development-link backfill and plan changes.
 
 ## Worker worktree configuration
 

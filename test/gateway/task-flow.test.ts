@@ -10,6 +10,8 @@ import type { Card } from "../../src/board/types.js";
 import { validProject } from "../helpers.js";
 import { people, sha } from "./helpers.js";
 import legacyBodies from "../fixtures/github/legacy-task-bodies.json" with { type: "json" };
+import closingReferences from "../fixtures/github/task-closing-references.json" with { type: "json" };
+import developmentLinks from "../fixtures/github/task-development-links.json" with { type: "json" };
 import { BoardService } from "../../src/gateway/board.js";
 import { WatchFake } from "./watch-fake.js";
 import { writeState } from "../../src/board/readme.js";
@@ -102,7 +104,8 @@ test.each(
       const originalFetch = f.deps.fetch;
       f.deps.fetch = (input, init) => {
         const path = new URL(String(input)).pathname;
-        return /\/git\/(matching-refs|refs)\/|\/dependencies\/blocking$/.test(path)
+        return /\/git\/(matching-refs|refs)\/|\/dependencies\/blocking$/.test(path) ||
+          String(init?.body).includes("TaskClosingLink")
           ? originalFetch(input, init)
           : w.deps.fetch(input, init);
       };
@@ -275,7 +278,9 @@ function fixture() {
     branch = "8-task";
   let body = '<!-- vmethod-task {"issues":[8]} -->';
   let issueNumber = 8;
-  let references: ObjectData = { nodes: [], pageInfo: { hasNextPage: false } };
+  let references: ObjectData = structuredClone(
+    developmentLinks.before.data.repository.pullRequest.closingIssuesReferences
+  );
   let checks = [
     {
       id: 1,
@@ -319,7 +324,31 @@ function fixture() {
       let data: unknown;
       if (method === "POST" && path === "/graphql") {
         parse(String(payload.query));
-        data = { data: {} };
+        const query = String(payload.query);
+        const mutation = query.includes("addCloseIssueReferences")
+          ? "addCloseIssueReferences"
+          : query.includes("removeCloseIssueReferences")
+            ? "removeCloseIssueReferences"
+            : undefined;
+        if (mutation) {
+          expect(payload.variables).toEqual({ issueId: "issue", pullRequestIds: ["pr"] });
+          references = structuredClone(
+            (mutation === "addCloseIssueReferences"
+              ? developmentLinks.afterAdd
+              : developmentLinks.afterRemove
+            ).data.repository.pullRequest.closingIssuesReferences
+          );
+          references.nodes = (references.nodes as ObjectData[]).map((node) => ({
+            ...node,
+            number: issueNumber,
+            repository: { nameWithOwner: "example/project" },
+          }));
+          data = structuredClone(
+            mutation === "addCloseIssueReferences" ? developmentLinks.add : developmentLinks.remove
+          );
+        } else {
+          data = { data: {} };
+        }
       } else if (method === "GET" && path.includes("/check-runs?")) {
         data = { check_runs: checks };
       } else if (method === "PUT" && path === "/repos/example/project/pulls/27/merge") {
@@ -330,6 +359,7 @@ function fixture() {
         data = { number: 27, node_id: "pr" };
       } else if (method === "PATCH" && path === "/repos/example/project/pulls/27") {
         expect(typeof payload.body).toBe("string");
+        body = String(payload.body);
         data = { number: 27, node_id: "pr" };
       } else if (
         method === "POST" &&
@@ -539,6 +569,7 @@ function fixture() {
       dirty?: boolean;
       changed?: boolean;
       issueNumber?: number;
+      issueClosed?: boolean;
       references?: ObjectData;
     }) => {
       approved = values.approved ?? approved;
@@ -554,6 +585,7 @@ function fixture() {
       dirty = values.dirty ?? dirty;
       changed = values.changed ?? changed;
       issueNumber = values.issueNumber ?? issueNumber;
+      issueClosed = values.issueClosed ?? issueClosed;
       references = values.references ?? references;
     },
     red: () => {
@@ -679,7 +711,260 @@ test("open-task --part records matching structured relations without closing syn
   const body = String(f.writes.find((w) => w.path.endsWith("/pulls"))!.body.body);
   expect(body).toContain("# Task: feat: task (part of issue #8)");
   expect(body).toContain('<!-- vmethod-task {"issues":[8],"part":true} -->');
-  expect(body).not.toMatch(/(?:closes|fixes|resolves|part of)\s+#8/i);
+  expect(body).not.toMatch(/(?:closes|fixes|resolves)\s+#8/i);
+  expect(body).not.toMatch(/^Part of #8$/m);
+  f.done();
+});
+
+test("two partial deliveries and one completing delivery mutate only the completing PR without reference prose", async () => {
+  for (const part of [true, true, false]) {
+    const f = fixture();
+    await f.flow().open({ issue: "8", part });
+    for (const write of f.writes.filter((w) => typeof w.body.body === "string")) {
+      const body = String(write.body.body);
+      expect(body).not.toMatch(/(?:closes|part of)\s+#8/i);
+    }
+    expect(
+      f.writes.filter((w) => String(w.body.query).includes("addCloseIssueReferences"))
+    ).toHaveLength(part ? 0 : 1);
+    f.done();
+  }
+});
+
+test("direct tasks never derive generated closing links from title or specification text", async () => {
+  const f = fixture();
+  await f.flow().open({ direct: "feat: title mentions (issue #99)" });
+  for (const write of f.writes.filter((w) => typeof w.body.body === "string")) {
+    expect(String(write.body.body)).not.toMatch(/^(?:Closes|Part of) #/m);
+  }
+  expect(f.writes.filter((w) => String(w.body.query).includes("CloseIssueReferences"))).toEqual([]);
+  f.done();
+});
+
+test("link-task promotes a header-only task without introducing reference prose", async () => {
+  const f = fixture();
+  f.set({
+    body: "# Task: feat: task (part of issue #8)\n\nYou are a worker.\nPrompt unchanged.",
+  });
+  await f.flow().link("27", true);
+  await f.flow().link("27", true);
+  const writes = f.writes.filter((w) => w.path.endsWith("/pulls/27"));
+  expect(writes).toHaveLength(1);
+  const body = String(writes[0].body.body);
+  expect(body).toContain("# Task: feat: task (issue #8)");
+  expect(body).not.toMatch(/(?:closes|part of)\s+#8/i);
+  expect(body).not.toContain("Part of #8");
+  expect(body).toContain("You are a worker.\nPrompt unchanged.");
+  f.done();
+});
+
+test("plan changes preserve marker examples inside the worker prompt", async () => {
+  const f = fixture();
+  const prompt = 'You are a worker.\nExample: <!-- vmethod-task {"issues":[999],"part":true} -->\n';
+  f.set({
+    body: `# Task: feat: task (part of issue #8)\n\n${prompt}\n<!-- vmethod-task {"issues":[8],"part":true} -->`,
+  });
+  await f.flow().link("27", true);
+  const body = String(f.writes.find((w) => w.path.endsWith("/pulls/27"))!.body.body);
+  expect(body).toContain(prompt);
+  expect(body).toMatch(/<!-- vmethod-task {"issues":\[8\],"part":false} -->$/);
+  f.done();
+});
+
+test.each([
+  '# Task: feat: task (issue #8)\n\nYou are a worker.\nKeep this prompt.\n<!-- vmethod-task {"issues":[8]} -->',
+  '# Task: feat: task (part of issue #8)\n\nYou are a worker.\nKeep this prompt.\n<!-- vmethod-task {"issues":[8],"part":true} -->',
+  '<!-- vmethod-task {"issues":[8]} -->',
+  '<!-- vmethod-task {"issues":[8],"part":true} -->',
+  '<!-- vmethod-task {"issues":[]} -->',
+])("link-task backfills structured relations idempotently: %s", async (body) => {
+  const f = fixture();
+  f.set({ body });
+  await f.flow().link("27");
+  await f.flow().link("27");
+  expect(f.writes.filter((w) => w.path.endsWith("/pulls/27"))).toEqual([]);
+  const part = body.includes('"part":true');
+  expect(
+    f.writes.filter((w) => String(w.body.query).includes("addCloseIssueReferences"))
+  ).toHaveLength(part || body.includes('"issues":[]') ? 0 : 1);
+  f.done();
+});
+
+test.each([true, false])(
+  "link-task --complete promotes partial header and marker (header=%s)",
+  async (header) => {
+    const f = fixture();
+    f.set({
+      body: `${header ? "# Task: feat: task (part of issue #8)\n\n" : ""}<!-- vmethod-task {"issues":[8],"part":true} -->`,
+    });
+    await f.flow().link("27");
+    await f.flow().link("27", true);
+    await f.flow().link("27", true);
+    const writes = f.writes.filter((w) => w.path.endsWith("/pulls/27"));
+    expect(writes).toHaveLength(1);
+    const body = String(writes[0].body.body);
+    expect(body).not.toMatch(/(?:closes|part of)\s+#8/i);
+    expect(body).not.toContain("Part of #8");
+    expect(body).not.toContain("part of issue");
+    expect(body).toContain('"part":false');
+    await f.flow().merge("27");
+    expect(f.touched).toContainEqual(expect.objectContaining({ id: "issue", value: "Done" }));
+    f.done();
+  }
+);
+
+test.each(["MERGED", "CLOSED"])("link-task refuses %s PRs before writes", async (state) => {
+  const f = fixture();
+  f.set({ state });
+  await expect(f.flow().link("27")).rejects.toThrow("not open");
+  expect(f.writes).toEqual([]);
+  f.done();
+});
+
+test.each([true, false])(
+  "link-task --unlink removes a manual link and demotes the structured plan (header=%s)",
+  async (header) => {
+    const f = fixture();
+    f.set({
+      body: `${header ? "# Task: feat: task (issue #8)\n\n" : ""}<!-- vmethod-task {"issues":[8]} -->`,
+    });
+    await f.flow().link("27");
+    await f.flow().link("27", false, true);
+    await f.flow().link("27", false, true);
+    await f.flow().link("27");
+    expect(
+      f.writes.filter((w) => String(w.body.query).includes("addCloseIssueReferences"))
+    ).toHaveLength(1);
+    expect(
+      f.writes.filter((w) => String(w.body.query).includes("removeCloseIssueReferences"))
+    ).toHaveLength(1);
+    const writes = f.writes.filter((w) => w.path.endsWith("/pulls/27"));
+    expect(writes).toHaveLength(1);
+    const body = String(writes[0].body.body);
+    expect(body).toContain('"part":true');
+    if (header) {
+      expect(body).toContain("(part of issue #8)");
+    }
+    expect(body).not.toMatch(/(?:closes|part of)\s+#8/i);
+    await f.flow().merge("27");
+    expect(f.writes.some((w) => w.body.state === "closed")).toBe(false);
+    expect(f.touched.some((w) => w.id === "issue")).toBe(false);
+    f.done();
+  }
+);
+
+test("link-task refuses conflicting flags before reading or writing", async () => {
+  const f = fixture();
+  await expect(f.flow().link("27", true, true)).rejects.toThrow("conflicting");
+  expect(f.events).toEqual([]);
+  f.done();
+});
+
+test("unlinking a direct task without an issue is a no-op", async () => {
+  const f = fixture();
+  f.set({ body: '<!-- vmethod-task {"issues":[]} -->' });
+  await f.flow().link("27", false, true);
+  expect(f.writes).toEqual([]);
+  f.done();
+});
+
+test.each([
+  { nodes: [], pageInfo: { hasNextPage: true } },
+  {},
+  { nodes: [{ number: 8 }], pageInfo: { hasNextPage: false } },
+])("link-task refuses incomplete or malformed connection data: %j", async (references) => {
+  const f = fixture();
+  f.set({ references });
+  await expect(f.flow().link("27")).rejects.toThrow();
+  expect(f.writes).toEqual([]);
+  f.done();
+});
+
+test("a failed Development mutation preserves the plan and can be retried", async () => {
+  const f = fixture();
+  f.set({
+    body: '# Task: feat: task (part of issue #8)\n<!-- vmethod-task {"issues":[8],"part":true} -->',
+    fail: "/graphql",
+  });
+  await expect(f.flow().link("27", true)).rejects.toThrow();
+  expect(f.writes.filter((w) => w.path.endsWith("/pulls/27"))).toEqual([]);
+  f.set({ fail: "" });
+  await f.flow().link("27", true);
+  expect(f.writes.filter((w) => w.path.endsWith("/pulls/27"))).toHaveLength(1);
+  f.done();
+});
+
+test("unlink reports an automatic reference that the manual-removal mutation cannot remove", async () => {
+  const f = fixture();
+  const references = {
+    nodes: [{ number: 8, repository: { nameWithOwner: "example/project" } }],
+    pageInfo: { hasNextPage: false },
+  };
+  f.set({ references });
+  const thread = f.host.thread;
+  f.host.thread = async (ref, kind) => ({
+    ...(await thread(ref, kind)),
+    ...(kind === "pr" ? { closingIssuesReferences: references } : {}),
+  });
+  await expect(f.flow().link("27", false, true)).rejects.toThrow("manual links only");
+  expect(f.writes.filter((w) => w.path.endsWith("/pulls/27"))).toEqual([]);
+  f.done();
+});
+
+test("open-task reports a created PR's linking failure and names the recovery command", async () => {
+  const f = fixture();
+  f.set({ fail: "/graphql" });
+  await expect(f.flow().open({ issue: "8" })).rejects.toThrow(
+    "Development linking failed; retry link-task 27"
+  );
+  expect(f.writes.filter((w) => w.path.endsWith("/pulls"))).toHaveLength(1);
+  expect(f.touched).toEqual([]);
+  f.done();
+});
+
+test.each([
+  "Legacy prose",
+  '<!-- vmethod-task {"issues":[0]} -->',
+  '<!-- vmethod-task {"issues":[8],"part":"yes"} -->',
+])("link-task refuses missing/invalid structured relations: %s", async (body) => {
+  const f = fixture();
+  f.set({ body });
+  await expect(f.flow().link("27")).rejects.toThrow();
+  expect(f.writes).toEqual([]);
+  f.done();
+});
+
+test("merge follow-up completes a GitHub-auto-closed issue without closing or commenting again", async () => {
+  const f = fixture();
+  f.set({ issueClosed: true });
+  await f.flow().merge("27");
+  await f.flow().merge("27");
+  expect(f.writes.filter((w) => w.body.state === "closed" || w.path.endsWith("/comments"))).toEqual(
+    []
+  );
+  expect(
+    f.touched.filter((w) => w.id === "issue" && w.field === "Status" && w.value === "Done")
+  ).toHaveLength(1);
+  f.done();
+});
+
+test.each(["Closes #8", "Part of #8", "Fixes #8"])(
+  "open-task still guards source prose: %s",
+  async (body) => {
+    const f = fixture();
+    f.set({ body });
+    await expect(f.flow().open({ issue: "8" })).rejects.toThrow();
+    expect(f.writes).toEqual([]);
+    f.done();
+  }
+);
+
+test("orchestrator reviews cannot use task-body keyword exceptions", async () => {
+  const f = fixture();
+  const file = join(f.root, "review.md");
+  writeFileSync(file, "Closes #8");
+  await expect(f.flow().review({ ref: "27", outcome: "answer", file })).rejects.toThrow();
+  expect(f.writes).toEqual([]);
   f.done();
 });
 
@@ -868,6 +1153,180 @@ test("same-repository closing references take precedence over legacy headers", a
   f.done();
 });
 
+test("recorded native closing connection decodes through GraphQL and completes only its linked issue", async () => {
+  const f = fixture();
+  const recording = structuredClone(closingReferences);
+  recording.repository.pullRequest.closingIssuesReferences.nodes[0].repository.nameWithOwner =
+    String(f.config.repo);
+  f.set({ state: "MERGED", body: "Legacy prompt without a structured relation", issueNumber: 342 });
+  const fetch = f.deps.fetch;
+  let reads = 0;
+  f.deps.fetch = async (input, init) => {
+    if (String(input) === "https://api.github.com/graphql") {
+      const payload = object(JSON.parse(String(init?.body)));
+      expect(parse(String(payload.query)).definitions).toHaveLength(1);
+      expect(payload.variables).toEqual({ owner: "vworlds", repo: "spacerocks", pr: 346 });
+      reads++;
+      return Response.json({ data: recording });
+    }
+    return fetch(input, init);
+  };
+  const thread = f.host.thread;
+  f.host.thread = async (ref, kind) => {
+    const item = await thread(ref, kind);
+    if (kind !== "pr") {
+      return item;
+    }
+    const decoded = object(
+      await f.host.github.graphql(
+        `query TaskLinkRecording($owner: String!, $repo: String!, $pr: Int!) {
+        repository(owner: $owner, name: $repo) {
+          pullRequest(number: $pr) {
+            number
+            closingIssuesReferences(first: 100) {
+              nodes { number repository { nameWithOwner } }
+              pageInfo { hasNextPage }
+            }
+          }
+        }
+      }`,
+        { owner: "vworlds", repo: "spacerocks", pr: 346 }
+      )
+    );
+    return {
+      ...item,
+      closingIssuesReferences: object(object(decoded.repository).pullRequest)
+        .closingIssuesReferences,
+    };
+  };
+  await f.flow().merge("27");
+  expect(reads).toBe(1);
+  expect(f.writes.filter((w) => w.body.state === "closed")).toEqual([
+    {
+      path: "/repos/example/project/issues/342",
+      body: { state: "closed", state_reason: "completed" },
+    },
+  ]);
+  expect(f.touched).toContainEqual(
+    expect.objectContaining({ id: "issue", field: "Status", value: "Done" })
+  );
+  expect(f.events).not.toContain("read issue 8");
+  f.done();
+});
+
+test("recorded Development add/remove lifecycle backfills, re-reads idempotently and promotes without body references", async () => {
+  const f = fixture();
+  const originalBody =
+    '# Task: feat: task (issue #68)\n\nYou are a worker.\nPrompt unchanged.\n<!-- vmethod-task {"issues":[68]} -->';
+  f.set({ body: originalBody, issueNumber: 68 });
+  const captures = structuredClone(developmentLinks);
+  for (const read of [
+    captures.before,
+    captures.afterAdd,
+    captures.afterIdempotentAdd,
+    captures.afterRemove,
+    captures.final,
+  ]) {
+    for (const node of read.data.repository.pullRequest.closingIssuesReferences.nodes) {
+      node.repository.nameWithOwner = String(f.config.repo);
+    }
+  }
+  const reads = [
+    captures.before,
+    captures.afterAdd,
+    captures.afterIdempotentAdd,
+    captures.afterRemove,
+    captures.afterRemove,
+    captures.afterRemove,
+    captures.final,
+  ];
+  const mutations = [captures.add, captures.remove, captures.finalAdd];
+  const mutationNames = [
+    "addCloseIssueReferences",
+    "removeCloseIssueReferences",
+    "addCloseIssueReferences",
+  ];
+  let readIndex = 0,
+    mutationIndex = 0;
+  const fetch = f.deps.fetch;
+  f.deps.fetch = async (input, init) => {
+    if (String(input) !== "https://api.github.com/graphql") {
+      return fetch(input, init);
+    }
+    const payload = object(JSON.parse(String(init?.body)));
+    const query = String(payload.query);
+    parse(query);
+    if (query.includes("query RecordedDevelopment")) {
+      expect(payload.variables).toEqual({ owner: "vworlds", repo: "vmethod", pr: 74 });
+      const read = reads[readIndex++];
+      if (!read) {
+        throw new Error("Unexpected recorded read");
+      }
+      return Response.json(read);
+    }
+    const mutation = mutationNames[mutationIndex];
+    const response = mutations[mutationIndex++];
+    if (!response) {
+      throw new Error("Unexpected recorded mutation");
+    }
+    expect(query).toContain(
+      `${mutation}(input: {issueId: $issueId, pullRequestIds: $pullRequestIds})`
+    );
+    expect(payload.variables).toEqual({ issueId: "issue", pullRequestIds: ["pr"] });
+    return Response.json(response);
+  };
+  const thread = f.host.thread;
+  f.host.thread = async (ref, kind) => {
+    const item = await thread(ref, kind);
+    if (kind !== "pr") {
+      return item;
+    }
+    const decoded = object(
+      await f.host.github.graphql(
+        `query RecordedDevelopment($owner: String!, $repo: String!, $pr: Int!) {
+        repository(owner: $owner, name: $repo) {
+          pullRequest(number: $pr) {
+            number
+            closingIssuesReferences(first: 100) {
+              nodes { number repository { nameWithOwner } }
+              pageInfo { hasNextPage }
+            }
+          }
+        }
+      }`,
+        { owner: "vworlds", repo: "vmethod", pr: 74 }
+      )
+    );
+    return {
+      ...item,
+      closingIssuesReferences: object(object(decoded.repository).pullRequest)
+        .closingIssuesReferences,
+    };
+  };
+  await expect(f.flow().link("27")).resolves.toBe("Linked task #27");
+  await expect(f.flow().link("27")).resolves.toContain("already current");
+  expect(f.writes.filter((w) => w.path.endsWith("/pulls/27"))).toEqual([]);
+  await expect(f.flow().link("27", false, true)).resolves.toBe("Unlinked task #27");
+  await expect(f.flow().link("27")).resolves.toContain("already current");
+  await expect(f.flow().link("27", true)).resolves.toBe("Linked task #27 as completing");
+  await expect(f.flow().link("27")).resolves.toContain("already current");
+  expect(readIndex).toBe(reads.length);
+  expect(mutationIndex).toBe(mutations.length);
+  const bodies = f.writes
+    .filter((w) => w.path.endsWith("/pulls/27"))
+    .map((w) => String(w.body.body));
+  expect(bodies).toHaveLength(2);
+  expect(bodies[0]).toContain("(part of issue #68)");
+  expect(bodies[1]).toContain("(issue #68)");
+  for (const body of bodies) {
+    expect(body).not.toMatch(/(?:closes|part of)\s+#68/i);
+    expect(body).toContain("You are a worker.\nPrompt unchanged.");
+  }
+  expect(captures.addAgain).toEqual(captures.add);
+  expect(captures.afterIdempotentAdd).toEqual(captures.afterAdd);
+  f.done();
+});
+
 test.each(["unapproved", "gated", "handoff"])(
   "open-task refuses %s before mutation",
   async (reason) => {
@@ -888,7 +1347,7 @@ test.each(["unapproved", "gated", "handoff"])(
   }
 );
 
-test("open-task creates a draft, links without closing syntax, clears issue Progress and never estimates PRs", async () => {
+test("open-task creates a draft with a manual Development link, clears issue Progress and never estimates PRs", async () => {
   const f = fixture();
   f.set({ body: "## Approved spec\n\nImplement the test." });
   await expect(f.flow().open({ issue: "8", model: "sol", hold: true })).resolves.toContain(
@@ -899,7 +1358,10 @@ test("open-task creates a draft, links without closing syntax, clears issue Prog
   expect(create.body.body).toContain("https://github.com/example/project/issues/8");
   expect(create.body.body).toContain("# Task: feat: task (issue #8)");
   expect(create.body.body).toContain("<!-- points_open: 13 -->");
-  expect(create.body.body).not.toMatch(/(?:closes|part of)\s+#8/i);
+  expect(String(create.body.body)).not.toMatch(/(?:closes|part of)\s+#8/i);
+  expect(
+    f.writes.filter((w) => String(w.body.query).includes("addCloseIssueReferences"))
+  ).toHaveLength(1);
   expect(create.body.body).not.toContain("<specifics>");
   expect(f.touched).toContainEqual(
     expect.objectContaining({ id: "pr", field: "Status", value: "In progress", progress: "⛔" })
@@ -926,7 +1388,7 @@ test("expensive breakpoints tell workers to HANDOFF and end turn; unapproved exc
   f.done();
 });
 
-test.each([0, 0.5, 13])(
+test.each([0, 0.5, 1, 2, 3, 5, 8, 13, 20, 40, 100, 999])(
   "points_open freezes numeric issue estimate %s without estimating the PR",
   async (estimate) => {
     const f = fixture();
@@ -936,6 +1398,19 @@ test.each([0, 0.5, 13])(
     expect(body.split("\n")[0]).toBe("# Task: feat: task (issue #8)");
     expect(body).toContain(`<!-- points_open: ${estimate} -->`);
     expect(f.touched.some((write) => write.field === "Estimate")).toBe(false);
+    f.done();
+  }
+);
+
+test.each([4, 1.5, -1, Infinity, NaN])(
+  "off-scale opening Estimate %s is refused before writes",
+  async (estimate) => {
+    const f = fixture();
+    f.cards[0].values.Estimate = estimate;
+    await expect(f.flow().open({ issue: "8", model: "sol" })).rejects.toThrow(
+      "0, 0.5, 1, 2, 3, 5, 8, 13, 20, 40, 100, 999"
+    );
+    expect(f.writes).toEqual([]);
     f.done();
   }
 );

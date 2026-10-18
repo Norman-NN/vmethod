@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { assertEstimate } from "../board/estimate.js";
 import { getConfig, loadYaml, type Config } from "../config.js";
 import { workerWorktree } from "./worker-path.js";
 import { GitHubClient, type Dependencies } from "./client.js";
@@ -494,7 +495,8 @@ class GatewayServer {
   };
 
   /** Create an own-repository issue from checked content and ensure readable configured-board
-   * membership. Optional estimate/status use the shared board field writer; labels may repeat.
+   * membership. Optional estimate/status use the shared board field writer; estimates must
+   * use the shared points scale and labels may repeat.
    * Board follow-up failures identify the created issue so callers do not create a duplicate.
    */
   issueCreate: Handlers["issueCreate"] = async ({ title, file, labels = [], estimate, status }) => {
@@ -507,11 +509,8 @@ class GatewayServer {
     ) {
       throw new Error("Invalid issue title or labels");
     }
-    if (
-      estimate !== undefined &&
-      (typeof estimate !== "number" || !Number.isFinite(estimate) || estimate < 0)
-    ) {
-      throw new Error("Estimate must be a finite nonnegative number");
+    if (estimate !== undefined) {
+      assertEstimate(estimate);
     }
     if (status !== undefined && (typeof status !== "string" || !status.trim())) {
       throw new Error("Invalid issue status");
@@ -649,6 +648,8 @@ class GatewayServer {
   reviewTask: Handlers["reviewTask"] = async (input) => this.flow.review(input);
   askIssue: Handlers["askIssue"] = async (input) => this.flow.ask(input.ref, input.file);
   mergeTask: Handlers["mergeTask"] = async (input) => this.flow.merge(input.ref, input.mergeCommit);
+  linkTask: Handlers["linkTask"] = async (input) =>
+    this.flow.link(input.ref, input.complete, input.unlink);
   releaseHold: Handlers["releaseHold"] = async (input) => this.flow.release(input.ref);
   workerStatus: Handlers["workerStatus"] = async (input) => {
     await this.flowThread(input.ref, "pr");
@@ -1489,6 +1490,7 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     reviewTask: server.reviewTask,
     askIssue: server.askIssue,
     mergeTask: server.mergeTask,
+    linkTask: server.linkTask,
     releaseHold: server.releaseHold,
     workerStatus: server.workerStatus,
     nextEvents: server.nextEvents,
@@ -1527,6 +1529,7 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     reviewTask: ["orchestrator"],
     askIssue: ["orchestrator"],
     mergeTask: ["orchestrator"],
+    linkTask: ["orchestrator"],
     releaseHold: ["orchestrator"],
     workerStatus: ["orchestrator"],
     nextEvents: ["orchestrator"],

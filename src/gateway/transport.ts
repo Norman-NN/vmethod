@@ -22,6 +22,8 @@ export interface Operations {
   reviewTask: { input: ReviewInput; output: string };
   askIssue: { input: { ref: string; file: string }; output: string };
   mergeTask: { input: { ref: string; mergeCommit?: boolean }; output: string };
+  /** Orchestrator-only Development links; complete promotes, unlink demotes. Flags are exclusive. */
+  linkTask: { input: { ref: string; complete?: boolean; unlink?: boolean }; output: string };
   releaseHold: { input: { ref: string }; output: string };
   workerStatus: { input: { ref: string }; output: "live" | "stopped" | "unknown" };
   nextEvents: {
