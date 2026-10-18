@@ -576,6 +576,10 @@ export class BoardService implements BoardIO {
         const packages = object(lock.packages);
         const pin = object(packages["node_modules/@vworlds/vmethod"]).version;
         const root = object(packages[""]);
+        if (root.name === "@vworlds/vmethod") {
+          // vmethod itself runs from source: the migration ships in this very tree.
+          continue;
+        }
         const declared =
           object(root.devDependencies)["@vworlds/vmethod"] ??
           object(root.dependencies)["@vworlds/vmethod"];

@@ -475,6 +475,17 @@ export class FakeBoard {
   done(): void {
     expect(this.unexpected).toEqual([]);
   }
+  /** The vmethod repository itself: its lock root is the package, with no self-dependency. */
+  pinSelf(repo: string, branch: string): void {
+    this.files.set(
+      `${repo}@${branch}:package-lock.json`,
+      JSON.stringify({ packages: { "": { name: "@vworlds/vmethod", version: "0.0.0-dev" } } })
+    );
+    this.files.set(
+      `${repo}@master:vmethod.yaml`,
+      "baseBranch: dev\nbranches:\n  trackPrefix: track/\n  packPrefix: pack/\n"
+    );
+  }
   pin(repo: string, branch: string, version: string): void {
     this.files.set(
       `${repo}@${branch}:package-lock.json`,
