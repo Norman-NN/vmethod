@@ -79,7 +79,7 @@ export interface LoopHost {
   filter: PeopleFilter;
   github: GitHubClient;
   workerStatus: (pr: number) => Promise<WorkerSessionStatus>;
-  workerSend?: (pr: number, text: string) => Promise<void>;
+  workerSend?: (pr: number, text: string) => Promise<string | void>;
   board: Pick<BoardService, "set">;
   digest: Digest;
 }
