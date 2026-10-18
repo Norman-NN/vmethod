@@ -503,6 +503,60 @@ test.each(["live", "backfill", "pending", "quiet", "restart-pending", "restart-q
   }
 );
 
+test.each(
+  ["OWNER REVIEW", "OWNER QUESTION", "ANSWER", "GO"].flatMap((tag) =>
+    [false, true].map((journaled) => ({ tag, journaled }))
+  )
+)(
+  "own $tag (journaled: $journaled) changes Progress once and preserves a later owner approval across polls and restart",
+  async ({ tag, journaled }) => {
+    const f = setup();
+    f.task();
+    const card = f.cards[0];
+    const ownerHandover = tag.startsWith("OWNER");
+    card.status = { ...object(card.status), name: ownerHandover ? "In progress" : "In review" };
+    let loop = f.loop();
+    await f.once(loop);
+    f.advance();
+    const comment = f.comment(`[orchestrator] ${tag}`, 2);
+    comment.user = { login: "me", id: 999, type: "User" };
+    if (journaled) {
+      writeFileSync(
+        join(f.dir, "writes.jsonl"),
+        `${JSON.stringify({ at: f.iso(), kind: "comment", repo: "example/project", number: 24, commentId: comment.id })}\n`
+      );
+    }
+    await f.once(loop);
+    const statusWrites = () => f.writes.filter((write) => write.field === "Status");
+    expect(statusWrites()).toEqual([
+      expect.objectContaining({ value: ownerHandover ? "In review" : "In progress" }),
+    ]);
+    expect(object(card.progress).text).toContain(
+      tag === "OWNER REVIEW" ? "👤🔍" : tag === "OWNER QUESTION" ? "👤❓" : "🤖🔨"
+    );
+    for (let poll = 0; poll < 3; poll++) {
+      f.advance();
+      if (poll === 1) {
+        loop.close();
+        loop = f.loop();
+      }
+      // The owner moves the card after the comment's transition has been applied.
+      card.status = { ...object(card.status), name: "Approved", updatedAt: f.iso() };
+      await f.once(loop);
+      expect(object(card.status).name).toBe("Approved");
+      expect(statusWrites()).toHaveLength(1);
+    }
+    // A distinct comment with the same tag is still a new handover.
+    f.advance();
+    const next = f.comment(`[orchestrator] ${tag}`, 2);
+    next.user = comment.user;
+    await f.once(loop);
+    expect(object(card.status).name).toBe(ownerHandover ? "In review" : "In progress");
+    expect(statusWrites()).toHaveLength(2);
+    expect(f.reports).toEqual([]);
+  }
+);
+
 test("an older in-flight board listing cannot turn a completed Done write into Done → In review", async () => {
   const f = setup();
   f.cards = [f.card(24, "In review", "PullRequest")];
