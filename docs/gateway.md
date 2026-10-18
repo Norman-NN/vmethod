@@ -526,7 +526,7 @@ Install an executable `scripts/vmethod-hooks/verify` in the consumer. It is call
 once, in the merged review worktree, with this argument interface:
 
 ```text
-scripts/vmethod-hooks/verify --logs <absolute-directory> [--packages "<ws>…"] [--bench]
+scripts/vmethod-hooks/verify --logs <absolute-directory> [--packages "<ws>…"] [--bench] [--scope merge]
 ```
 
 The hook owns the recipe: install dependencies, then run format, lint, typecheck,
@@ -536,6 +536,11 @@ to `<logs>/<step>.log`, print progress, and exit nonzero at the first failure. T
 gateway captures stdout and stderr in `hook.log` and returns exit 0/1 with the
 log directory. It passes only PATH, HOME, TMPDIR and SYSTEMROOT, never credentials.
 The legacy `checks.verify` recipe list is not executed by this command.
+
+`merge-task` calls the same hook with `--scope merge` so you can choose cheaper
+merge checks (for example installation, typecheck and lint). A hook that ignores
+this argument runs its full verification recipe. Ordinary `vmethod verify` does
+not pass a scope and retains the full recipe above.
 
 Logs persist in a fresh run directory under
 `$XDG_STATE_HOME/vmethod/<stateName>/verify/` (default
@@ -636,8 +641,19 @@ These commands require `VMETHOD_ROLE=orchestrator`:
   `review answer` remains ANSWER for a worker. See [tracked owner questions](orchestrator-guide.md).
 - `merge-task <pr> [--merge-commit] [--carry-approval "<reason>"]` refuses live/unknown worker sessions before merging, stale
   approval, untrusted/red/missing CI, unknown/conflicting mergeability and a stale
-  tested base. `merge.requireCurrentBase` defaults to true; false allows a
-  conflict-free green-head squash onto a moved base. Pack heads require merge
+  tested base. No recorded worker session counts as stopped; a recorded session
+  that is unknown or unreachable still blocks. `merge.requireCurrentBase` defaults
+  to true: the head must contain the live base SHA fetched from
+  `refs/remotes/origin/<base>`, not merely the PR's recorded base. Otherwise it
+  refuses with `CI tested an older base; run refresh-checks <pr>`.
+  With false, it instead merges the pinned head onto the fetched base in a fresh
+  temporary worktree and runs the [verify hook](#verify-hook), with `--logs`, `--scope merge` and
+  the same credential-stripped environment. The hook owns installation and checks;
+  its failure output and persistent log path identify the failing step. There is
+  no CI rerun, and the temporary worktree is removed on success or failure. A
+  missing hook refuses with `requireCurrentBase is false but no verify hook is configured; run refresh-checks <pr>`;
+  legacy `checks.verify` strings are not used. Green current-head CI is still
+  required in both modes. Pack heads require merge
   commits and are retained. Track/pack-base deliveries leave linked issues and the
   main checkout alone. A final-base delivery closes linked issues and reports
   `revise estimates: …` for own-repository dependents. Missing native links never
@@ -658,7 +674,8 @@ end their turn after a status comment; they do not poll for review replies.
 The transport operations are `openTask`, `linkTask`, `reviewTask`, `mergeTask`, `releaseHold`
 and `workerStatus`; `src/gateway/task-flow-types.ts` and `transport.ts` own their
 signatures. The gateway wires worker status, stop and resume to the recorded opencode
-or Claude session. Missing records remain unknown, never interpreted as stopped.
+or Claude session. Only the merge guard treats missing records as stopped;
+ordinary worker status still reports a missing session as unknown.
 
 Merge follow-up journals live in the per-user state directory. A partial failure
 resumes board, issue, branch and checkout work without merging again. Already-merged

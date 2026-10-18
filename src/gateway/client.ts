@@ -7,9 +7,9 @@ import { object, type ObjectData } from "./people.js";
 import { WriteJournal } from "./write-journal.js";
 
 export interface Dependencies {
-  /** #9 supplies both backends; absent/unknown status must never permit a merge. */
+  /** Backends distinguish no recorded session (stopped for merging) from unknown status. */
   workers?: {
-    status(pr: number): Promise<"stopped" | "live" | "unknown">;
+    status(pr: number, forMerge?: boolean): Promise<"stopped" | "live" | "unknown">;
     resume(pr: number, prompt: string): Promise<string | void>;
     stop?(pr: number): Promise<string | void>;
   };
