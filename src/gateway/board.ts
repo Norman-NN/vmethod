@@ -187,7 +187,7 @@ export class BoardService implements BoardIO {
   }
   async deleteField(fieldId: string): Promise<void> {
     await this.github.graphql(
-      "mutation BoardDeleteField($input: DeleteProjectV2FieldInput!) { deleteProjectV2Field(input: $input) { deletedFieldId } }",
+      "mutation BoardDeleteField($input: DeleteProjectV2FieldInput!) { deleteProjectV2Field(input: $input) { clientMutationId } }",
       { input: { fieldId } },
       false
     );

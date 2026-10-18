@@ -176,12 +176,24 @@ export class FakeBoard {
           data = { updateProjectV2: { projectV2: { id: "project" } } };
           break;
         case "BoardDeleteField": {
+          // Real DeleteProjectV2FieldPayload has only clientMutationId and projectV2Field.
+          const selected = /deleteProjectV2Field\([^)]*\)\s*\{([^}]*)\}/.exec(
+            String(payload.query)
+          );
+          const unknown = (selected?.[1] ?? "")
+            .split(/\s+/)
+            .filter((name) => name && !["clientMutationId", "projectV2Field"].includes(name));
+          if (unknown.length) {
+            return this.error(
+              `Field '${unknown[0]}' doesn't exist on type 'DeleteProjectV2FieldPayload'`
+            );
+          }
           const field = this.fields.find((field) => field.id === arg.fieldId);
           if (!field) {
             return this.error("Field missing");
           }
           this.fields = this.fields.filter((entry) => entry !== field);
-          data = { deleteProjectV2Field: { deletedFieldId: field.id } };
+          data = { deleteProjectV2Field: { clientMutationId: null } };
           break;
         }
         case "BoardOptions": {
