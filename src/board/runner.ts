@@ -63,15 +63,19 @@ export class MigrationRunner {
     const snapshot = await this.io.snapshot();
     const state = readState(snapshot.readme);
     const mismatches = (await this.io.cards(snapshot.id)).flatMap((card) => {
+      if (!["Issue", "PullRequest"].includes(card.kind) || card.number === undefined) {
+        return [];
+      }
       const closed = Boolean(card.closedAt);
       const status = typeof card.values.Status === "string" ? card.values.Status : null;
       return closed !== (status === "Done")
         ? [
             {
               itemId: card.id,
-              ...(card.number === undefined ? {} : { number: card.number }),
+              number: card.number,
               closed,
               status,
+              summary: `#${card.number}: ${closed ? "closed" : "open"}, Status ${status ?? "(unset)"}`,
             },
           ]
         : [];

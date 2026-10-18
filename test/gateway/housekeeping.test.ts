@@ -419,10 +419,24 @@ test("issue close gates identity and posts the exact checked comment before clos
       json: { ...issueResponse, node_id: boardRecording.items.nodes[0].content.id },
     },
     ...boardReads(),
-    boardGraph({
-      m0: { projectV2Item: { id: boardRecording.items.nodes[0].id } },
-      m1: { projectV2Item: { id: boardRecording.items.nodes[0].id } },
-    }),
+    {
+      ...boardGraph({
+        m0: { projectV2Item: { id: boardRecording.items.nodes[0].id } },
+        m1: { projectV2Item: { id: boardRecording.items.nodes[0].id } },
+      }),
+      checkQuery: (query, variables) => {
+        expect(query).toContain("clearProjectV2ItemFieldValue");
+        expect(variables.m0).toMatchObject({
+          itemId: boardRecording.items.nodes[0].id,
+          fieldId: boardRecording.fields.nodes.find((field) => field.name === "Progress")!.id,
+        });
+        expect(variables.m1).toMatchObject({
+          itemId: boardRecording.items.nodes[0].id,
+          fieldId: boardRecording.fields.nodes.find((field) => field.name === "Status")!.id,
+          value: { singleSelectOptionId: expect.any(String) },
+        });
+      },
+    },
   ]);
   const file = join(f.root, "comment.md");
   writeFileSync(file, "Reason for closure\n");

@@ -52,19 +52,37 @@ test("board status reports closed/open column mismatches and --fix reconciles th
   const board = setup();
   board.stamp(1);
   const closed = board.card("closed");
+  closed.number = 42;
   closed.closedAt = "2026-10-18T12:07:00Z";
   const open = board.card("open");
+  open.number = 43;
   open.values.Status = "Done";
+  const draft = board.card("draft");
+  draft.kind = "DraftIssue";
+  draft.values.Status = "Done";
   const status = await board.service().status();
   expect(status.mismatches).toEqual([
-    { itemId: "closed", closed: true, status: "Backlog" },
-    { itemId: "open", closed: false, status: "Done" },
+    {
+      itemId: "closed",
+      number: 42,
+      closed: true,
+      status: "Backlog",
+      summary: "#42: closed, Status Backlog",
+    },
+    {
+      itemId: "open",
+      number: 43,
+      closed: false,
+      status: "Done",
+      summary: "#43: open, Status Done",
+    },
   ]);
   const fixed = await board.service().fixStatus();
   expect(fixed.mismatches).toEqual([]);
   expect(closed.values.Status).toBe("Done");
   expect(open.values.Status).toBe("Backlog");
   expect(closed.values.Progress).toBeNull();
+  expect(draft.values.Status).toBe("Done");
 });
 afterEach(() => fake?.done());
 function setup() {
@@ -511,6 +529,9 @@ test.each([4, 1.5, -1, Infinity, NaN])(
 
 test("new operations use the same orchestrator policy and board CLI transport seam", async () => {
   const board = setup();
+  const mismatch = board.card("closed-issue");
+  mismatch.number = 71;
+  mismatch.closedAt = "2026-10-18T12:07:00Z";
   const root = validProject();
   writeFileSync(join(root, "vmethod.yaml"), stringify(board.config));
   writeFileSync(join(root, "people.yaml"), stringify(people));
@@ -551,13 +572,13 @@ test("new operations use the same orchestrator policy and board CLI transport se
     ).rejects.toThrow("denied");
   }
   expect(board.requests).toEqual([]);
-  expect(
-    JSON.parse(
-      await gatewayVerb(transport, "board", ["status"], {
-        VMETHOD_ROLE: "orchestrator",
-      })
-    ).state.version
-  ).toBe(0);
+  const statusOutput = JSON.parse(
+    await gatewayVerb(transport, "board", ["status"], {
+      VMETHOD_ROLE: "orchestrator",
+    })
+  );
+  expect(statusOutput.state.version).toBe(0);
+  expect(statusOutput.mismatches[0].summary).toBe("#71: closed, Status Backlog");
   expect(
     JSON.parse(
       await gatewayVerb(transport, "board", ["migrate", "--dry-run"], {
