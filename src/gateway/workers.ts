@@ -65,7 +65,9 @@ export interface TaskMetadata {
   state: string;
   draft: boolean;
   blocked: boolean;
+  /** Current board Estimate of the linked issue, not a historical opening snapshot. */
   estimate?: number;
+  /** Opening snapshot from the PR; only legacy import may fall back to estimate. */
   pointsOpen?: number;
   model?: string;
   kind: string;
@@ -338,6 +340,8 @@ export class WorkerService {
   /** Execute worker management. Legacy adoption reads only configured state-root
    * directories, verifies existing opencode sessions and reports every skipped
    * entry; headless Claude records are reported with an explicit relaunch route.
+   * Only --from-legacy may snapshot a missing opening Estimate from the linked
+   * issue, recording "legacy snapshot at adoption" in the persisted segment.
    */
   async command(args: string[]): Promise<string> {
     const [verb, ref, ...rest] = args;
@@ -589,8 +593,17 @@ export class WorkerService {
     if (meta.merged || meta.state !== "OPEN") {
       throw new Error(`PR is ${meta.merged ? "merged" : "closed"}; not adoptable`);
     }
-    if (meta.pr !== pr || meta.state !== "OPEN" || !meta.issue || meta.pointsOpen === undefined) {
+    if (meta.pr !== pr || !meta.issue) {
       throw new Error("Adopt requires an open task PR with linked issue and opening Estimate");
+    }
+    const legacySnapshot = !!legacy && meta.pointsOpen === undefined;
+    const points = meta.pointsOpen ?? (legacySnapshot ? meta.estimate : undefined);
+    if (points === undefined) {
+      throw new Error(
+        legacySnapshot
+          ? `linked issue #${meta.issue} has no Estimate; estimate it, then rerun`
+          : "Adopt requires an open task PR with linked issue and opening Estimate"
+      );
     }
     if (legacy) {
       const expected = workerWorktree(this.root, this.config, meta.branch);
@@ -645,19 +658,19 @@ export class WorkerService {
       directory,
       id,
       model,
-      points_open: meta.pointsOpen,
+      points_open: points,
       segments: [
         {
           family: model.family,
           model: model.model,
           rounds: [this.round(meta)],
-          why: "adopt",
+          why: legacySnapshot ? "legacy snapshot at adoption" : "adopt",
           at: new Date(this.deps.now()).toISOString(),
         },
       ],
     });
     await this.hooks.setModel(pr, model.family);
-    return `Adopted ${id} for #${pr} on ${model.family}`;
+    return `Adopted ${id} for #${pr} on ${model.family}${legacySnapshot ? ` (legacy snapshot at adoption: ${points})` : ""}`;
   }
   private async adoptLegacy(): Promise<string> {
     const lines: string[] = [];

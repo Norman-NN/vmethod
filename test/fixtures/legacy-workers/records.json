@@ -1,4 +1,5 @@
 {
+  "spacerocksPrHeader": "> **Agent task for #342.** Branch `346-rogue-looter`, base `dev`. Follow [`docs/agents/task-workflow.md`](https://github.com/vworlds/spacerocks/blob/dev/docs/agents/task-workflow.md): this description is your prompt, and `[orchestrator]` comments amend it.\n>\n> Worker model: `codexbal/gpt-6.1-sol`\n\nCloses #342.\n",
   "spacerocks": [
     {
       "key": "_home_jm_.cache_spacerocks-orchestrator_opencode_probe2",

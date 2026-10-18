@@ -19,3 +19,9 @@ Tests relocate the encoded checkout prefix into their temporary checkout while
 preserving the worktree basename and content bytes. Opencode responses use the
 existing adoption test response shape; these file fixtures do not purport to be
 new server-response recordings.
+
+`spacerocksPrHeader` records the opening header of
+<https://github.com/vworlds/spacerocks/pull/346>, read through the gateway on
+2026-10-18. It has both a quoted `Agent task for` relation and a closing relation,
+but no opening Estimate marker. Gateway tests project issue 342 to issue 9 and
+branch 346-rogue-looter to 9-task; all other header text is unchanged.

@@ -24,7 +24,7 @@ import {
 import { checkMarkdown, guardClosingKeywords } from "./markdown.js";
 import { inProcess, type Handlers, type Operations, type Transport } from "./transport.js";
 import { isOwnerApproved, isIssueOwnerApproved } from "./approval.js";
-import { TaskFlow } from "./task-flow.js";
+import { legacyIssueHeaders, TaskFlow } from "./task-flow.js";
 import { GitTransport, taskBranch, validateBranch } from "./git.js";
 import { realpathSync } from "node:fs";
 import { matchesGlob, resolve } from "node:path";
@@ -257,6 +257,11 @@ class GatewayServer {
     const header = /^# Task:.*?\((?:part of )?issue #([1-9]\d*)\)/m.exec(body);
     if (header) {
       numbers.add(Number(header[1]));
+    }
+    if (!numbers.size) {
+      for (const issue of legacyIssueHeaders(body)) {
+        numbers.add(issue);
+      }
     }
     if (numbers.size > 1) {
       throw new Error("Task PR has ambiguous linked issues");

@@ -519,6 +519,23 @@ test("JSON imports only the verified session model and rejects conflicting legac
   expect(f.saved()).toMatchObject({ directory: f.directory, model: { model: "fake/glm" } });
 });
 
+test.each([0, 0.5, 13])(
+  "legacy-only Estimate fallback preserves the exact board value %s",
+  async (estimate) => {
+    const f = legacyFixture();
+    f.meta.pointsOpen = undefined;
+    f.meta.estimate = estimate;
+    f.deps.fetch = vi.fn(async () => Response.json({ data: f.session }));
+    expect(await f.service.command(["adopt", "--from-legacy"])).toContain(
+      "legacy snapshot at adoption"
+    );
+    expect(f.saved()).toMatchObject({
+      points_open: estimate,
+      segments: [{ why: "legacy snapshot at adoption" }],
+    });
+  }
+);
+
 function status(active = false, messages: unknown[] = [], permissions: unknown[] = []): Request[] {
   return [
     { path: "/api/session/active", data: active ? { ses_fake: {} } : {} },

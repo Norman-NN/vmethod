@@ -96,6 +96,14 @@ after the last `.worktrees_` and your literal `branches.worktreePrefix`. Bare
 task PR, existing worktree/branch, session directory and actual opencode model.
 Only the session id is taken from the record; file metadata cannot authorize
 adoption. The importer never creates missing worktrees or changes legacy files.
+If a legacy PR has no opening Estimate snapshot, the importer resolves its linked
+issue (including `Agent task for #n` / `Closes #n` legacy headers) and snapshots
+that issue's **current** board Estimate. The adoption segment records
+`legacy snapshot at adoption` in worker state and the eventual grade; subsequent
+issue edits do not change this opening value. An issue without an Estimate is
+skipped with `linked issue #n has no Estimate; estimate it, then rerun`.
+This exception applies only to `--from-legacy`: normal `worker adopt`, worker
+launch and `open-task` retain their opening-snapshot requirements.
 Closed/merged PRs, probes, missing worktrees, unknown or mismatched sessions,
 invalid records and already-recorded sessions are reported skips.
 

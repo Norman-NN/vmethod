@@ -220,6 +220,10 @@ paths and `<pr>.json` files containing `{"sessionId":"ses_…"}` (or
 as `legacyState` applies. Optional JSON `repo` and `pr` fields must match but never
 authorize adoption. The importer requires an existing worktree before invoking
 the normal repository/branch verification; missing worktrees are not created.
+Only this legacy import may snapshot the linked issue's current board Estimate
+when the PR has no opening snapshot. It records `legacy snapshot at adoption` in
+the saved segment, preserved by grading. Missing issue Estimates produce an
+actionable skip; normal explicit adoption still requires the PR snapshot.
 Every skipped record is reported with its reason, including non-task filenames.
 Unconfigured directories are never scanned and source files are unchanged.
 Claude records are reported as non-adoptable skips, never sent to opencode.
