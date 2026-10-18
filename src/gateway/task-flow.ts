@@ -567,9 +567,7 @@ export class TaskFlow {
       (input.outcome === "owner" ? `Current head: ${sha(item.headRefOid)}\n\n` : "") +
       readFileSync(input.file, "utf8");
     await this.post(input.ref, body);
-    if (input.outcome === "owner" || input.outcome === "changes") {
-      await this.ready(item, input.outcome === "changes");
-    }
+    await this.ready(item, !["owner", "approve"].includes(input.outcome));
     const progress = {
       changes: `🤖🔨 🔁${roundText(round)}`,
       owner: "👤🔍",

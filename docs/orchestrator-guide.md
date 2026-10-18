@@ -63,6 +63,11 @@ in worktree-local `.tmp/`. Do not launch a replacement session in an occupied tr
 
 ## Review rounds and verification
 
+Keep every PR draft unless it is really mergeable now. PRs that are In progress,
+awaiting changes, or waiting on an owner answer stay draft; only the orchestrator's
+decision that a PR is ready to merge should mark it ready. A green merge button means
+mergeable.
+
 1. Read READY, amendments and the complete diff. Check behavior against the agreed
    spec **and the long-term design**, not just a narrow symptom.
 2. Independently verify the worker's claimed root cause. Use your own oracle for

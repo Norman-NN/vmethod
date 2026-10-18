@@ -318,6 +318,7 @@ function fixture() {
     branch = "8-task";
   let body = '<!-- vmethod-task {"issues":[8]} -->';
   let issueNumber = 8;
+  let isDraft = true;
   let references: ObjectData = structuredClone(
     developmentLinks.before.data.repository.pullRequest.closingIssuesReferences
   );
@@ -365,12 +366,23 @@ function fixture() {
       if (method === "POST" && path === "/graphql") {
         parse(String(payload.query));
         const query = String(payload.query);
-        const mutation = query.includes("addCloseIssueReferences")
-          ? "addCloseIssueReferences"
-          : query.includes("removeCloseIssueReferences")
-            ? "removeCloseIssueReferences"
-            : undefined;
-        if (mutation) {
+        const mutation = query.includes("markPullRequestReadyForReview")
+          ? "markPullRequestReadyForReview"
+          : query.includes("convertPullRequestToDraft")
+            ? "convertPullRequestToDraft"
+            : query.includes("addCloseIssueReferences")
+              ? "addCloseIssueReferences"
+              : query.includes("removeCloseIssueReferences")
+                ? "removeCloseIssueReferences"
+                : undefined;
+        if (
+          mutation === "markPullRequestReadyForReview" ||
+          mutation === "convertPullRequestToDraft"
+        ) {
+          isDraft = mutation === "convertPullRequestToDraft";
+          events.push(`draft ${isDraft}`);
+          data = { data: {} };
+        } else if (mutation) {
           expect(payload.variables).toEqual({ issueId: "issue", pullRequestIds: ["pr"] });
           references = structuredClone(
             (mutation === "addCloseIssueReferences"
@@ -573,7 +585,7 @@ function fixture() {
         state: prState,
         closingIssuesReferences: references,
         mergeable: "MERGEABLE",
-        isDraft: true,
+        isDraft,
         headRepository: { nameWithOwner: "example/project" },
         labels: { nodes: [] },
       };
@@ -611,6 +623,7 @@ function fixture() {
       issueNumber?: number;
       issueClosed?: boolean;
       references?: ObjectData;
+      isDraft?: boolean;
     }) => {
       approved = values.approved ?? approved;
       issueApproved = values.issueApproved ?? issueApproved;
@@ -627,6 +640,7 @@ function fixture() {
       issueNumber = values.issueNumber ?? issueNumber;
       issueClosed = values.issueClosed ?? issueClosed;
       references = values.references ?? references;
+      isDraft = values.isDraft ?? isDraft;
     },
     red: () => {
       checks = checks.map((c) => ({ ...c, conclusion: "failure" }));
@@ -638,24 +652,34 @@ function fixture() {
   };
 }
 
-test.each(["owner", "ask"] as const)(
-  "review %s mirrors the owner's turn on the issue",
-  async (outcome) => {
+test.each([
+  { outcome: "changes", draft: true },
+  { outcome: "owner", draft: false },
+  { outcome: "answer", draft: true },
+  { outcome: "ask", draft: true },
+  { outcome: "approve", draft: false },
+] as const)(
+  "review %s sets draft state and mirrors the owner's turn on the issue",
+  async ({ outcome, draft }) => {
     const f = fixture();
+    f.set({ isDraft: !draft });
     const file = join(f.root, "review.md");
     writeFileSync(file, "Please decide.\n");
     await f.flow().review({ ref: "27", outcome, file });
-    expect(f.touched).toContainEqual(
-      expect.objectContaining({
-        id: "issue",
-        field: "Progress",
-        value: outcome === "ask" ? "👤❓" : "👤🔍",
-      })
-    );
-    expect(f.writes).toContainEqual({
-      path: "/repos/example/project/issues/8/assignees",
-      body: { assignees: ["owner"] },
-    });
+    expect(f.events).toContain(`draft ${draft}`);
+    if (outcome === "owner" || outcome === "ask") {
+      expect(f.touched).toContainEqual(
+        expect.objectContaining({
+          id: "issue",
+          field: "Progress",
+          value: outcome === "ask" ? "👤❓" : "👤🔍",
+        })
+      );
+      expect(f.writes).toContainEqual({
+        path: "/repos/example/project/issues/8/assignees",
+        body: { assignees: ["owner"] },
+      });
+    }
     if (outcome === "ask") {
       expect(f.writes.find((write) => write.path.endsWith("/comments"))?.body.body).toMatch(
         /^\[orchestrator\] OWNER QUESTION/
