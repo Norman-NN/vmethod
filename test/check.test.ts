@@ -160,7 +160,10 @@ test("Claude families require a separately configured worker token", () => {
   expect(check(root)).toMatchObject({ code: 1 });
   expect(check(root).messages.join("\n")).toContain("credentials.workerGithubToken");
   writeFileSync(path, original);
-  expect(check(root)).toEqual({ code: 0, messages: [] });
+  expect(check(root)).toEqual({
+    code: 0,
+    messages: ["WARN models.yaml: sonnet has no price; delivery usd is null"],
+  });
 });
 
 test("permissions, numeric ids, model families and secret-looking values are checked without leaking secrets", () => {
