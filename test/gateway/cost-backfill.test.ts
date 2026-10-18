@@ -302,6 +302,52 @@ test("fills missing model-log usd with backfill provenance", async () => {
   });
 });
 
+test("keeps both archived PR costs when backfilling multiple model-log records", async () => {
+  const root = mkdtempSync(join(tmpdir(), "vmethod-cost-"));
+  roots.push(root);
+  const workers = join(root, "state/vmethod/test/workers");
+  mkdirSync(workers, { recursive: true });
+  for (const pr of [51, 52]) {
+    writeFileSync(
+      join(workers, `${pr}.json`),
+      JSON.stringify({
+        pr,
+        repo: "vworlds/vmethod",
+        id: `ses_${pr}`,
+      })
+    );
+  }
+  mkdirSync(join(root, ".vmethod"));
+  writeFileSync(
+    join(root, ".vmethod/model-log.jsonl"),
+    [logRecord(51), logRecord(52)].map((record) => JSON.stringify(record)).join("\n") + "\n"
+  );
+  const report = await backfillCosts({
+    root,
+    config: { repo: "vworlds/vmethod", stateName: "test" },
+    env: { XDG_STATE_HOME: join(root, "state") },
+    models: [
+      {
+        family: "sol",
+        model: "codexbal/gpt-6.1-sol",
+        price: { input: 2, output: 10, cached: 0.1 },
+      },
+    ],
+    readSession: async () => capture.data,
+    inspectCard: async () => ({ archived: true }),
+    setCost: async () => undefined,
+  });
+
+  expect(report).toContain("#51: archived; $");
+  expect(report).toContain("#52: archived; $");
+  const records = readFileSync(join(root, ".vmethod/model-log.jsonl"), "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  expect(records).toHaveLength(2);
+  expect(records.map((record) => record.usd)).toEqual([expect.any(Number), expect.any(Number)]);
+});
+
 function logRecord(pr: number) {
   return {
     date: "2026-10-18",
