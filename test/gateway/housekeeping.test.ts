@@ -42,8 +42,10 @@ test.each(
               {
                 path: `/repos/example/project/issues/${card.content.number}`,
                 method: "PATCH",
-                json: { number: card.content.number, state: "closed" },
+                json: { number: card.content.number, node_id: card.content.id, state: "closed" },
               },
+              ...boardReads(recording),
+              mutation,
             ]
           : [...metadata, ...boardReads(recording), mutation];
     const f = fixtureServer(requests);
@@ -84,7 +86,7 @@ test.each(
         );
       }
       const events = await once();
-      if (owner && verb !== "issue close") {
+      if (owner) {
         expect(events.map((event) => event.kind)).toEqual(["board"]);
       } else {
         expect(events).toEqual([]);
@@ -413,9 +415,14 @@ test("issue close gates identity and posts the exact checked comment before clos
     {
       path: "/repos/example/project/issues/37",
       method: "PATCH",
-      body: { state: "closed", state_reason: "completed" },
-      json: issueResponse,
+      body: { state: "closed", state_reason: "completed", assignees: [] },
+      json: { ...issueResponse, node_id: boardRecording.items.nodes[0].content.id },
     },
+    ...boardReads(),
+    boardGraph({
+      m0: { projectV2Item: { id: boardRecording.items.nodes[0].id } },
+      m1: { projectV2Item: { id: boardRecording.items.nodes[0].id } },
+    }),
   ]);
   const file = join(f.root, "comment.md");
   writeFileSync(file, "Reason for closure\n");

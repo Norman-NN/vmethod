@@ -47,6 +47,25 @@ test("Done cap ranks all repositories but archives only own cards outside the ne
   expect(board.cards.map((card) => card.id)).toContain("done-9");
   expect(board.cards.map((card) => card.id)).toContain("done-4");
 });
+
+test("board status reports closed/open column mismatches and --fix reconciles them", async () => {
+  const board = setup();
+  board.stamp(1);
+  const closed = board.card("closed");
+  closed.closedAt = "2026-10-18T12:07:00Z";
+  const open = board.card("open");
+  open.values.Status = "Done";
+  const status = await board.service().status();
+  expect(status.mismatches).toEqual([
+    { itemId: "closed", closed: true, status: "Backlog" },
+    { itemId: "open", closed: false, status: "Done" },
+  ]);
+  const fixed = await board.service().fixStatus();
+  expect(fixed.mismatches).toEqual([]);
+  expect(closed.values.Status).toBe("Done");
+  expect(open.values.Status).toBe("Backlog");
+  expect(closed.values.Progress).toBeNull();
+});
 afterEach(() => fake?.done());
 function setup() {
   fake = new FakeBoard();

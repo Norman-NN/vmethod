@@ -48,7 +48,7 @@ export interface Operations {
   checkTaskCi: { input: { ref: string }; output: Verdict };
   refreshChecks: { input: { ref: string }; output: Verdict };
   verify: { input: { refs: string[]; packages?: string[]; bench?: boolean }; output: Verdict };
-  boardStatus: { input: Record<string, never>; output: BoardStatus };
+  boardStatus: { input: { fix?: boolean }; output: BoardStatus };
   boardMigrate: {
     input: { dryRun?: boolean; steal?: boolean };
     output: MigrationResult;

@@ -79,6 +79,7 @@ export class BoardService implements BoardIO {
   budgetStopped = (): boolean => this.github.budgetStopped();
   cleanup = <T>(action: () => Promise<T>): Promise<T> => this.github.usingReserve(action);
   status = () => this.runner.status();
+  fixStatus = () => this.runner.fixStatus();
   migrate = (input: { dryRun?: boolean; steal?: boolean }) => this.runner.migrate(input);
 
   async login(): Promise<string> {

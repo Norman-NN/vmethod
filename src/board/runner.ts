@@ -62,11 +62,40 @@ export class MigrationRunner {
   async status(): Promise<BoardStatus> {
     const snapshot = await this.io.snapshot();
     const state = readState(snapshot.readme);
+    const mismatches = (await this.io.cards(snapshot.id)).flatMap((card) => {
+      const closed = Boolean(card.closedAt);
+      const status = typeof card.values.Status === "string" ? card.values.Status : null;
+      return closed !== (status === "Done")
+        ? [
+            {
+              itemId: card.id,
+              ...(card.number === undefined ? {} : { number: card.number }),
+              closed,
+              status,
+            },
+          ]
+        : [];
+    });
     return {
       state,
       pending: this.migrations.filter((migration) => migration.version > state.version),
       drift: drift(snapshot, this.migrations[Math.min(state.version || 1, this.boardVersion) - 1]),
+      mismatches,
     };
+  }
+
+  async fixStatus(): Promise<BoardStatus> {
+    const status = await this.status();
+    const snapshot = await this.io.snapshot();
+    const statusField = this.field(snapshot, "Status");
+    const progressField = this.field(snapshot, "Progress");
+    for (const mismatch of status.mismatches) {
+      await this.io.setCards(snapshot.id, statusField, [
+        { id: mismatch.itemId, value: mismatch.closed ? "Done" : "Backlog" },
+      ]);
+      await this.io.setCards(snapshot.id, progressField, [{ id: mismatch.itemId, value: null }]);
+    }
+    return this.status();
   }
 
   private async held(): Promise<{ snapshot: Snapshot; state: BoardState }> {
