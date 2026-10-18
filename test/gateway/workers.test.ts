@@ -18,6 +18,7 @@ import { validProject } from "../helpers.js";
 import captured from "../fixtures/usage/opencode-session.json" with { type: "json" };
 import messageCapture from "../fixtures/usage/opencode-message.json" with { type: "json" };
 import claudeResults from "../fixtures/usage/claude-results.json" with { type: "json" };
+import messageCursor from "../fixtures/usage/opencode-message-cursor.json" with { type: "json" };
 
 interface Request {
   path: string;
@@ -25,7 +26,7 @@ interface Request {
   body?: unknown;
   data?: unknown;
   status?: number;
-  cursor?: { previous: string };
+  cursor?: { previous?: string; next?: string };
 }
 function fixture(requests: Request[] = [], priced = false) {
   const root = validProject();
@@ -245,7 +246,7 @@ test("Claude polling and grading retain both resumed turns without double counti
   f.done();
 });
 
-test("watcher pages request history once, caches ids across polls and grade uses the same prices", async () => {
+test("watcher fully prices 221 requests across three pages, then polls and grades from cached history", async () => {
   // Recorded OpenCode message shape with derived usage/model/id for the boundaries.
   const message = (id: string, input: number) => ({
     ...messageCapture.data[0],
@@ -253,9 +254,10 @@ test("watcher pages request history once, caches ids across polls and grade uses
     model: { providerID: "fake", id: "glm" },
     tokens: { input, output: 1000, reasoning: 0, cache: { read: 0, write: 0 } },
   });
-  const older = message("old", 30000);
-  const newer = message("new", 300000);
-  const poll = () =>
+  const latest = Array.from({ length: 20 }, (_, i) => message(`latest-${i}`, 30000));
+  const older = Array.from({ length: 200 }, (_, i) => message(`older-${i}`, 30000));
+  const oldest = message("oldest", 300000);
+  const poll = (added = false) =>
     measuredStatus().map((request) =>
       request.path === "/api/session/ses_fake"
         ? {
@@ -263,36 +265,63 @@ test("watcher pages request history once, caches ids across polls and grade uses
             data: {
               ...captured.data,
               id: "ses_fake",
-              tokens: { input: 330000, output: 2000, reasoning: 0, cache: { read: 0, write: 0 } },
+              tokens: {
+                input: added ? 6930000 : 6900000,
+                output: added ? 222000 : 221000,
+                reasoning: 0,
+                cache: { read: 0, write: 0 },
+              },
             },
           }
         : request.path.endsWith("?limit=20")
-          ? { ...request, data: [newer], cursor: { previous: "older" } }
+          ? {
+              ...request,
+              data: added ? [message("added", 30000), ...latest.slice(0, 19)] : latest,
+              cursor: messageCursor,
+            }
           : request
     );
   const f = fixture(
     [
       ...start,
       ...poll(),
-      { path: "/api/session/ses_fake/message?limit=200&cursor=older", data: [older] },
-      ...poll(),
-      ...poll(),
+      {
+        path: "/api/session/ses_fake/message?limit=200&cursor=older",
+        data: older,
+        cursor: { previous: "newer", next: "oldest" },
+      },
+      { path: "/api/session/ses_fake/message?limit=200&cursor=oldest", data: [oldest] },
+      ...poll(true),
+      ...poll(true),
     ],
     true
   );
   await f.service.command(["start", "31"]);
+  // Recover an old record whose incomplete window cache was not a full-history scan.
+  const oldRecord = f.record();
+  oldRecord.segments[0].requests = {
+    "latest-0": { tokens: { input: 30000, output: 1000, cached: 0 }, usd: 0.07 },
+  };
+  writeFileSync(
+    join(f.root, "state/vmethod/example-state/workers/31.json"),
+    JSON.stringify(oldRecord)
+  );
   expect((await f.service.watchStatus(31)).prCost).toEqual({
     pr: 31,
-    usd: expect.closeTo(1.285, 8),
+    usd: expect.closeTo(16.615, 8),
   });
-  expect(Object.keys(f.record().segments[0].requests)).toEqual(["new", "old"]);
-  expect((await f.service.watchStatus(31)).prCost?.usd).toBeCloseTo(1.285, 8);
+  expect(Object.keys(f.record().segments[0].requests)).toHaveLength(221);
+  expect(f.record().costHistoryLoaded).toBe(true);
+  expect((await f.service.watchStatus(31)).prCost).toEqual({
+    pr: 31,
+    usd: expect.closeTo(16.685, 8),
+  });
   f.meta.state = "CLOSED";
   await f.service.grade(31, 3);
-  expect(f.hooks.setCost).toHaveBeenCalledWith(31, "$1.29");
+  expect(f.hooks.setCost).toHaveBeenCalledWith(31, "$16.69");
   expect(
     JSON.parse(readFileSync(join(f.root, ".vmethod/model-log.jsonl"), "utf8")).usd
-  ).toBeCloseTo(1.285, 8);
+  ).toBeCloseTo(16.685, 8);
   f.done();
 });
 
@@ -305,7 +334,7 @@ test("missing totals require complete paged history on each poll, with overlappi
   const second = { ...first, id: "second" };
   const poll: Request[] = [
     ...status(false, [second]).map((request) =>
-      request.path.endsWith("/message") ? { ...request, cursor: { previous: "older" } } : request
+      request.path.endsWith("/message") ? { ...request, cursor: messageCursor } : request
     ),
     { path: "/api/session/ses_fake/message?limit=200&cursor=older", data: [first, second] },
   ];

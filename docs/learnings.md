@@ -127,8 +127,12 @@ reported zero cost for the configured API price.
 Existing worker polling collects provider usage automatically; workers need no extra
 command or self-reported measurement. OpenCode prices each assistant message,
 paging history when necessary, then sums the results. Per-message costs are cached
-by id in worker state; subsequent polls price only new or changed usage. Input includes cache writes,
-output includes reasoning, and cached means cache reads. Model switches snapshot
+by id in worker state; subsequent polls price only new or changed usage.
+OpenCode pages are newest-first: `cursor.next` walks older history. The first
+pricing scan walks all pages before trusting cached ids as a stopping boundary;
+old window-only caches are rescanned. Later polls stop at an already priced id
+(but still recheck its usage in case streaming counts changed).
+Input includes cache writes, output includes reasoning, and cached means cache reads. Model switches snapshot
 the cumulative baseline so each segment pays only its delta at its family's rate.
 Claude prices each `assistant` event's `message.usage`, deduplicated by `message.id`,
 including cache creation in input. Result-event usage supplies cumulative token

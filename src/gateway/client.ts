@@ -583,14 +583,15 @@ export class OpencodeClient {
           messages.push(message);
           added++;
         }
-        const previous = object(envelope.cursor).previous;
-        if (added === 0 || typeof previous !== "string" || !previous || previous === cursor) {
+        // Messages are newest-first: next traverses older history, previous goes newer.
+        const next = object(envelope.cursor).next;
+        if (added === 0 || typeof next !== "string" || !next || next === cursor) {
           break;
         }
         if (page === 99) {
           throw new Error("OpenCode cost history exceeds pagination limit");
         }
-        cursor = previous;
+        cursor = next;
       }
       return { session, messages, running: active.includes(id) };
     } catch (error) {
@@ -715,7 +716,7 @@ export class OpencodeClient {
     }
     const seen = new Set(known);
     let pageMessages = messages;
-    let cursor = object(object(messageEnvelope).cursor).previous;
+    let cursor = object(object(messageEnvelope).cursor).next;
     for (let page = 0; typeof cursor === "string" && cursor; page++) {
       if (usage && pageMessages.some((message) => seen.has(String(object(message).id)))) {
         break;
@@ -735,12 +736,12 @@ export class OpencodeClient {
         throw new Error("Invalid opencode cost message response");
       }
       messages.push(...next);
-      const previous = object(object(envelope).cursor).previous;
-      if (!next.length || previous === cursor) {
+      const older = object(object(envelope).cursor).next;
+      if (!next.length || older === cursor) {
         break;
       }
       pageMessages = next;
-      cursor = previous;
+      cursor = older;
     }
     const uniqueMessages = [
       ...new Map(

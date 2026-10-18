@@ -80,6 +80,8 @@ interface Session {
   logOffset?: number;
   finalized?: boolean;
   gradePosted?: boolean;
+  /** Only trust cached ids as history boundaries after a full older-history scan. */
+  costHistoryLoaded?: boolean;
   pendingWake?: string[];
 }
 export interface TaskMetadata {
@@ -282,7 +284,9 @@ export class WorkerService {
         directory,
         record.id,
         deadline,
-        record.segments.flatMap((segment) => Object.keys(segment.requests ?? {}))
+        record.costHistoryLoaded
+          ? record.segments.flatMap((segment) => Object.keys(segment.requests ?? {}))
+          : []
       );
     }
     if (status.reason === "idle" && comments) {
@@ -333,6 +337,9 @@ export class WorkerService {
       );
       segment.usd = cost.usd;
       segment.lowerBound = cost.lowerBound;
+      if (record.model.kind === "opencode" && status.requests) {
+        record.costHistoryLoaded = true;
+      }
       this.save(record);
     }
     if (
