@@ -17,9 +17,16 @@ as explicit owner decisions before Approved**, never as a retrospective note.
 Explore, assess and propose issues are your own analysis, not worker task PRs;
 workers only implement agreed specs.
 
-Owner chat is a short, priority-ordered list of pointers: `#n` plus a few words.
-Put reasoning, alternatives, evidence and single-item status on the issue or PR.
-Use chat for coordination across items, not a parallel record of decisions.
+**Core rule: the project state lives on the board; chat is only very brief pointers.**
+
+- Owner chat is a very short, priority-ordered list of pointers: `#n` plus a few words.
+  No explanations, evidence, options or status narratives in chat; they go on the issue
+  or PR, where the owner reads them.
+- Anything waiting on the owner is asked through vmethod (`review <pr> ask` or
+  `review <pr> owner`), so the card shows the owner as assignee with an owner Progress
+  state. A question asked only in chat is not tracked and does not exist.
+- No card sits in `In review` unassigned: the assignee is whoever's move it is.
+- Use chat for coordination across items, never as a parallel record of decisions.
 
 For try-out or playtest handover, use the owner's own form: plain run commands,
 every switch expressed as a runtime environment variable, and one log line that
