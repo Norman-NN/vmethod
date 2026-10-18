@@ -716,3 +716,23 @@ test("Progress rewrite alters only the matched state, including empty suffix and
     "🤖🔨 🔁1️⃣",
   ]);
 });
+
+test("the vmethod repository itself satisfies a migration's adoption requirement", async () => {
+  const board = setup();
+  board.pinSelf("example/project", "dev");
+  const migration: Migration = {
+    version: 2,
+    requires: "9.9.9",
+    up: [{ op: "add_field", field: "Extra", type: "text" }],
+    expect: baseline.expect,
+  };
+  await board.service([baseline, migration]).migrate({});
+  expect(readState(board.readme).version).toBe(2);
+  board.pin("example/project", "dev", "1.0.0");
+  const next: Migration = {
+    ...migration,
+    version: 3,
+    up: [{ op: "remove_field", field: "Extra" }],
+  };
+  await expect(board.service([baseline, migration, next]).migrate({})).rejects.toThrow("to adopt");
+});
