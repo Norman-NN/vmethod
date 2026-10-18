@@ -23,6 +23,10 @@ branch using GitHub's Git database/ref operations. It keeps one open learning PR
 per project, appending new immutable files to that PR's head with a non-force
 fast-forward. It refuses ambiguous multiple open project submissions and legacy
 non-add-only PRs when new data needs appending; reconcile those before retrying.
+After a confirmed ref update, submission polls the PR head up to ten times, one
+second apart. If the PR still shows the old head, it reports
+"pushed; PR head not yet updated" as success, not a failed submission. A different
+head or a closed PR still reports "moved" so you can inspect the concurrent change.
 Submission never synchronizes or force-updates your fork. It uses the fork's own
 `dev` commit as parent for a new PR, or the open PR's head for an increment,
 so your token needs no `workflow`
