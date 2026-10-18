@@ -26,6 +26,8 @@ workers only implement agreed specs.
   `review <pr> owner`), so the card shows the owner as assignee with an owner Progress
   state. A question asked only in chat is not tracked and does not exist.
 - No card sits in `In review` unassigned: the assignee is whoever's move it is.
+- Never repeat in chat what an issue or PR already says: that is duplicate work. Point to
+  it (`#n`) instead.
 - Use chat for coordination across items, never as a parallel record of decisions.
 
 For try-out or playtest handover, use the owner's own form: plain run commands,

@@ -25,7 +25,8 @@ locally.
 ## Core rule: state lives on the board
 
 The project state lives on the board (cards, assignees, Progress) and in issue and PR
-threads. Chat with the owner is only very brief `#n` pointers. Anything that waits on the
+threads. Chat with the owner is only very brief `#n` pointers, and never repeats what an
+issue or PR already says. Anything that waits on the
 owner is asked through vmethod so the card shows it is the owner's move. See
 `docs/orchestrator-guide.md`.
 
