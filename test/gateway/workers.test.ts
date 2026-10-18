@@ -167,6 +167,37 @@ const start: Request[] = [
     body: { text: "PR description `data`", delivery: "steer" },
   },
 ];
+test.each([
+  "This task discusses ON HOLD and [HOLD: examples] in prose.",
+  "`> ⛔ ON HOLD. Wait for [orchestrator] GO.` is an example, not a banner.",
+  "> ⛔ ON HOLD. Wait for [orchestrator] GO. Not the exact banner.",
+])("hold mentions in prose do not block worker start: %s", async (body) => {
+  const f = fixture(
+    start.map((request) =>
+      request.body
+        ? {
+            ...request,
+            body: { text: body, delivery: "steer" },
+          }
+        : request
+    )
+  );
+  f.meta.body = body;
+  await f.service.command(["start", "31"]);
+  expect(f.hooks.prepare).toHaveBeenCalledOnce();
+  f.done();
+});
+
+test.each([
+  { title: "Task", body: "Intro\n> ⛔ ON HOLD. Wait for [orchestrator] GO.\n\nPrompt" },
+  { title: "[HOLD: waiting for #7] Task", body: "Prompt" },
+])("actual hold markers block worker start: %j", async ({ title, body }) => {
+  const f = fixture();
+  Object.assign(f.meta, { title, body });
+  await expect(f.service.command(["start", "31"])).rejects.toThrow("on hold");
+  expect(f.hooks.prepare).not.toHaveBeenCalled();
+  f.done();
+});
 function measuredStatus(multiplier = 1): Request[] {
   const data = structuredClone(captured.data);
   data.id = "ses_fake";
