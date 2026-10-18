@@ -1268,7 +1268,6 @@ class GatewayServer {
             (comment) =>
               comment.role === "orchestrator" &&
               comment.body.startsWith("[orchestrator]") &&
-              !comment.body.startsWith("[relay]") &&
               comment.date > mine
           )
           .sort((a, b) => a.date.localeCompare(b.date));

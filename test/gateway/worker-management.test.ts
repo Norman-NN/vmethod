@@ -361,14 +361,15 @@ test.each(["auto-", "", "legacy"])(
         for (let i = 0; i < 12; i++) {
           events.push(...(await w.once(loop)));
         }
-        expect(events.map((event) => event.kind)).toEqual(["worker"]);
-        expect(events[0].line).toContain(
-          state === "failed"
-            ? "its turn failed"
-            : state === "permission"
-              ? "waits for a permission"
-              : "stopped without reply; send it a nudge"
-        );
+        if (state === "idle") {
+          expect(events).toEqual([]);
+          expect(w.workerSends).toHaveLength(1);
+        } else {
+          expect(events.map((event) => event.kind)).toEqual(["worker"]);
+          expect(events[0].line).toContain(
+            state === "failed" ? "its turn failed" : "waits for a permission"
+          );
+        }
         expect(w.reports).toEqual([]);
         f.done();
       } finally {
