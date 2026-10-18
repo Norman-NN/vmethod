@@ -13,13 +13,15 @@ export interface Operations {
     output: string;
   };
   issueClose: { input: { ref: string; comment?: string }; output: string };
-  boardSetIssue: { input: { ref: string; field: string; value: string }; output: string };
+  /** Null clears only Progress or Estimate; strings retain ordinary value validation. */
+  boardSetIssue: { input: { ref: string; field: string; value: string | null }; output: string };
   worker: { input: { args: string[] }; output: string };
   suggestModel: { input: { ref: string }; output: string };
   grade: { input: { ref: string; points?: number }; output: string };
   workerAccess: { input: { directory: string }; output: string };
   openTask: { input: OpenTaskInput; output: string };
   reviewTask: { input: ReviewInput; output: string };
+  askIssue: { input: { ref: string; file: string }; output: string };
   mergeTask: {
     input: { ref: string; mergeCommit?: boolean; carryApproval?: string };
     output: string;

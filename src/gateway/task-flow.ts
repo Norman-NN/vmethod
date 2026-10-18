@@ -13,7 +13,8 @@ import { GitTransport, taskBranch, validateBranch } from "./git.js";
 import { cleanBaseMerges } from "./clean-base.js";
 import { approvalCarryFiles } from "./carry-approval.js";
 import type { OpenTaskInput, ReviewInput } from "./task-flow-types.js";
-import { taskRelation } from "./task-flow-types.js";
+import { taskIssueNumbers, taskRelation } from "./task-flow-types.js";
+import { setTurn, turnAssignees } from "./turn.js";
 
 interface Host {
   thread(ref: string, kind: "pr" | "issue"): Promise<ObjectData>;
@@ -137,27 +138,19 @@ export class TaskFlow {
       await board.set({ itemId: id, field: "Model", value: model });
     }
   }
-  private async turn(ref: string, owner: boolean): Promise<void> {
+  private async turn(ref: string, role: "owner" | "orchestrator" | null): Promise<void> {
     const current = object(await this.host.github.rest(this.path(ref)));
     if (!Array.isArray(current.assignees)) {
       throw new Error("Missing assignees");
     }
-    const managed = new Set(
-      this.host.people.filter((p) => ["owner", "orchestrator"].includes(p.role)).map((p) => p.login)
+    const assigned = current.assignees.map((p) => String(object(p).login));
+    await setTurn(
+      this.host.github,
+      this.repo,
+      this.number(ref),
+      assigned,
+      turnAssignees(this.host.people, this.repo, assigned, role)
     );
-    const remove = current.assignees
-      .map((p) => String(object(p).login))
-      .filter((login) => managed.has(login));
-    if (remove.length) {
-      await this.host.github.rest(`${this.path(ref)}/assignees`, "DELETE", { assignees: remove });
-    }
-    if (owner) {
-      const owners = this.host.people.filter((p) => p.role === "owner").map((p) => p.login);
-      if (!owners.length) {
-        throw new Error("No owner configured");
-      }
-      await this.host.github.rest(`${this.path(ref)}/assignees`, "POST", { assignees: owners });
-    }
   }
   private async ready(item: ObjectData, draft: boolean): Promise<void> {
     if (item.isDraft === draft) {
@@ -405,10 +398,10 @@ export class TaskFlow {
       }
     }
     await this.card(pr, "In progress", input.hold ? "⛔" : "🤖🔨", model.family);
-    await this.turn(ref, false);
+    await this.turn(ref, null);
     if (issue) {
       await this.card(issue, "In progress", null);
-      await this.turn(input.issue!, false);
+      await this.turn(input.issue!, null);
     }
     return `Opened draft PR #${ref} (${branch})`;
   }
@@ -550,7 +543,7 @@ export class TaskFlow {
       changes: `REVIEW round ${round}`,
       owner: "OWNER REVIEW",
       answer: "ANSWER",
-      ask: "ANSWER",
+      ask: "OWNER QUESTION",
       approve: "APPROVED",
     }[input.outcome];
     if (input.replyTo) {
@@ -582,19 +575,59 @@ export class TaskFlow {
       owner: "👤🔍",
       answer: "🤖🔨",
       ask: "👤❓",
-      approve: null,
+      approve: "🧭🔍",
     }[input.outcome];
     await this.card(
       item,
-      input.outcome === "owner"
+      input.outcome === "owner" || input.outcome === "ask" || input.outcome === "approve"
         ? "In review"
-        : input.outcome === "changes"
+        : input.outcome === "changes" || input.outcome === "answer"
           ? "In progress"
           : undefined,
       progress
     );
-    await this.turn(input.ref, input.outcome === "owner" || input.outcome === "ask");
+    await this.turn(
+      input.ref,
+      input.outcome === "approve"
+        ? "orchestrator"
+        : input.outcome === "owner" || input.outcome === "ask"
+          ? "owner"
+          : null
+    );
+    for (const number of taskIssueNumbers(String(item.body)) ?? []) {
+      const issue = await this.host.thread(String(number), "issue");
+      const owner = input.outcome === "owner" || input.outcome === "ask";
+      await this.turn(String(number), owner ? "owner" : null);
+      await this.card(issue, owner ? undefined : "In progress", owner ? progress : null);
+    }
     return `Posted ${heading} on #${input.ref}`;
+  }
+
+  /** Ask the owner on an issue without a live task PR; task questions belong on that PR. */
+  async ask(ref: string, file: string): Promise<string> {
+    const issue = await this.host.thread(String(this.number(ref)), "issue");
+    this.track(issue);
+    if (issue.state !== "OPEN") {
+      throw new Error("Issue is not open");
+    }
+    for (let page = 1; ; page++) {
+      const pulls = await this.host.github.rest(
+        `/repos/${this.repo}/pulls?state=open&per_page=100&page=${page}`
+      );
+      if (!Array.isArray(pulls)) {
+        throw new Error("Missing open task PRs");
+      }
+      if (pulls.some((pr) => taskIssueNumbers(String(object(pr).body))?.includes(Number(ref)))) {
+        throw new Error("Issue has an open task PR; use review <pr> ask");
+      }
+      if (pulls.length < 100) {
+        break;
+      }
+    }
+    await this.post(ref, `[orchestrator] OWNER QUESTION\n\n${readFileSync(file, "utf8")}`);
+    await this.card(issue, undefined, "👤❓");
+    await this.turn(ref, "owner");
+    return `Posted OWNER QUESTION on #${ref}`;
   }
 
   async status(ref: string): Promise<"live" | "stopped" | "unknown"> {
@@ -614,7 +647,7 @@ export class TaskFlow {
       await this.post(ref, "[orchestrator] GO\n\nThe hold is lifted; work may begin.");
     }
     await this.card(item, "In progress", "🤖🔨");
-    await this.turn(ref, false);
+    await this.turn(ref, null);
     await this.deps.workers.resume(
       this.number(ref),
       "[orchestrator] GO\nRead your task PR; the hold is lifted."
@@ -934,7 +967,7 @@ export class TaskFlow {
             });
           }
           await this.card(issue, "Done", null);
-          await this.turn(String(number), false);
+          await this.turn(String(number), null);
         });
       }
       await step("estimates", async () => {
@@ -974,7 +1007,7 @@ export class TaskFlow {
     }
     await step("pr-card", async () => {
       await this.card(item, "Done", null);
-      await this.turn(ref, false);
+      await this.turn(ref, null);
     });
     await step("done-cap", async () => {
       if (object(this.config.board).enabled !== false) {

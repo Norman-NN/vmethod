@@ -33,6 +33,7 @@ import { repoOf, restActor, actorFields } from "./queries.js";
 import { WriteJournal } from "./write-journal.js";
 import { workerWorktree } from "./worker-path.js";
 import { taskIssueNumbers } from "./task-flow-types.js";
+import { setTurn, turnAssignees } from "./turn.js";
 import { resolveSession, type ResolvedSession, type SessionInput } from "./watch-scope.js";
 export { resolveSession, type ResolvedSession, type SessionInput } from "./watch-scope.js";
 
@@ -102,6 +103,7 @@ interface PrInfo {
 }
 
 interface CardInfo {
+  ownerReview?: string;
   id: string;
   repo: string;
   number: number;
@@ -330,6 +332,7 @@ export class EventLoop {
   private readonly cycleStale = new Set<number>();
   private readonly cycleOwnMoves = new Set<string>();
   private inprogress: { number: number; branch: string; working: boolean }[] = [];
+  private taskIssues = new Map<number, number[]>();
   private prCostCards = new Map<number, string>();
   private observedPrs: PrInfo[] = [];
   private nextBoardAt = 0;
@@ -1269,6 +1272,7 @@ export class EventLoop {
 
   private async pollPulls(): Promise<void> {
     this.observedPrs = [];
+    this.taskIssues.clear();
     const items = await this.restPages(
       (page) => `/repos/${this.own}/pulls?state=open&per_page=100&page=${page}`,
       (data) => this.list(data)
@@ -1277,6 +1281,10 @@ export class EventLoop {
     const launched = new Set<number>();
     for (const item of items) {
       if (this.host.filter.identity(restActor(item.user)) !== undefined) {
+        const number = count(item.number);
+        if (number !== null) {
+          this.taskIssues.set(number, taskIssueNumbers(str(item.body)) ?? []);
+        }
         for (const issue of taskIssueNumbers(str(item.body)) ?? []) {
           launched.add(issue);
         }
@@ -1728,7 +1736,16 @@ export class EventLoop {
         this.rememberWorkerPrompt(number, firstLine, created, url);
       }
       if (own && /^\[orchestrator\] (?:ANSWER|GO)\b/.test(firstLine)) {
-        this.queueProgress(number, { state: taskPr ? "working" : null });
+        this.queueProgress(number, {
+          state: taskPr ? "working" : null,
+          ...(taskPr ? { status: "In progress" } : {}),
+        });
+      }
+      if (own && !edited && /^\[orchestrator\] OWNER (?:QUESTION|REVIEW)\b/.test(firstLine)) {
+        this.queueProgress(number, {
+          state: firstLine.includes("QUESTION") ? "owner-question" : "owner-review",
+          ...(taskPr ? { status: "In review" } : {}),
+        });
       }
       if (selfWrite) {
         return;
@@ -1737,6 +1754,18 @@ export class EventLoop {
     }
     if (!person) {
       return;
+    }
+    if (own && !edited && person.role === "owner" && !/^\[orchestrator\]/.test(firstLine)) {
+      let linked = false;
+      for (const [pr, issues] of this.taskIssues) {
+        if (issues.includes(number)) {
+          linked = true;
+          this.queueProgress(pr, { state: "verifying" });
+        }
+      }
+      if (!linked) {
+        this.queueProgress(number, { state: "verifying" });
+      }
     }
     if (taskPr && person.role === "worker") {
       this.touchActivity(number, created);
@@ -2033,6 +2062,7 @@ export class EventLoop {
     this.inprogress = [];
     const ready: CardInfo[] = [];
     const approved: CardInfo[] = [];
+    const currentCards: CardInfo[] = [];
     const present = new Set<string>();
     const theirs = new Set<string>();
     const unestimated = object(safeJson(this.readMarker("unestimated.json")));
@@ -2056,6 +2086,21 @@ export class EventLoop {
       if (!this.inScope(card.number) || this.muted(card.repo, card.number)) {
         continue;
       }
+      if (
+        card.ownerReview &&
+        !this.marked(`owner-review-${card.number}@${key(card.ownerReview)}`)
+      ) {
+        if (!this.firstRun) {
+          this.queueProgress(card.number, { state: "verifying" });
+          this.produceOnce(
+            `owner-review-event-${card.number}@${key(card.ownerReview)}`,
+            "owner-review",
+            `OWNER REVIEW #${card.number}: orchestrator's move ${this.threadUrl(card.repo, card.number, card.kind)}`
+          );
+        }
+        this.mark(`owner-review-${card.number}@${key(card.ownerReview)}`);
+      }
+      const pendingProgress = existsSync(join(this.dir, `pending-progress-${card.number}`));
       await this.applyProgress(card);
       if (card.kind === "PR" && card.column === "In progress") {
         this.inprogress.push({
@@ -2068,6 +2113,10 @@ export class EventLoop {
       if (!(await this.watchColumn(card, migration))) {
         continue;
       }
+      currentCards.push(card);
+      const columnProgress = existsSync(join(this.dir, `pending-progress-${card.number}`));
+      await this.applyProgress(card);
+      await this.reconcileTurn(card, !pendingProgress && !columnProgress);
       if (
         card.kind === "ISSUE" &&
         card.state === "OPEN" &&
@@ -2096,6 +2145,7 @@ export class EventLoop {
         approved.push(card);
       }
     }
+    await this.mirrorOwnerTurns(currentCards);
     this.writeMarker("unestimated.json", JSON.stringify(nextUnestimated));
     for (const name of readdirSync(join(this.dir, "board"))) {
       if (
@@ -2125,7 +2175,7 @@ export class EventLoop {
       for (;;) {
         const data = object(
           await this.host.github.graphql(
-            `query WatchBoard($owner: String!, $number: Int!, $cursor: String) { organization(login: $owner) { projectV2(number: $number) { id readme items(first: 100, after: $cursor, query: "-status:Done") { nodes { id status: fieldValueByName(name: "Status") { ... on ProjectV2ItemFieldSingleSelectValue { name updatedAt } } estimate: fieldValueByName(name: "Estimate") { ... on ProjectV2ItemFieldNumberValue { number } } progress: fieldValueByName(name: "Progress") { ... on ProjectV2ItemFieldTextValue { text } } content { __typename ... on Issue { number state title author { __typename login ... on User { databaseId } ... on Bot { databaseId } } repository { nameWithOwner owner { login } } assignees(first: 10) { nodes { login } } } ... on PullRequest { number state title author { __typename login ... on User { databaseId } ... on Bot { databaseId } } repository { nameWithOwner owner { login } } assignees(first: 10) { nodes { login } } } } } pageInfo { hasNextPage endCursor } } } } }`,
+            `query WatchBoard($owner: String!, $number: Int!, $cursor: String) { organization(login: $owner) { projectV2(number: $number) { id readme items(first: 100, after: $cursor, query: "-status:Done") { nodes { id status: fieldValueByName(name: "Status") { ... on ProjectV2ItemFieldSingleSelectValue { name updatedAt } } estimate: fieldValueByName(name: "Estimate") { ... on ProjectV2ItemFieldNumberValue { number } } progress: fieldValueByName(name: "Progress") { ... on ProjectV2ItemFieldTextValue { text } } content { __typename ... on Issue { number state title author { __typename login ... on User { databaseId } ... on Bot { databaseId } } repository { nameWithOwner owner { login } } assignees(first: 10) { nodes { login } } } ... on PullRequest { number state title headRefOid reviews(last: 100) { nodes { id state commit { oid } author { ${actorFields} } } } author { __typename login ... on User { databaseId } ... on Bot { databaseId } } repository { nameWithOwner owner { login } } assignees(first: 10) { nodes { login } } } } } pageInfo { hasNextPage endCursor } } } } }`,
             { owner, number, cursor }
           )
         );
@@ -2179,6 +2229,16 @@ export class EventLoop {
     }
     const estimate = object(node.estimate).number;
     return {
+      ownerReview: this.list(object(content.reviews).nodes)
+        .filter(
+          (review) =>
+            this.host.filter.identity(review.author)?.role === "owner" &&
+            object(review.commit).oid === content.headRefOid &&
+            ["APPROVED", "CHANGES_REQUESTED", "COMMENTED"].includes(str(review.state))
+        )
+        .map((review) => str(review.id))
+        .filter(Boolean)
+        .at(-1),
       id: str(node.id),
       repo: scope.repo,
       number,
@@ -2233,6 +2293,17 @@ export class EventLoop {
         remember();
         return;
       }
+      if (
+        this.host.filter.identity(event.actor)?.role === "owner" &&
+        ["owner-review", "owner-question"].includes(parseProgress(card.progress).state ?? "")
+      ) {
+        this.queueProgress(card.number, { state: "verifying" });
+        for (const [pr, issues] of this.taskIssues) {
+          if (issues.includes(card.number)) {
+            this.queueProgress(pr, { state: "verifying" });
+          }
+        }
+      }
       this.emit(
         `owner-done-${card.id}@${key(`${old}>${next}`)}`,
         "owner-done",
@@ -2249,13 +2320,16 @@ export class EventLoop {
       return true;
     }
     const remember = () => atomicWrite(path, `${card.column}\n`);
-    if (card.column === "Approved") {
-      this.queueProgress(card.number, { state: null });
-    }
-    if (card.column === "Done" || card.state === "CLOSED" || card.state === "MERGED") {
-      this.queueProgress(card.number, { state: null, round: null, ci: "ok" });
-    }
+    const progress = () => {
+      if (card.column === "Approved") {
+        this.queueProgress(card.number, { state: "verifying" });
+      }
+      if (card.column === "Done" || card.state === "CLOSED" || card.state === "MERGED") {
+        this.queueProgress(card.number, { state: null, round: null, ci: "ok" });
+      }
+    };
     if (this.firstRun || migration) {
+      progress();
       remember();
       return true;
     }
@@ -2283,6 +2357,7 @@ export class EventLoop {
       return false;
     }
     card.columnAt = str(status.updatedAt);
+    progress();
     if (this.ownBoardMove(card)) {
       this.cycleOwnMoves.add(card.id);
       remember();
@@ -2402,11 +2477,109 @@ export class EventLoop {
       } else if (text !== card.progress) {
         await this.host.board.set({ itemId: card.id, field: "Progress", value: text || null });
       }
+      card.progress = text;
       remove(path);
     } catch (error) {
       this.host.deps.report(
         `watcher: Progress update failed for #${card.number}: ${(error as Error).message}`
       );
+    }
+  }
+
+  private async reconcileTurn(card: CardInfo, report = true): Promise<void> {
+    const state = parseProgress(card.progress).state;
+    const role =
+      state === "owner-review" || state === "owner-question"
+        ? "owner"
+        : ["ready", "question", "blocked", "verifying", "design", "handoff"].includes(state ?? "")
+          ? "orchestrator"
+          : state === "working"
+            ? null
+            : undefined;
+    const next =
+      role === undefined
+        ? undefined
+        : turnAssignees(this.host.filter.people, card.repo, card.assignees, role);
+    const mismatch = next && [...next].sort().join(",") !== [...card.assignees].sort().join(",");
+    if (report && ((card.column === "In review" && card.assignees.length !== 1) || mismatch)) {
+      this.produceOnce(
+        `turn-${card.id}@${key(`${card.column}:${card.progress}:${card.assignees.join(",")}`)}`,
+        "board-violation",
+        `BOARD VIOLATION #${card.number}: ${card.column === "In review" && !card.assignees.length ? "In review with no assignee" : "Progress and assignee mismatch"} ${this.threadUrl(card.repo, card.number, card.kind)}`
+      );
+    }
+    if (next && mismatch) {
+      await setTurn(this.host.github, card.repo, card.number, card.assignees, next);
+      card.assignees = next;
+    }
+    if (state === "working" && card.column === "In review") {
+      await this.host.board.set({
+        itemId: card.id,
+        field: "Status",
+        value: "In progress",
+        progress: card.progress,
+      });
+      card.column = "In progress";
+    }
+  }
+
+  private async mirrorOwnerTurns(cards: CardInfo[]): Promise<void> {
+    const mirrors = new Map<number, string>();
+    for (const [pr, issues] of this.taskIssues) {
+      if (!this.inScope(pr)) {
+        continue;
+      }
+      const task = cards.find(
+        (card) => this.isOwn(card.repo) && card.number === pr && card.kind === "PR"
+      );
+      if (!task) {
+        continue;
+      }
+      const owner = ["owner-review", "owner-question"].includes(
+        parseProgress(task.progress).state ?? ""
+      );
+      for (const number of issues) {
+        if (!mirrors.has(number) || owner) {
+          mirrors.set(number, owner ? task.progress : "");
+        }
+      }
+    }
+    for (const [number, text] of mirrors) {
+      const owner = Boolean(text);
+      const issue = cards.find(
+        (card) => this.isOwn(card.repo) && card.number === number && card.kind === "ISSUE"
+      );
+      if (!issue || !this.inScope(number)) {
+        continue;
+      }
+      const mirrored = ["owner-review", "owner-question"].includes(
+        parseProgress(issue.progress).state ?? ""
+      );
+      if (!owner && !mirrored) {
+        continue;
+      }
+      // Retain the owner-state marker until assignment succeeds, so a failed
+      // clear is discoverable and retried on the next board poll.
+      const next = turnAssignees(
+        this.host.filter.people,
+        issue.repo,
+        issue.assignees,
+        owner ? "owner" : null
+      );
+      await setTurn(this.host.github, issue.repo, issue.number, issue.assignees, next);
+      issue.assignees = next;
+      if (!owner && issue.column === "In review") {
+        await this.host.board.set({
+          itemId: issue.id,
+          field: "Status",
+          value: "In progress",
+          progress: null,
+        });
+        issue.column = "In progress";
+      } else if (issue.progress !== text) {
+        await this.host.board.set({ itemId: issue.id, field: "Progress", value: text || null });
+      }
+      issue.progress = text;
     }
   }
 

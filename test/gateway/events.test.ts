@@ -29,6 +29,146 @@ import { people } from "./helpers.js";
 import recordedActions from "../fixtures/github/watch-actions.json" with { type: "json" };
 import recordedComment from "../fixtures/github/review-comment.json" with { type: "json" };
 import { GitHubClient } from "../../src/gateway/client.js";
+import ownerReviews from "../fixtures/github/owner-reviews.json" with { type: "json" };
+import orchestratorReviews from "../fixtures/github/orchestrator-reviews.json" with { type: "json" };
+
+test("clearing an owner mirror retries an assignment failure without losing the mirror", async () => {
+  const f = setup();
+  f.task();
+  f.pulls[0].body = '<!-- vmethod-task {"issues":[6]} -->';
+  f.cards[0].progress = { text: "👤❓" };
+  object(f.cards[0].content).assignees = { nodes: [{ login: "owner" }] };
+  f.cards.push(f.card(6, "In progress"));
+  const loop = f.loop();
+  await f.once(loop);
+  const fetch = f.deps.fetch;
+  f.deps.fetch = async (input, init) => {
+    if (String(input).endsWith("/issues/6/assignees") && init?.method === "DELETE") {
+      throw new Error("injected assignment failure");
+    }
+    return fetch(input, init);
+  };
+  f.advance();
+  f.comment("My answer", 0);
+  await f.once(loop);
+  expect(f.reports.length).toBeGreaterThan(0);
+  expect(f.reports.every((report) => report.startsWith("watcher: board failed:"))).toBe(true);
+  f.deps.fetch = fetch;
+  f.advance();
+  await f.once(loop);
+  expect(object(f.cards[1].progress).text).toBeNull();
+  expect(object(object(f.cards[1].content).assignees).nodes).toEqual([]);
+});
+
+test.each(["old head", "untrusted author", "orchestrator", "historical"])(
+  "recorded reviews do not hand off an owner wait for %s",
+  async (scenario) => {
+    const f = setup();
+    f.task();
+    const pr = f.cards[0];
+    pr.progress = { text: "👤🔍" };
+    object(pr.content).assignees = { nodes: [{ login: "owner" }] };
+    const recorded = structuredClone(ownerReviews.repository.pullRequest);
+    recorded.reviews.nodes[0].author = { login: "owner", databaseId: 101, __typename: "User" };
+    if (scenario === "historical") {
+      Object.assign(object(pr.content), recorded);
+    }
+    const loop = f.loop();
+    await f.tick(loop);
+    f.advance();
+    if (scenario === "old head") {
+      recorded.headRefOid = sha;
+    }
+    if (scenario === "untrusted author") {
+      recorded.reviews.nodes[0].author.databaseId = 9999;
+    }
+    if (scenario === "orchestrator") {
+      const peer = structuredClone(orchestratorReviews.repository.pullRequest);
+      peer.headRefOid = peer.reviews.nodes[0].commit.oid;
+      peer.reviews.nodes.forEach((review) => {
+        review.author = { login: "peer", databaseId: 103, __typename: "User" };
+      });
+      Object.assign(object(pr.content), peer);
+    } else {
+      Object.assign(object(pr.content), recorded);
+    }
+    expect((await f.tick(loop)).some((event) => event.kind === "owner-review")).toBe(false);
+    expect(object(pr.progress).text).toBe("👤🔍");
+    expect(object(object(pr.content).assignees).nodes).toEqual([{ login: "owner" }]);
+    expect(f.reports).toEqual([]);
+  }
+);
+
+test.each(["READY", "QUESTION", "BLOCKED"])(
+  "worker %s takes the turn from owner and clears the issue mirror",
+  async (tag) => {
+    const f = setup();
+    f.task();
+    f.pulls[0].body = '<!-- vmethod-task {"issues":[6]} -->';
+    const pr = f.cards[0];
+    pr.progress = { text: "👤❓" };
+    object(pr.content).assignees = { nodes: [{ login: "owner" }] };
+    f.cards.push(f.card(6, "In progress"));
+    const loop = f.loop();
+    await f.tick(loop);
+    expect(object(f.cards[1].progress).text).toBe("👤❓");
+    expect(object(object(f.cards[1].content).assignees).nodes).toEqual([{ login: "owner" }]);
+    f.advance();
+    f.comment(`[worker] ${tag} (round 2)`);
+    await f.tick(loop);
+    expect(object(object(pr.content).assignees).nodes).toEqual([{ login: "peer" }]);
+    expect(object(pr.progress).text).toContain(
+      tag === "READY" ? "🤖👍" : tag === "QUESTION" ? "🤖❓" : "🤖🚫"
+    );
+    expect(object(f.cards[1].progress).text).toBeNull();
+    expect(object(object(f.cards[1].content).assignees).nodes).toEqual([]);
+    expect(f.reports).toEqual([]);
+  }
+);
+
+test("unassigned In review is reported, and unambiguous wrong assignments are repaired", async () => {
+  const f = setup();
+  f.cards = [f.card(6, "In review"), f.card(24, "In review", "PullRequest")];
+  f.cards[1].progress = { text: "🤖👍" };
+  object(f.cards[1].content).assignees = { nodes: [{ login: "owner" }, { login: "worker" }] };
+  const events = await f.tick(f.loop());
+  expect(events.filter((event) => event.kind === "board-violation")).toHaveLength(2);
+  expect(events.some((event) => event.line.includes("In review with no assignee"))).toBe(true);
+  expect(object(object(f.cards[1].content).assignees).nodes).toEqual([{ login: "peer" }]);
+});
+
+test.each(["reply", "issue reply", "approval"])(
+  "owner %s returns the PR and issue turn to the orchestrator",
+  async (kind) => {
+    const f = setup();
+    f.task();
+    f.pulls[0].body = '<!-- vmethod-task {"issues":[6]} -->';
+    const pr = f.cards[0];
+    pr.progress = { text: "👤🔍" };
+    object(pr.content).assignees = { nodes: [{ login: "owner" }] };
+    f.cards.push(f.card(6, "In progress"));
+    const loop = f.loop();
+    await f.tick(loop);
+    f.advance();
+    if (kind === "reply" || kind === "issue reply") {
+      const comment = f.comment("My answer", 0);
+      if (kind === "issue reply") {
+        comment.issue_url = "https://api.github.com/repos/example/project/issues/6";
+        comment.html_url = "https://github.com/example/project/issues/6#issuecomment-1";
+      }
+    } else {
+      const recorded = structuredClone(ownerReviews.repository.pullRequest);
+      recorded.reviews.nodes[0].author = { login: "owner", databaseId: 101, __typename: "User" };
+      Object.assign(object(pr.content), recorded);
+    }
+    await f.tick(loop);
+    expect(object(pr.progress).text).toContain("🧭🔍");
+    expect(object(object(pr.content).assignees).nodes).toEqual([{ login: "peer" }]);
+    expect(object(f.cards[1].progress).text).toBeNull();
+    expect(object(object(f.cards[1].content).assignees).nodes).toEqual([]);
+    expect(f.reports).toEqual([]);
+  }
+);
 
 test("a closed card held in Backlog across three polls is noted only once", async () => {
   const f = setup();
@@ -252,6 +392,8 @@ test.each(["live", "backfill", "pending", "quiet", "restart-pending", "restart-q
 test("an older in-flight board listing cannot turn a completed Done write into Done → In review", async () => {
   const f = setup();
   f.cards = [f.card(24, "In review", "PullRequest")];
+  f.cards[0].progress = { text: "🤖👍" };
+  object(f.cards[0].content).assignees = { nodes: [{ login: "peer" }] };
   const loop = f.loop();
   await f.tick(loop);
   f.advance();
@@ -433,6 +575,8 @@ test.each(["self", "owner", "sibling"])(
 test("a discarded snapshot does not swallow the later real move to a third column", async () => {
   const f = setup();
   f.cards = [f.card(24, "In review", "PullRequest")];
+  f.cards[0].progress = { text: "🤖👍" };
+  object(f.cards[0].content).assignees = { nodes: [{ login: "peer" }] };
   const loop = f.loop();
   await f.tick(loop);
   f.advance();
@@ -746,6 +890,7 @@ test("own remembered moves and migration-stamped changes stay quiet", async () =
   f.advance();
   object(f.cards[0].status).name = "In review";
   writeFileSync(join(f.dir, "board", "PVTI_6"), "In review\n");
+  object(f.cards[0].content).assignees = { nodes: [{ login: "owner" }] };
   expect(await f.tick(loop)).toEqual([]);
   f.readme = writeState(
     "",

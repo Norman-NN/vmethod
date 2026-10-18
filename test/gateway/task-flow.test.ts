@@ -52,8 +52,9 @@ test.each(
       w.enableWrites = true;
       w.watchPeople = [
         ...w.watchPeople,
-        { login: "me", id: 999, type: "User", role: "orchestrator" },
+        { login: "me", id: 999, type: "User", role: "orchestrator", repos: ["example/project"] },
       ];
+      f.host.people = w.watchPeople;
       w.root = f.root;
       w.config = { ...f.config, board: w.config.board, vmethod: { repo: "off" } };
       w.env = { ...w.env, ...f.env };
@@ -178,6 +179,14 @@ test.each(
       }
       w.advance();
       w.clock += 668;
+      if (["review changes", "review answer", "review approve"].includes(verb)) {
+        for (const card of w.cards) {
+          card.progress = { text: "👤🔍" };
+          object(card.content).assignees = { nodes: [{ login: "owner" }] };
+        }
+        object(w.cards.find((card) => object(card.content).number === 27)!.status).name =
+          "In review";
+      }
       if (verb === "open-task") {
         await taskFlowVerb(transport, verb, ["8", "--model", "sol"], commandEnv);
       } else if (verb === "merge-task") {
@@ -194,6 +203,31 @@ test.each(
         await taskFlowVerb(transport, "review", ["27", verb.split(" ")[1], file], commandEnv);
       }
       const events = await once();
+      if (verb.startsWith("review ")) {
+        const ownerTurn = ["review owner", "review ask"].includes(verb);
+        const prCard = w.cards.find((card) => object(card.content).number === 27)!;
+        const issueCard = w.cards.find((card) => object(card.content).number === 8)!;
+        expect(object(object(prCard.content).assignees).nodes).toEqual(
+          ownerTurn ? [{ login: "owner" }] : verb === "review approve" ? [{ login: "me" }] : []
+        );
+        expect(object(object(issueCard.content).assignees).nodes).toEqual(
+          ownerTurn ? [{ login: "owner" }] : []
+        );
+        expect(object(issueCard.progress).text).toBe(
+          ownerTurn ? (verb === "review ask" ? "👤❓" : "👤🔍") : null
+        );
+        expect(object(prCard.progress).text ?? "").toBe(
+          verb === "review changes"
+            ? "🤖🔨 🔁1️⃣"
+            : verb === "review answer"
+              ? "🤖🔨"
+              : verb === "review owner"
+                ? "👤🔍"
+                : verb === "review ask"
+                  ? "👤❓"
+                  : "🧭🔍"
+        );
+      }
       if (identity !== "self") {
         expect(events.map((event) => event.kind)).toContain(
           verb === "open-task" ? "owner-done" : verb === "merge-task" ? "button-merge" : "comment"
@@ -375,7 +409,10 @@ function fixture() {
         [issueNumber, 27].some((n) => path === `/repos/example/project/issues/${n}`)
       ) {
         data = { assignees: [] };
-      } else if (method === "POST" && path === "/repos/example/project/issues/27/assignees") {
+      } else if (
+        method === "POST" &&
+        /^\/repos\/example\/project\/issues\/(8|27)\/assignees$/.test(path)
+      ) {
         data = {};
       } else if (method === "PATCH" && path === `/repos/example/project/issues/${issueNumber}`) {
         issueClosed = true;
@@ -596,6 +633,64 @@ function fixture() {
     done: () => expect(unexpected).toEqual([]),
   };
 }
+
+test.each(["owner", "ask"] as const)(
+  "review %s mirrors the owner's turn on the issue",
+  async (outcome) => {
+    const f = fixture();
+    const file = join(f.root, "review.md");
+    writeFileSync(file, "Please decide.\n");
+    await f.flow().review({ ref: "27", outcome, file });
+    expect(f.touched).toContainEqual(
+      expect.objectContaining({
+        id: "issue",
+        field: "Progress",
+        value: outcome === "ask" ? "👤❓" : "👤🔍",
+      })
+    );
+    expect(f.writes).toContainEqual({
+      path: "/repos/example/project/issues/8/assignees",
+      body: { assignees: ["owner"] },
+    });
+    if (outcome === "ask") {
+      expect(f.writes.find((write) => write.path.endsWith("/comments"))?.body.body).toMatch(
+        /^\[orchestrator\] OWNER QUESTION/
+      );
+    }
+    f.done();
+  }
+);
+
+test.each([false, true])(
+  "issue ask refuses a live task (%s) and otherwise tracks the owner",
+  async (live) => {
+    const f = fixture();
+    const original = f.deps.fetch;
+    f.deps.fetch = async (input, init) =>
+      new URL(String(input)).pathname === "/repos/example/project/pulls"
+        ? Response.json(live ? [{ body: '<!-- vmethod-task {"issues":[8]} -->' }] : [])
+        : original(input, init);
+    const file = join(f.root, "question.md");
+    writeFileSync(file, "A decision?\n");
+    if (live) {
+      await expect(f.flow().ask("8", file)).rejects.toThrow("use review <pr> ask");
+      expect(f.touched).toEqual([]);
+    } else {
+      await f.flow().ask("8", file);
+      expect(f.touched).toContainEqual(
+        expect.objectContaining({ id: "issue", field: "Progress", value: "👤❓" })
+      );
+      expect(f.writes).toContainEqual({
+        path: "/repos/example/project/issues/8/assignees",
+        body: { assignees: ["owner"] },
+      });
+      expect(f.writes.find((write) => write.path.endsWith("/comments"))?.body.body).toMatch(
+        /^\[orchestrator\] OWNER QUESTION/
+      );
+    }
+    f.done();
+  }
+);
 
 test.each([
   ["bug: merge-task markers", "fix: merge-task markers"],

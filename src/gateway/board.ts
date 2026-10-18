@@ -4,6 +4,7 @@ import type { Config } from "../config.js";
 import { compatibility, readState } from "../board/readme.js";
 import { MigrationRunner } from "../board/runner.js";
 import { loadMigrations } from "../board/migrations.js";
+import { progressStates } from "../board/progress.js";
 import type {
   BoardIO,
   Card,
@@ -431,33 +432,58 @@ export class BoardService implements BoardIO {
     await this.setChanges(snapshot.id, changes);
     return "Board field updated";
   }
-  /** Set a single-select/number field by issue content ID on the configured board only.
+  /** Set a single-select/number field or validated Progress by issue content ID.
+   * A null value clears only Progress or Estimate through the native field-clear mutation.
    * Estimates must use the shared points scale. Cost is refused. Status writes clear Progress;
    * GitHubClient journals the successful mutations.
    */
-  async setIssueField(contentId: string, name: string, value: string): Promise<string> {
+  async setIssueField(contentId: string, name: string, value: string | null): Promise<string> {
     if (name === "Cost") {
       throw new Error("Never set Cost on an issue");
     }
-    if (typeof name !== "string" || !name || typeof value !== "string" || !value.trim()) {
+    if (
+      typeof name !== "string" ||
+      !name ||
+      (value !== null && (typeof value !== "string" || !value.trim()))
+    ) {
       throw new Error("Invalid board field/value");
+    }
+    if (value === null && !["Progress", "Estimate"].includes(name)) {
+      throw new Error("Only Progress and Estimate support --clear");
     }
     const snapshot = await this.snapshot();
     compatibility(readState(snapshot.readme), this.boardVersion, this.report);
     const field = snapshot.fields.find((field) => field.name === name);
-    if (!field || !["number", "single_select"].includes(field.type)) {
-      throw new Error("Expected a single-select or number board field");
+    if (
+      !field ||
+      (!["number", "single_select"].includes(field.type) &&
+        !(name === "Progress" && field.type === "text"))
+    ) {
+      throw new Error("Expected a single-select or number board field, or Progress");
+    }
+    if (name === "Progress" && value !== null) {
+      const states = new Set([
+        ...Object.values(progressStates),
+        ...Object.values(readState(snapshot.readme).aliases),
+      ]);
+      const words = value.trim().split(/\s+/);
+      if (
+        !states.has(words[0]) ||
+        !/^(?:🔁(?:\d\uFE0F\u20E3)+(?: 🔴)?|🔴)?$/.test(words.slice(1).join(" "))
+      ) {
+        throw new Error("Invalid Progress value");
+      }
     }
     const card = (await this.cards(snapshot.id)).find((card) => card.contentId === contentId);
     if (!card || card.kind !== "Issue") {
       throw new Error("Issue is not on configured board");
     }
     this.scope(card);
-    let parsed: string | number = value;
-    if (name === "Estimate") {
+    let parsed: string | number | null = value;
+    if (name === "Estimate" && value !== null) {
       assertEstimate(value.trim() ? Number(value) : NaN);
     }
-    if (field.type === "number") {
+    if (field.type === "number" && value !== null) {
       if (
         !/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(value) ||
         !Number.isFinite(Number(value))

@@ -501,7 +501,7 @@ class GatewayServer {
   };
   boardItem: Handlers["boardItem"] = async ({ itemId }) => this.board.item(itemId);
   boardSet: Handlers["boardSet"] = async (input) => this.board.set(input);
-  /** Set a numeric/select field on an accepted own-repository issue already on our board. */
+  /** Set an issue board field, or clear Progress/Estimate with a null value. */
   boardSetIssue: Handlers["boardSetIssue"] = async ({ ref, field, value }) => {
     this.localNumber(ref);
     const issue = await this.flowThread(ref, "issue");
@@ -660,6 +660,7 @@ class GatewayServer {
   }
   openTask: Handlers["openTask"] = async (input) => this.flow.open(input);
   reviewTask: Handlers["reviewTask"] = async (input) => this.flow.review(input);
+  askIssue: Handlers["askIssue"] = async (input) => this.flow.ask(input.ref, input.file);
   mergeTask: Handlers["mergeTask"] = async (input) =>
     this.flow.merge(input.ref, input.mergeCommit, input.carryApproval);
   linkTask: Handlers["linkTask"] = async (input) =>
@@ -1502,6 +1503,7 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     workerAccess: server.workerAccess,
     openTask: server.openTask,
     reviewTask: server.reviewTask,
+    askIssue: server.askIssue,
     mergeTask: server.mergeTask,
     linkTask: server.linkTask,
     releaseHold: server.releaseHold,
@@ -1540,6 +1542,7 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     workerAccess: ["worker", "orchestrator"],
     openTask: ["orchestrator"],
     reviewTask: ["orchestrator"],
+    askIssue: ["orchestrator"],
     mergeTask: ["orchestrator"],
     linkTask: ["orchestrator"],
     releaseHold: ["orchestrator"],

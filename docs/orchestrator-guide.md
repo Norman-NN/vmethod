@@ -30,6 +30,14 @@ workers only implement agreed specs.
   it (`#n`) instead.
 - Use chat for coordination across items, never as a parallel record of decisions.
 
+Ask owner questions only with `vmethod review <pr> ask .tmp/question.md`.
+For an issue without an open task PR, use `vmethod ask <issue> .tmp/question.md`.
+These commands post OWNER QUESTION, assign the owner and set `👤❓`; a PR wait
+also appears on its linked issue. A question asked in chat is not tracked.
+Never leave an In review card unassigned: the assignee is exactly whose move it
+is. Review commands and the watcher maintain this invariant and report ambiguous
+or mismatched board state rather than relying on your memory.
+
 For try-out or playtest handover, use the owner's own form: plain run commands,
 every switch expressed as a runtime environment variable, and one log line that
 distinguishes “switch not set” from “stale image”. Keep concrete commands, variable
