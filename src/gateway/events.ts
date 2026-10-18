@@ -1773,17 +1773,27 @@ export class EventLoop {
         this.touchActivity(number, created);
         this.rememberWorkerPrompt(number, firstLine, created, url);
       }
-      if (own && /^\[orchestrator\] (?:ANSWER|GO)\b/.test(firstLine)) {
+      // Separate from delivery acknowledgement: even journaled own comments
+      // must apply Progress once, but never replay it over a later human move.
+      const progressKey = `c-${key(`progress:${url}`)}`;
+      if (own && !this.marked(progressKey) && /^\[orchestrator\] (?:ANSWER|GO)\b/.test(firstLine)) {
         this.queueProgress(number, {
           state: taskPr ? "working" : null,
           ...(taskPr ? { status: "In progress" } : {}),
         });
+        this.mark(progressKey);
       }
-      if (own && !edited && /^\[orchestrator\] OWNER (?:QUESTION|REVIEW)\b/.test(firstLine)) {
+      if (
+        own &&
+        !edited &&
+        !this.marked(progressKey) &&
+        /^\[orchestrator\] OWNER (?:QUESTION|REVIEW)\b/.test(firstLine)
+      ) {
         this.queueProgress(number, {
           state: firstLine.includes("QUESTION") ? "owner-question" : "owner-review",
           ...(taskPr ? { status: "In review" } : {}),
         });
+        this.mark(progressKey);
       }
       if (selfWrite) {
         return;

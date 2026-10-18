@@ -373,7 +373,10 @@ session's gateway write journal match.
 System check runs update structured red-CI state, never expose free text.
 
 Cursor-based comment and subscribed-issue listings overlap the previous cursor by
-ten minutes to catch delayed indexing. Comment/new-item markers dedupe
+ten minutes to catch delayed indexing. Own ANSWER, GO, OWNER REVIEW and OWNER
+QUESTION comments apply their Progress/Status change once per comment, independently
+of notification delivery, so rereads cannot overwrite a later human board move.
+Comment/new-item markers dedupe
 the overlap and expire after twelve minutes relative to a successfully advanced
 cursor (ten minutes plus a two-minute margin). Initial baselines still suppress
 pre-existing history; pending unacknowledged events are retained independently.
