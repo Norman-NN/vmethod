@@ -506,6 +506,7 @@ class GatewayServer {
           ),
           github: this.github,
           workerStatus: (pr) => this.workers.watchStatus(pr),
+          workerSend: (pr, text) => this.workers.resume(pr, text),
           board: { set: (input) => this.board.set(input) },
           digest: this.digest,
         },

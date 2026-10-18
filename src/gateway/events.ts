@@ -79,6 +79,7 @@ export interface LoopHost {
   filter: PeopleFilter;
   github: GitHubClient;
   workerStatus: (pr: number) => Promise<WorkerSessionStatus>;
+  workerSend?: (pr: number, text: string) => Promise<void>;
   board: Pick<BoardService, "set">;
   digest: Digest;
 }
@@ -2728,12 +2729,13 @@ export class EventLoop {
     const prompt = object(safeJson(this.readMarker(`worker-prompt-${number}`)));
     const review = this.readReview(number);
     const at = str(prompt.at) || review?.at;
-    const activity = this.activityAt(number);
-    if (
-      status.reason === "idle without reply" ||
-      (status.reason === "idle" && at && activity && activity <= at)
-    ) {
-      return { state: "idle", detail: str(prompt.id) || review?.id };
+    const protocolReply = object(safeJson(this.readMarker(`worker-protocol-${number}`)));
+    const hasReply =
+      protocolReply.role === "worker" &&
+      ["READY", "QUESTION", "BLOCKED", "DESIGN", "HANDOFF"].includes(str(protocolReply.tag)) &&
+      str(protocolReply.at) >= (at ?? "");
+    if ((status.reason === "idle without reply" || status.reason === "idle") && !hasReply) {
+      return { state: "idle", detail: str(prompt.id) || review?.id || status.updated?.toString() };
     }
     return { state: "other" };
   }
@@ -2754,18 +2756,23 @@ export class EventLoop {
     }
   }
 
-  /** Persist the newest verified, unedited protocol turn, independently of activity/CI. */
+  /** Persist the newest verified worker reply tag, independently of activity/CI. */
   private rememberWorkerProtocol(number: number, comment: ObjectData): void {
     const at = str(comment.created_at);
-    if (!at || at !== str(comment.updated_at)) {
+    if (!at) {
       return;
     }
     const person = this.host.filter.identity(restActor(comment.user));
     const role = this.isSelf(comment) ? "orchestrator" : person?.role;
+    if (at !== str(comment.updated_at)) {
+      return;
+    }
     const first = str(comment.body).split(/\r?\n/)[0];
     let active: boolean;
+    let workerTag: string | undefined;
     if (role === "worker") {
-      active = !/^\[worker\] (?:BLOCKED|QUESTION|READY|DESIGN|HANDOFF)\b/.test(first);
+      workerTag = /^\[worker\] (READY|QUESTION|BLOCKED|DESIGN|HANDOFF)\b/.exec(first)?.[1];
+      active = !workerTag;
     } else if (
       role === "orchestrator" &&
       /^\[orchestrator\] (?:REVIEW|CHANGES|ANSWER|AMENDMENT|GO)\b/.test(first)
@@ -2781,7 +2788,10 @@ export class EventLoop {
     }
     const previous = object(safeJson(this.readMarker(`worker-protocol-${number}`)));
     if (at >= str(previous.at)) {
-      this.writeMarker(`worker-protocol-${number}`, JSON.stringify({ at, active }));
+      this.writeMarker(
+        `worker-protocol-${number}`,
+        JSON.stringify({ at, active, role, ...(workerTag ? { tag: workerTag } : {}) })
+      );
       this.touchActivity(number, at);
     }
   }
@@ -2854,8 +2864,9 @@ export class EventLoop {
       }
       let status: WorkerStatus;
       let updated: number | undefined;
+      let recorded: WorkerSessionStatus;
       try {
-        const recorded = await this.readWorkerStatus(pr.number);
+        recorded = await this.readWorkerStatus(pr.number);
         if (recorded.prCost) {
           costs.set(pr.number, recorded.prCost.usd);
         }
@@ -2916,12 +2927,23 @@ export class EventLoop {
           });
         }
       } else if (status.state === "idle") {
-        this.emit(
-          `w-${pr.number}@${this.host.deps.now()}`,
-          "worker",
-          `WORKER #${pr.number} (${pr.branch}): stopped without reply; send it a nudge ${url}`
-        );
-        this.queueProgress(pr.number, { state: "idle", if: ["working", "silent"] });
+        const prompt = object(safeJson(this.readMarker(`worker-prompt-${pr.number}`)));
+        const round = str(prompt.id) || "unknown";
+        const count = Number(this.readMarker(`worker-checkin-${pr.number}-${key(round)}`) || 0);
+        if (count < 2 && this.host.workerSend) {
+          await this.host.workerSend(
+            pr.number,
+            `[orchestrator] CHECK-IN: your turn ended without a status comment on the PR. Post exactly one of READY, QUESTION, BLOCKED or DESIGN on PR #${pr.number} with \`vmethod pr-comment\`. If you are not done, finish only the remaining acceptance steps first, adding no new scope. If you are unsure or stuck, post QUESTION or BLOCKED and stop.`
+          );
+          this.writeMarker(`worker-checkin-${pr.number}-${key(round)}`, String(count + 1));
+        } else {
+          this.emit(
+            `w-${pr.number}@${this.host.deps.now()}`,
+            "worker",
+            `WORKER #${pr.number}: stopped without reply; send it a nudge ${url}`
+          );
+          this.queueProgress(pr.number, { state: "idle", if: ["working", "silent"] });
+        }
       }
       atomicWrite(stopPath, `${stop}\n`);
     }
