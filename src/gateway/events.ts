@@ -2541,19 +2541,8 @@ export class EventLoop {
       remember();
       return true;
     }
-    const result = object(
-      await this.host.github.graphql(
-        `query WatchBoardCurrent($id: ID!) { node(id: $id) { ... on ProjectV2Item { status: fieldValueByName(name: "Status") { ... on ProjectV2ItemFieldSingleSelectValue { name updatedAt } } } } }`,
-        { id: card.id }
-      )
-    );
-    if (
-      !Object.hasOwn(result, "node") ||
-      (result.node !== null && !Object.hasOwn(object(result.node), "status"))
-    ) {
-      throw new Error("Missing current board value");
-    }
-    const current = object(result.node);
+    const queueMove = Boolean(old) && ["Backlog", "Ready"].includes(card.column);
+    const { current, events } = await this.currentBoard(card, queueMove);
     const status = object(current.status);
     // An archived/deleted card is no longer evidence of a current move either.
     if (str(status.name) !== card.column) {
@@ -2571,16 +2560,16 @@ export class EventLoop {
       remember();
       return true;
     }
-    // A person's move back to the queue cancels the previous turn. Keep worker
-    // assignments, and use journalled writes so cleanup is not an owner reply.
-    if (card.column === "Backlog" || card.column === "Ready") {
+    // Only an authenticated person's newer move cancels a turn, not a gateway
+    // move or a question asked after the move but before this poll observed it.
+    if (queueMove && this.queueMoveCancelsTurn(card, current, events)) {
+      const next = turnAssignees(this.host.filter.people, card.repo, card.assignees, null);
+      await setTurn(this.host.github, card.repo, card.number, card.assignees, next);
+      card.assignees = next;
       if (card.progress) {
         await this.host.board.set({ itemId: card.id, field: "Progress", value: null });
         card.progress = "";
       }
-      const next = turnAssignees(this.host.filter.people, card.repo, card.assignees, null);
-      await setTurn(this.host.github, card.repo, card.number, card.assignees, next);
-      card.assignees = next;
     }
     const url = this.threadUrl(card.repo, card.number, card.kind);
     const preview = this.previewText(card.person, card.title);
@@ -2614,6 +2603,101 @@ export class EventLoop {
     );
     remember();
     return true;
+  }
+
+  /** Extend the existing changed-card re-read, paginating only queue-move evidence. */
+  private async currentBoard(
+    card: CardInfo,
+    turn: boolean
+  ): Promise<{ current: ObjectData; events: ObjectData[] }> {
+    const timeline = `timelineItems(first: 100, after: $cursor, itemTypes: [PROJECT_V2_ITEM_STATUS_CHANGED_EVENT, ASSIGNED_EVENT]) { nodes { __typename ... on ProjectV2ItemStatusChangedEvent { actor { ${actorFields} } status previousStatus createdAt project { number } } ... on AssignedEvent { createdAt assignee { ... on User { login } ... on Bot { login } } } } pageInfo { hasNextPage endCursor } }`;
+    const events: ObjectData[] = [];
+    const seen = new Set<string>();
+    let cursor: string | null = null;
+    for (let page = 0; page < PAGE_LIMIT; page++) {
+      const result = object(
+        await this.host.github.graphql(
+          `query WatchBoardCurrent($id: ID!, $turn: Boolean!, $cursor: String) { node(id: $id) { ... on ProjectV2Item { status: fieldValueByName(name: "Status") { ... on ProjectV2ItemFieldSingleSelectValue { name updatedAt } } progress: fieldValueByName(name: "Progress") @include(if: $turn) { ... on ProjectV2ItemFieldTextValue { text updatedAt } } content @include(if: $turn) { ... on Issue { ${timeline} } ... on PullRequest { ${timeline} } } } } }`,
+          { id: card.id, turn, cursor }
+        )
+      );
+      if (
+        !Object.hasOwn(result, "node") ||
+        (result.node !== null && !Object.hasOwn(object(result.node), "status"))
+      ) {
+        throw new Error("Missing current board value");
+      }
+      const current = object(result.node);
+      if (!turn || result.node === null) {
+        return { current, events };
+      }
+      const connection = object(object(current.content).timelineItems);
+      if (!Array.isArray(connection.nodes) || !Object.hasOwn(current, "progress")) {
+        throw new Error("Missing queue-move evidence");
+      }
+      events.push(...this.list(connection.nodes));
+      const info = object(connection.pageInfo);
+      if (info.hasNextPage === false) {
+        return { current, events };
+      }
+      if (
+        info.hasNextPage !== true ||
+        typeof info.endCursor !== "string" ||
+        seen.has(info.endCursor)
+      ) {
+        throw new Error("Invalid queue-move pagination cursor");
+      }
+      cursor = info.endCursor;
+      seen.add(cursor);
+    }
+    throw new Error("Queue-move pagination limit reached");
+  }
+
+  private queueMoveCancelsTurn(card: CardInfo, current: ObjectData, events: ObjectData[]): boolean {
+    const moves = events.filter(
+      (event) =>
+        event.__typename === "ProjectV2ItemStatusChangedEvent" &&
+        object(event.project).number === Number(object(this.host.config.board).number)
+    );
+    const time = (event: ObjectData) => Date.parse(str(event.createdAt));
+    if (moves.some((event) => !Number.isFinite(time(event)))) {
+      return false;
+    }
+    const latest = Math.max(...moves.map(time));
+    const move = moves.filter((event) => time(event) === latest);
+    if (
+      !move.length ||
+      latest !== Date.parse(card.columnAt) ||
+      move.some((event) => {
+        const person = this.host.filter.identity(event.actor);
+        return (
+          !person ||
+          !["owner", "collaborator"].includes(person.role) ||
+          person.type !== "User" ||
+          event.status !== card.column ||
+          !event.previousStatus ||
+          event.previousStatus === event.status
+        );
+      })
+    ) {
+      return false;
+    }
+    const progress = object(current.progress);
+    // Use the fresh value, never restore a listing's older question during reconciliation.
+    card.progress = str(progress.text);
+    if (current.progress !== null && !(Date.parse(str(progress.updatedAt)) < latest)) {
+      return false;
+    }
+    return !events.some(
+      (event) =>
+        event.__typename === "AssignedEvent" &&
+        this.host.filter.people.some(
+          (person) =>
+            ["owner", "orchestrator"].includes(person.role) &&
+            person.login.toLowerCase() === str(object(event.assignee).login).toLowerCase()
+        ) &&
+        !(time(event) < latest)
+    );
   }
 
   private ownBoardMove(card: CardInfo): boolean {

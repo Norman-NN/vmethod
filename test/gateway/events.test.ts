@@ -27,7 +27,8 @@ import { sha } from "./helpers.js";
 import { writeState } from "../../src/board/readme.js";
 import { createGateway } from "../../src/gateway/server.js";
 import { stringify } from "yaml";
-import { people } from "./helpers.js";
+import { actor, people } from "./helpers.js";
+import { scopeMove } from "./scope-fixture.js";
 import recordedActions from "../fixtures/github/watch-actions.json" with { type: "json" };
 import recordedComment from "../fixtures/github/review-comment.json" with { type: "json" };
 import { GitHubClient } from "../../src/gateway/client.js";
@@ -1077,8 +1078,9 @@ test.each(["Backlog", "Ready"])(
   "a person's move to %s clears the turn without cleanup event noise",
   async (column) => {
     const f = setup();
-    const card = f.card(6, "In review");
-    card.progress = { text: "👤❓ 🔁2️⃣ 🔴" };
+    const previousStatus = column === "Backlog" ? "Ready" : "In review";
+    const card = f.card(6, previousStatus);
+    card.progress = { text: "👤❓ 🔁2️⃣ 🔴", updatedAt: f.iso() };
     object(card.content).assignees = { nodes: [{ login: "owner" }] };
     f.cards = [card];
     const loop = f.loop();
@@ -1086,11 +1088,24 @@ test.each(["Backlog", "Ready"])(
     // The owner tables the question by moving only Status in the board UI.
     f.advance();
     card.status = { name: column, updatedAt: f.iso() };
+    f.boardTimeline[String(card.id)] = [
+      [
+        scopeMove({
+          actor: actor(0),
+          status: column,
+          previousStatus,
+          createdAt: f.iso(),
+          project: { number: 5 },
+        }),
+      ],
+    ];
     const events = await f.tick(loop);
     expect(events.filter((event) => event.kind !== "next").map((event) => event.kind)).toEqual([
       "board",
     ]);
-    expect(events.find((event) => event.kind === "board")?.line).toContain(`In review → ${column}`);
+    expect(events.find((event) => event.kind === "board")?.line).toContain(
+      `${previousStatus} → ${column}`
+    );
     expect(object(card.progress).text).toBeNull();
     expect(object(card.content).assignees).toEqual({ nodes: [] });
     await f.ack(loop, events);
@@ -1113,9 +1128,21 @@ test.each(["Backlog", "Ready"])(
     await f.tick(loop);
     f.advance();
     card.status = { name: column, updatedAt: f.iso() };
+    f.boardTimeline[String(card.id)] = [
+      [
+        scopeMove({
+          actor: actor(0),
+          status: column,
+          previousStatus: "In progress",
+          createdAt: f.iso(),
+          project: { number: 5 },
+        }),
+      ],
+    ];
+    card.progress = null;
     const events = await f.tick(loop);
     expect(object(card.content).assignees).toEqual({ nodes: [{ login: "worker" }] });
-    expect(object(card.progress).text).toBe("");
+    expect(object(card.progress).text).toBeUndefined();
     await f.ack(loop, events);
     expect((await f.tick(loop)).filter((event) => event.kind !== "next")).toEqual([]);
   }
@@ -1143,20 +1170,178 @@ test.each(["Backlog", "Ready"])(
   }
 );
 
+test.each(["Backlog", "Ready"])(
+  "an ask on %s with no subsequent move survives polling",
+  async (column) => {
+    const f = setup();
+    const card = f.card(6, column);
+    f.cards = [card];
+    const loop = f.loop();
+    await f.tick(loop);
+    f.advance();
+    // ask writes Progress and the owner assignment, without changing Status.
+    card.progress = { text: "👤❓", updatedAt: f.iso() };
+    object(card.content).assignees = { nodes: [{ login: "owner" }] };
+    expect(await f.tick(loop)).toEqual([]);
+    expect(object(card.progress).text).toBe("👤❓");
+    expect(object(card.content).assignees).toEqual({ nodes: [{ login: "owner" }] });
+    expect(f.writes).toEqual([]);
+    expect(f.reports).toEqual([]);
+  }
+);
+
+test.each(["later Progress", "same-second Progress", "later assignment"])(
+  "an ask after an owner move to Ready survives (%s)",
+  async (newer) => {
+    const f = setup();
+    const card = f.card(6, "Backlog");
+    card.progress = { text: "👤❓", updatedAt: f.iso() };
+    object(card.content).assignees = { nodes: [{ login: "owner" }] };
+    f.cards = [card];
+    const loop = f.loop();
+    await f.tick(loop);
+    f.advance();
+    card.status = { name: "Ready", updatedAt: f.iso() };
+    f.boardTimeline[String(card.id)] = [
+      [
+        scopeMove({
+          actor: actor(0),
+          status: "Ready",
+          previousStatus: "Backlog",
+          createdAt: f.iso(),
+          project: { number: 5 },
+        }),
+      ],
+    ];
+    // The listing can still carry the old turn; the current-item read must win.
+    f.boardSnapshot = structuredClone(f.cards);
+    if (newer === "later assignment") {
+      f.boardTimeline[String(card.id)][0].push({
+        ...recordedActions.timelineItems.nodes[0],
+        actor: actor(2),
+        assignee: { login: "owner" },
+        createdAt: f.iso(1_000),
+      });
+    } else {
+      card.progress = { text: "👤❓", updatedAt: f.iso(newer === "later Progress" ? 1_000 : 0) };
+    }
+    const events = await f.tick(loop);
+    expect(events.map((event) => event.kind)).toEqual(["board", "next"]);
+    expect(object(card.progress).text).toBe("👤❓");
+    expect(object(card.content).assignees).toEqual({ nodes: [{ login: "owner" }] });
+    expect(f.writes).toEqual([]);
+    await f.ack(loop, events);
+    f.boardSnapshot = null;
+    expect(await f.tick(loop)).toEqual([]);
+  }
+);
+
+test.each([
+  "orchestrator",
+  "worker",
+  "unverified",
+  "foreign project",
+  "missing event",
+  "missing time",
+])(
+  "a move to Ready without authenticated newer person evidence retains the turn (%s)",
+  async (scenario) => {
+    const f = setup();
+    const card = f.card(6, "Backlog");
+    card.progress = { text: "👤❓", updatedAt: f.iso() };
+    object(card.content).assignees = { nodes: [{ login: "owner" }] };
+    f.cards = [card];
+    const loop = f.loop();
+    await f.tick(loop);
+    f.advance();
+    card.status = { name: "Ready", updatedAt: f.iso() };
+    const event = scopeMove({
+      actor:
+        scenario === "orchestrator"
+          ? actor(2)
+          : scenario === "worker"
+            ? actor(1)
+            : scenario === "unverified"
+              ? { ...actor(0), databaseId: 987654 }
+              : actor(0),
+      status: "Ready",
+      previousStatus: "Backlog",
+      createdAt: f.iso(),
+      project: { number: scenario === "foreign project" ? 99 : 5 },
+    });
+    f.boardTimeline[String(card.id)] = scenario === "missing event" ? [[]] : [[event]];
+    if (scenario === "missing time") {
+      card.progress = { text: "👤❓" };
+    }
+    await f.tick(loop);
+    expect(object(card.progress).text).toBe("👤❓");
+    expect(object(card.content).assignees).toEqual({ nodes: [{ login: "owner" }] });
+    expect(f.writes).toEqual([]);
+  }
+);
+
+test("queue cleanup paginates status evidence and uses the latest actor", async () => {
+  const f = setup();
+  const card = f.card(6, "Backlog");
+  card.progress = { text: "👤❓", updatedAt: f.iso() };
+  object(card.content).assignees = { nodes: [{ login: "owner" }] };
+  f.cards = [card];
+  const loop = f.loop();
+  await f.tick(loop);
+  f.advance();
+  const earlier = scopeMove({
+    actor: actor(0),
+    status: "Ready",
+    previousStatus: "Backlog",
+    createdAt: f.iso(),
+    project: { number: 5 },
+  });
+  f.advance();
+  card.status = { name: "Ready", updatedAt: f.iso() };
+  f.boardTimeline[String(card.id)] = [
+    [earlier],
+    [
+      scopeMove({
+        actor: actor(2),
+        status: "Ready",
+        previousStatus: "In review",
+        createdAt: f.iso(),
+        project: { number: 5 },
+      }),
+    ],
+  ];
+  await f.tick(loop);
+  expect(object(card.progress).text).toBe("👤❓");
+  expect(object(card.content).assignees).toEqual({ nodes: [{ login: "owner" }] });
+  expect(f.writes).toEqual([]);
+  expect(f.reports).toEqual([]);
+});
+
 test("a failed queue cleanup retries the move rather than acknowledging stale turn state", async () => {
   const f = setup();
   const card = f.card(6, "In review");
-  card.progress = { text: "👤❓" };
+  card.progress = { text: "👤❓", updatedAt: f.iso() };
   object(card.content).assignees = { nodes: [{ login: "owner" }] };
   f.cards = [card];
   const loop = f.loop();
   await f.tick(loop);
   f.advance();
   card.status = { name: "Backlog", updatedAt: f.iso() };
+  f.boardTimeline[String(card.id)] = [
+    [
+      scopeMove({
+        actor: actor(0),
+        status: "Backlog",
+        previousStatus: "In review",
+        createdAt: f.iso(),
+        project: { number: 5 },
+      }),
+    ],
+  ];
   f.failSet = true;
   expect(await f.tick(loop)).toEqual([]);
   expect(object(card.progress).text).toBe("👤❓");
-  expect(object(card.content).assignees).toEqual({ nodes: [{ login: "owner" }] });
+  expect(object(card.content).assignees).toEqual({ nodes: [] });
   expect(f.reports.join("\n")).toContain("scripted Progress write failure");
   f.failSet = false;
   const events = await f.tick(loop);
