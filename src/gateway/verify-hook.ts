@@ -8,13 +8,15 @@ import { GitTransport } from "./git.js";
 
 /** Verify a clean, pinned conflict resolution; an absent hook skips local verification only.
  * The conflict workflow must independently require green CI. Ordinary merge verification is unchanged.
+ * reportNotice durably claims the absent-hook notice once per resolution, including retries.
  */
 export async function verifyConflictHead(
   worktree: string,
   head: string,
   config: Config,
   environment: NodeJS.ProcessEnv,
-  deps: Dependencies
+  deps: Dependencies,
+  reportNotice: () => boolean = () => true
 ): Promise<boolean> {
   const git = new GitTransport(config, environment, deps, worktree);
   if ((await git.run("status", "--porcelain")).trim()) {
@@ -24,7 +26,7 @@ export async function verifyConflictHead(
   if (existsSync(join(worktree, "scripts/vmethod-hooks/verify"))) {
     verified =
       (await runVerifyHook(worktree, config, environment, deps, ["--scope", "merge"])).code === 0;
-  } else {
+  } else if (reportNotice()) {
     deps.report(
       "conflict resolution: no verify hook; local verify skipped, green CI still required"
     );

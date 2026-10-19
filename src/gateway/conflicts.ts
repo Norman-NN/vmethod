@@ -25,6 +25,7 @@ interface Resolution {
   resolvedHead?: string;
   started: number;
   dispatched?: boolean;
+  verifyNoticeReported?: boolean;
 }
 
 export interface ConflictHooks {
@@ -37,7 +38,8 @@ export interface ConflictHooks {
   stop(pr: number): Promise<void>;
   workerBlocked(pr: number, since: number): Promise<boolean>;
   directory(pr: number): Promise<string>;
-  verify(directory: string, head: string): Promise<boolean>;
+  /** Claim reportNotice before emitting an absent-hook notice; false means it was already emitted. */
+  verify(directory: string, head: string, reportNotice: () => boolean): Promise<boolean>;
   blocked(pr: number, reason: string, files: string[]): Promise<void>;
   merge(pr: number, reason: string, head: string): Promise<void>;
 }
@@ -59,7 +61,8 @@ export class ConflictService {
   }
 
   /** Start once per conflicting head, or reconcile a previously dispatched resolution.
-   * Current heads are no-ops; unexpected errors propagate without conflict escalation.
+   * Current heads are no-ops; reconciliation errors propagate without conflict escalation.
+   * Auto-merge errors retain resolved state and return actionable manual-merge guidance.
    */
   async resolve(pr: number): Promise<string> {
     if (!Number.isSafeInteger(pr) || pr < 1) {
@@ -251,7 +254,14 @@ export class ConflictService {
     }
     if (
       (record.step === 3 || record.approved) &&
-      !(await this.hooks.verify(directory, snapshot.head))
+      !(await this.hooks.verify(directory, snapshot.head, () => {
+        if (record.verifyNoticeReported) {
+          return false;
+        }
+        record.verifyNoticeReported = true;
+        this.save(pr, record);
+        return true;
+      }))
     ) {
       return this.block(pr, record, "merge verify hook failed");
     }
@@ -265,11 +275,15 @@ export class ConflictService {
       return this.block(pr, record, "head/base/CI changed during verification");
     }
     record.resolvedHead = snapshot.head;
+    record.phase = "resolved";
+    this.save(pr, record);
     if (record.approved) {
-      await this.hooks.merge(pr, conflictCertification, snapshot.head);
-      record.phase = "merged";
-    } else {
-      record.phase = "resolved";
+      try {
+        await this.hooks.merge(pr, conflictCertification, snapshot.head);
+        record.phase = "merged";
+      } catch (error) {
+        record.reason = `auto-merge refused (${error instanceof Error ? error.message : String(error)}); merge manually when ready`;
+      }
     }
     this.save(pr, record);
     return this.event(pr, record);
@@ -303,6 +317,9 @@ export class ConflictService {
       return `MERGED #${pr} (conflict-only, approval carried)`;
     }
     if (record.phase === "resolved") {
+      if (record.reason) {
+        return `RESOLVED #${pr}: ${record.reason}`;
+      }
       return `RESOLVED #${pr} (step ${record.step})`;
     }
     return `PENDING #${pr}: conflict dispatch in progress; inspect gateway state before retrying`;

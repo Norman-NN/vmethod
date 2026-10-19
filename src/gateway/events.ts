@@ -1446,6 +1446,19 @@ export class EventLoop {
       }
       atomicWrite(join(this.dir, `head-${pr.number}`), `${pr.sha}\n`);
     }
+    try {
+      await this.reconcileConflicts(pr, url);
+    } catch (error) {
+      this.produceOnce(
+        `conflict-error-${pr.number}-${pr.sha}`,
+        "conflict-resolution",
+        `CONFLICT #${pr.number}: reconciliation failed (${error instanceof Error ? error.message : String(error)}); inspect gateway state before retrying`
+      );
+    }
+    this.observedPrs.push(pr);
+  }
+
+  private async reconcileConflicts(pr: PrInfo, url: string): Promise<void> {
     if (pr.mergeable === "CONFLICTING") {
       if (this.host.resolveConflicts) {
         if (this.readMarker(`conflict-${pr.number}`) !== pr.sha) {
@@ -1484,11 +1497,7 @@ export class EventLoop {
       this.mark(`base-dispatched-${pr.number}-${pr.sha}-${pr.baseSha}`);
       const result = await this.host.resolveConflicts(pr.number);
       if (!result.startsWith("PENDING")) {
-        this.produceOnce(
-          `base-result-${pr.number}-${pr.sha}-${pr.baseSha}`,
-          "conflict-resolution",
-          result
-        );
+        this.produceOnce(`conflict-result-${pr.number}-${pr.sha}`, "conflict-resolution", result);
       }
     }
     if (this.host.conflictPending?.(pr.number)) {
@@ -1497,7 +1506,6 @@ export class EventLoop {
         this.produceOnce(`conflict-result-${pr.number}-${pr.sha}`, "conflict-resolution", result);
       }
     }
-    this.observedPrs.push(pr);
   }
 
   private async watchStale(pr: PrInfo): Promise<void> {
