@@ -687,7 +687,7 @@ produce repeated drops; the counts are observations, not unique contributions.
 
 These commands require `VMETHOD_ROLE=orchestrator`:
 
-- `open-task <issue> [--direct "<title>"] [--unapproved "<reason>"] [--hold] [--part] [--model <family>] [--from <branch>] [--owner-approved]`
+- `open-task <issue> [--direct "<title>"] [--unapproved "<reason>"] [--hold] [--part] [--model <family>] [--model-override "<reason>"] [--from <branch>] [--owner-approved]`
   creates a conforming-title draft from the task template and issue specification.
   The header is `# Task: <title> (issue #N)` and `<!-- points_open: N -->`
   freezes the issue's opening Estimate for grading; it is never copied onto the PR card.
@@ -703,6 +703,11 @@ These commands require `VMETHOD_ROLE=orchestrator`:
   becomes `fix:`; prose/nonconforming titles receive `feat:` without broadening
   the accepted delivery-title types. `--part` requires an issue and records
   `# Task: <title> (part of issue #N)` plus `"part":true` in the structured marker.
+  The issue card's Model is the owner's hint: omitting `--model` uses it, and
+  launching on a different family is refused unless `--model-override` carries a
+  single-line reason, which is then posted as a model-override note on the issue
+  and kept in the structured marker so grading records it as the delivery's
+  opening segment reason.
   Partial PRs have only vmethod's structured relation: no native closing link,
   added timeline reference or board linked-PR entry. A partial delivery leaves the
   issue and its card unchanged during merge follow-up. For multi-PR issues, use

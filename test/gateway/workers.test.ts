@@ -245,6 +245,22 @@ test("worker start sends inline authority, task values and the non-negotiable ch
   f.done();
 });
 
+test("worker start grades the task marker's model override as the first segment reason", async () => {
+  const f = fixture([...start]);
+  f.meta.body =
+    '<!-- vmethod-task {"issues":[9],"modelOverride":{"from":"glm","to":"sol","reason":"needs expensive tier"}} -->';
+  await f.service.command(["start", "31"]);
+  expect(f.record().segments).toHaveLength(1);
+  expect(f.record().segments[0].why).toBe("override: needs expensive tier");
+  f.done();
+});
+
+test("worker start refuses a malformed marker override instead of logging a silent start", async () => {
+  const f = fixture([...start]);
+  f.meta.body = '<!-- vmethod-task {"issues":[9],"modelOverride":{"from":"glm"}} -->';
+  await expect(f.service.command(["start", "31"])).rejects.toThrow("Invalid task model override");
+});
+
 test("backend-changing model switches create a fresh context and resend onboarding in both directions", async () => {
   const f = fixture([
     ...start,
