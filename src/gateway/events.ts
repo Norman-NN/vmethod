@@ -2815,6 +2815,7 @@ export class EventLoop {
     if (
       report &&
       !linkedIssue &&
+      !this.writes.recentlyWrote(card.repo, card.number, 60_000) &&
       ((card.column === "In review" && card.assignees.length !== 1) || mismatch)
     ) {
       this.produceOnce(

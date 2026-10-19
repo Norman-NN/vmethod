@@ -531,6 +531,14 @@ export class TaskFlow {
       ask: "👤❓",
       approve: "🧭🔍",
     }[input.outcome];
+    await this.turn(
+      input.ref,
+      input.outcome === "approve"
+        ? "orchestrator"
+        : input.outcome === "owner" || input.outcome === "ask"
+          ? "owner"
+          : null
+    );
     await this.card(
       item,
       input.outcome === "owner" || input.outcome === "ask" || input.outcome === "approve"
@@ -539,14 +547,6 @@ export class TaskFlow {
           ? "In progress"
           : undefined,
       progress
-    );
-    await this.turn(
-      input.ref,
-      input.outcome === "approve"
-        ? "orchestrator"
-        : input.outcome === "owner" || input.outcome === "ask"
-          ? "owner"
-          : null
     );
     for (const number of taskIssueNumbers(String(item.body)) ?? []) {
       const issue = await this.host.thread(String(number), "issue");
@@ -583,8 +583,8 @@ export class TaskFlow {
       }
     }
     await this.post(ref, `[orchestrator] OWNER QUESTION\n\n${readFileSync(file, "utf8")}`);
-    await this.card(issue, undefined, "👤❓");
     await this.turn(ref, "owner");
+    await this.card(issue, "In review", "👤❓");
     return `Posted OWNER QUESTION on #${ref}`;
   }
 

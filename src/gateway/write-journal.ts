@@ -77,6 +77,20 @@ export class WriteJournal {
     );
   }
 
+  /** Whether this account recently changed this card, including an in-flight handoff. */
+  recentlyWrote(repo: string, number: number, withinMs = 60_000): boolean {
+    const since = this.now() - withinMs;
+    return this.read().some(
+      (entry) =>
+        entry.repo.toLowerCase() === repo.toLowerCase() &&
+        entry.number === number &&
+        Date.parse(entry.at) >= since &&
+        entry.kind === "board" &&
+        entry.field === "Status" &&
+        entry.value === "In review"
+    );
+  }
+
   /** Observe decoded reads for ID correlation and journal successful mutations.
    * Call only after HTTP/GraphQL success; failed or partial answers must not stamp.
    */

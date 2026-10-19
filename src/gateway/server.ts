@@ -848,19 +848,19 @@ class GatewayServer {
       current,
       "owner"
     );
+    await setTurn(this.github, String(this.config.repo), number, current, next);
     await this.github.rest(
       `/repos/${String(this.config.repo)}/issues/${number}/comments`,
       "POST",
       { body },
       false
     );
-    await this.board.setIssueField(String(issue.id), "Status", "In review");
     await this.board.setIssueField(
       String(issue.id),
-      "Progress",
+      "Status",
+      "In review",
       renderProgress({ state: "owner-review", round: null, red: false })
     );
-    await setTurn(this.github, String(this.config.repo), number, current, next);
     return `Scope review requested for #${number}`;
   };
 
