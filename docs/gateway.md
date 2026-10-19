@@ -225,7 +225,7 @@ worker adopt --from-legacy
 worker send <pr> <file> [--queue|--now]
 worker status [pr]
 worker log <pr> [n]
-worker stop <pr>
+worker stop <pr> [--cleanup]
 worker wait <pr> [seconds]
 worker permit <pr> [once|always|reject]
 worker model <pr> <family> [--owner-approved] [--why reason]
@@ -557,7 +557,10 @@ The last output line is the verdict. `wait-checks` exits **0** green, **1** red
 (with failing checks and a short digest), **2** no verdict/head moved (run again,
 never report BLOCKED), or **3** conflict (merge the base, push, run again).
 `check-task-ci` uses the same codes, but green also requires every trusted check's
-workflow-associated PR head/base SHAs to match the current PR. Missing workflow
+workflow-associated PR head/base SHAs to match the current PR head and live base
+branch head, not the PR's potentially stale base SHA. `check-task-ci` and
+`refresh-checks` read the branch endpoint and recheck it after collecting CI evidence;
+`merge-task` resolves its fetched base ref through the same live-base helper. Missing workflow
 evidence fails closed with code 2; commit timestamps cannot establish the tested
 base. It returns check names, without downloading failure logs. `refresh-checks`
 returns 0 for a successful push or no-op, 2 for a ref moving during preparation,
@@ -723,6 +726,40 @@ and `workerStatus`; `src/gateway/task-flow-types.ts` and `transport.ts` own thei
 signatures. The gateway wires worker status, stop and resume to the recorded opencode
 or Claude session. Only the merge guard treats missing records as stopped;
 ordinary worker status still reports a missing session as unknown.
+
+### Task worktree cleanup
+
+After confirming a merge and stopping its worker, `merge-task` journals a `worktree`
+step that removes the task tree, prunes Git worktree metadata and deletes its local
+branch. Recovery retries unfinished cleanup; completed steps are not replayed.
+Pack branches are retained. A safety skip reports the path and reason without
+blocking the other merge follow-up steps.
+
+For a task closed without merging, the watcher reports a cleanup candidate. Run
+`vmethod worker stop <pr> --cleanup` to interrupt its recorded session and attempt
+the same guarded cleanup. Stopping alone never removes files.
+
+Use orchestrator-only `vmethod worktrees` to list merged/closed task trees and their
+sizes in allocated KiB, with a total of removable space. `vmethod worktrees --prune`
+rechecks the guards, removes eligible trees and reports the total actually freed.
+Size measurements are best-effort, with a separate two-minute timeout per tree.
+A failed or invalid measurement prints `size unknown` and does not prevent listing
+or guarded pruning of that tree or later trees. Totals show the measured KiB plus
+the count of eligible/removed trees with unknown sizes, never treating unknown as zero.
+This uses the existing orchestrator-only `worker` transport operation. It never
+stops sessions implicitly. Open tasks, ambiguous branch reuse and foreign PR heads
+are not cleanup candidates.
+
+Cleanup only touches registered trees under this repository's configured
+`branches.worktreeRoot`, with `branches.worktreePrefix` and an exact task-branch
+match. Main/current checkouts, symlink aliases and other repositories are refused.
+Tracked modifications and untracked non-ignored files are retained; ignored files
+such as `node_modules` and `.tmp/` may be removed. Local commits must be reachable
+from the merged PR head or the local base branch; for an unmerged closed PR, only
+the base proves containment. Otherwise cleanup reports unpushed work and retains
+the tree. A live or unknown session, unavailable commit objects or failed safety
+read also retains data. Inspect the reported reason before retrying; do not bypass
+these checks with a manual forced removal.
 
 Merge follow-up journals live in the per-user state directory. A partial failure
 resumes board, issue, branch and checkout work without merging again. Already-merged

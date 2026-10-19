@@ -19,6 +19,7 @@ import { object, type ObjectData, type Person } from "./people.js";
 import { checkMarkdown, guardClosingKeywords } from "./markdown.js";
 import { GitTransport, taskBranch, validateBranch } from "./git.js";
 import { cleanBaseMerges } from "./clean-base.js";
+import { liveBaseHead } from "./base-head.js";
 import { approvalCarryFiles } from "./carry-approval.js";
 import type { OpenTaskInput, ReviewInput } from "./task-flow-types.js";
 import { taskIssueNumbers, taskRelation } from "./task-flow-types.js";
@@ -26,6 +27,7 @@ import { setTurn, turnAssignees } from "./turn.js";
 import { holdBanner, taskHeld, withoutHold } from "./task-hold.js";
 import { runVerifyHook } from "./verify-hook.js";
 import packageInfo from "../../package.json" with { type: "json" };
+import { WorktreeService } from "./worktrees.js";
 
 interface Host {
   thread(ref: string, kind: "pr" | "issue"): Promise<ObjectData>;
@@ -781,7 +783,7 @@ export class TaskFlow {
       ) {
         throw new Error("Fetch failed");
       }
-      const liveBase = sha((await git.run("rev-parse", `refs/remotes/origin/${base}`)).trim());
+      const liveBase = await liveBaseHead(base, { git });
       let certification: string | undefined;
       if (carryApproval !== undefined) {
         for (const approved of await this.host.candidates(ref)) {
@@ -843,7 +845,7 @@ export class TaskFlow {
         current.headRefOid !== head ||
         current.baseRefOid !== baseSha ||
         current.baseRefName !== base ||
-        (await git.run("rev-parse", `refs/remotes/origin/${base}`)).trim() !== liveBase
+        (await liveBaseHead(base, { git })) !== liveBase
       ) {
         throw new Error("Head or base moved during merge checks");
       }
@@ -939,9 +941,11 @@ export class TaskFlow {
       }
     }
     this.save(file, journal);
-    const step = async (name: string, action: () => Promise<void>) => {
+    const step = async (name: string, action: () => Promise<void | boolean>) => {
       if (!journal.done.includes(name)) {
-        await action();
+        if ((await action()) === false) {
+          return;
+        }
         journal.done.push(name);
         this.save(file, journal);
       }
@@ -1053,6 +1057,13 @@ export class TaskFlow {
         );
         journal.install = Boolean(changed.trim());
       });
+    }
+    if (!pack) {
+      await step("worktree", async () =>
+        new WorktreeService(this.root, this.config, this.env, this.deps, (pr) =>
+          this.status(String(pr))
+        ).cleanup({ pr: this.number(ref), branch, base, head, state: "MERGED" })
+      );
     }
     // All state/board/reporting is complete before the package may replace itself.
     await step("follow-up", async () => {
