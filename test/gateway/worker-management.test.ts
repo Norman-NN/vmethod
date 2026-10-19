@@ -378,6 +378,16 @@ test("send reads the PR card's blocked Progress and refuses before contacting th
   f.done();
 });
 
+test("worker start never falls back to a Model line in the PR body", async () => {
+  const f = fixture();
+  object(f.pr.projectItems).nodes = [];
+  await expect(f.transport.call("worker", { args: ["start", "31"] }, f.ctx)).rejects.toThrow(
+    "Unknown model"
+  );
+  expect(f.requests.some((request) => request.includes("opencode.invalid"))).toBe(false);
+  f.done();
+});
+
 test("model switch posts its note through the gateway and changes only Model, not Progress", async () => {
   const f = fixture();
   const fetch = f.deps.fetch;
