@@ -656,8 +656,8 @@ class GatewayServer {
         return !!latest && /^\[worker\] (BLOCKED|QUESTION)\b/.test(latest.body);
       },
       directory: (pr) => this.workers.conflictDirectory(pr),
-      verify: async (directory, head) => {
-        return verifyConflictHead(directory, head, this.config, this.env, this.deps);
+      verify: async (directory, head, reportNotice) => {
+        return verifyConflictHead(directory, head, this.config, this.env, this.deps, reportNotice);
       },
       blocked: async (pr, reason, files) => {
         await this.flow.escalateConflict(String(pr), reason, files);

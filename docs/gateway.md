@@ -749,6 +749,8 @@ ordinary worker status still reports a missing session as unknown.
 Use `resolve-conflicts <pr>` to take the cheapest applicable action. The watcher
 dispatches it automatically for a conflicting head or GitHub's behind-base state,
 then reconciles the persisted operation without launching another fixer.
+Reconciliation errors are contained per PR and reported once per head; they do
+not interrupt polling other PRs. Inspect the reported gateway state before retrying.
 
 If the head already contains the fetched live base and is not conflicting, the
 command reports `nothing to resolve for #n` without a comment, board change or
@@ -780,8 +782,9 @@ carry require the exact resolved head to
 be present in a clean worktree; the executable project verify hook runs with
 `--scope merge` for generic fixers and approval carry, without gateway credentials.
 Current-base CI must also be green. An unapproved clean update needs no worktree or hook.
-In this conflict-resolution path only, an absent hook is explicitly skipped and CI
-remains mandatory. An installed failing hook blocks. This does not weaken the
+In this conflict-resolution path only, an absent hook is explicitly skipped, with
+one notice per persisted resolution (including retries), and CI remains mandatory.
+An installed failing hook blocks. This does not weaken the
 missing-hook refusal for ordinary `merge-task` with `requireCurrentBase: false`;
 legacy `checks.verify` strings are not substituted in either path.
 The overall operation has a one-hour limit and a two-minute worker-start grace.
@@ -803,6 +806,10 @@ With every guard green, the gateway pins the resolved head and invokes
 `merge-task --carry-approval` with the certification
 "conflict-only resolution; remerge diff limited to conflicted hunks; verify and CI green".
 Normal merge approval, scope, session, CI and head/base-race gates still apply.
+If automatic merging is refused, the resolution record is retained and the watcher
+emits `RESOLVED #n: auto-merge refused (<reason>); merge manually when ready` once
+per PR and head. It does not retry automatic merging or repeat local verification
+for that resolution. Address the refusal and merge manually when ready.
 An unapproved PR stops resolved and waits for review. A worker's BLOCKED or QUESTION
 prevents carry even if a pushed patch looks syntactically valid. The gateway posts
 an orchestrator escalation note rather than impersonating a worker when its own

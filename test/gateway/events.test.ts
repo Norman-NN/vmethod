@@ -1403,6 +1403,46 @@ test("own remembered moves and migration-stamped changes stay quiet", async () =
 });
 
 test.each([false, true])(
+  "conflict reconciliation contains per-PR errors, failure=%s",
+  async (failure) => {
+    const f = setup();
+    f.task();
+    f.pulls.push({ ...f.pulls[0], number: 31, head: { ref: "7-other", sha } });
+    f.mergeable = false;
+    f.baseMoved = true;
+    const refusal =
+      "RESOLVED #24: auto-merge refused (scope not approved); merge manually when ready";
+    f.resolveConflicts = vi.fn(async (pr) => {
+      if (pr === 24 && failure) {
+        throw new Error("snapshot unavailable");
+      }
+      return pr === 24 ? refusal : "RESOLVED #31 (step 1)";
+    });
+    // Keep reconciliation pending to exercise repeated polls, not just initial dispatch.
+    f.conflictPending = (pr) => pr === 24;
+    const loop = f.loop();
+    const events = await f.tick(loop);
+    expect(
+      events.filter((event) => event.kind === "conflict-resolution").map((event) => event.line)
+    ).toEqual([
+      failure
+        ? "CONFLICT #24: reconciliation failed (snapshot unavailable); inspect gateway state before retrying"
+        : refusal,
+      "RESOLVED #31 (step 1)",
+    ]);
+    expect(f.resolveConflicts).toHaveBeenCalledWith(31);
+    await f.ack(loop, events);
+    for (let i = 0; i < 7; i++) {
+      f.advance();
+      const next = await f.tick(loop);
+      expect(next.filter((event) => event.kind === "conflict-resolution")).toEqual([]);
+      await f.ack(loop, next);
+    }
+    expect(f.reports).toEqual([]);
+  }
+);
+
+test.each([false, true])(
   "watcher dispatches %s base-moved/conflict automation once per head",
   async (conflict) => {
     const f = setup();

@@ -66,13 +66,13 @@ async function setup(conflict: boolean, approved: boolean, bad = false, escalate
   };
   const resolve = async () => {
     if (conflict) {
-      await expect(git("merge", "--no-edit", baseSha)).rejects.toThrow();
+      await expect(git("merge", "--no-edit", snapshot.baseSha)).rejects.toThrow();
       snapshot.head = await commit(
         "conflict.txt",
         `${bad ? "changed prefix" : "keep prefix"}\ntask\nbase\nkeep suffix\n`
       );
     } else {
-      await git("merge", "--no-edit", baseSha);
+      await git("merge", "--no-edit", snapshot.baseSha);
       snapshot.head = (await git("rev-parse", "HEAD")).trim();
     }
     await git("update-ref", "refs/remotes/origin/task", snapshot.head);
@@ -119,23 +119,36 @@ async function setup(conflict: boolean, approved: boolean, bad = false, escalate
     },
     report: vi.fn(),
   };
-  const service = new ConflictService(
-    root,
-    {
-      repo: "example/project",
-      stateName: "conflict-test",
-      credentials: { githubToken: "TOKEN" },
-      ...(escalated ? { conflicts: { escalatePaths: ["**/*.txt"] } } : {}),
-    },
-    env,
-    deps,
-    hooks
-  );
+  const createService = () =>
+    new ConflictService(
+      root,
+      {
+        repo: "example/project",
+        stateName: "conflict-test",
+        credentials: { githubToken: "TOKEN" },
+        ...(escalated ? { conflicts: { escalatePaths: ["**/*.txt"] } } : {}),
+      },
+      env,
+      deps,
+      hooks
+    );
+  const service = createService();
   return {
     service,
+    createService,
     hooks,
+    deps,
     snapshot,
     makeUpToDate: resolve,
+    nextConflict: async () => {
+      await git("checkout", "dev");
+      snapshot.baseSha = await commit("conflict.txt", "keep prefix\nnew base\nkeep suffix\n");
+      await git("checkout", "task");
+      snapshot.head = await commit("conflict.txt", "keep prefix\nnew task\nkeep suffix\n");
+      snapshot.conflict = true;
+      await git("update-ref", "refs/remotes/origin/dev", snapshot.baseSha);
+      await git("update-ref", "refs/remotes/origin/task", snapshot.head);
+    },
     seedCleanFailure: () => {
       const directory = join(env.XDG_STATE_HOME, "vmethod/conflict-test/conflicts");
       mkdirSync(directory, { recursive: true });
@@ -157,10 +170,47 @@ async function setup(conflict: boolean, approved: boolean, bad = false, escalate
     advance: () => {
       now += 61 * 60_000;
     },
-    verifyWithoutHook: (directory: string, head: string) =>
-      verifyConflictHead(directory, head, { repo: "example/project" }, env, deps),
+    verifyWithoutHook: (directory: string, head: string, reportNotice?: () => boolean) =>
+      verifyConflictHead(directory, head, { repo: "example/project" }, env, deps, reportNotice),
   };
 }
+
+test("auto-merge refusal retains the resolution without repeating verification or merge", async () => {
+  const f = await setup(true, true);
+  await f.service.resolve(31);
+  vi.mocked(f.hooks.verify).mockImplementation(f.verifyWithoutHook);
+  vi.mocked(f.hooks.merge).mockRejectedValue(
+    new Error("scope not approved: post SCOPE REVIEW first")
+  );
+  const expected =
+    "RESOLVED #31: auto-merge refused (scope not approved: post SCOPE REVIEW first); merge manually when ready";
+  expect(await f.service.resolve(31)).toBe(expected);
+  expect(f.service.pending(31)).toBe(false);
+  await f.createService().resolve(31);
+  expect(f.hooks.verify).toHaveBeenCalledOnce();
+  expect(f.hooks.merge).toHaveBeenCalledOnce();
+  expect(f.deps.report).toHaveBeenCalledExactlyOnceWith(
+    "conflict resolution: no verify hook; local verify skipped, green CI still required"
+  );
+  await f.nextConflict();
+  expect(await f.service.resolve(31)).toMatch(/^PENDING/);
+  expect(await f.service.resolve(31)).toBe(expected);
+  expect(f.deps.report).toHaveBeenCalledTimes(2);
+  expect(f.hooks.merge).toHaveBeenCalledTimes(2);
+}, 15000);
+
+test("no-hook notice is durable across retries within a resolution", async () => {
+  const f = await setup(true, true);
+  await f.service.resolve(31);
+  vi.mocked(f.hooks.verify).mockImplementation(f.verifyWithoutHook);
+  vi.mocked(f.hooks.snapshot)
+    .mockImplementationOnce(async () => ({ ...f.snapshot }))
+    .mockRejectedValueOnce(new Error("snapshot unavailable"));
+  await expect(f.service.resolve(31)).rejects.toThrow("snapshot unavailable");
+  expect(await f.createService().resolve(31)).toMatch(/^MERGED/);
+  expect(f.hooks.verify).toHaveBeenCalledTimes(2);
+  expect(f.deps.report).toHaveBeenCalledOnce();
+}, 15000);
 
 test.each([false, true])(
   "an up-to-date PR is a read-only no-op even with stale failed state=%s and red CI",
@@ -211,23 +261,21 @@ test.each([
   15000
 );
 
-test.each(["update", "wait", "fix", "verify", "snapshot", "merge"])(
+test.each(["update", "wait", "fix", "verify", "snapshot"])(
   "unexpected %s API failure reports an error, never BLOCKED or a card change",
   async (stage) => {
     const f = await setup(!["update", "wait"].includes(stage), true);
     const error = new GitHubHttpError(500, "POST", "/unexpected", "temporary outage");
-    if (["verify", "snapshot", "merge"].includes(stage)) {
+    if (["verify", "snapshot"].includes(stage)) {
       await f.service.resolve(31);
     }
     vi.mocked(
-      f.hooks[stage as "update" | "wait" | "fix" | "verify" | "snapshot" | "merge"]
+      f.hooks[stage as "update" | "wait" | "fix" | "verify" | "snapshot"]
     ).mockRejectedValue(error);
     await expect(f.service.resolve(31)).rejects.toThrow("temporary outage");
     expect(f.hooks.blocked).not.toHaveBeenCalled();
     expect(f.hooks.stop).not.toHaveBeenCalled();
-    if (stage !== "merge") {
-      expect(f.hooks.merge).not.toHaveBeenCalled();
-    }
+    expect(f.hooks.merge).not.toHaveBeenCalled();
   },
   15000
 );
