@@ -32,6 +32,7 @@ import { scopeMove } from "./scope-fixture.js";
 import recordedActions from "../fixtures/github/watch-actions.json" with { type: "json" };
 import recordedComment from "../fixtures/github/review-comment.json" with { type: "json" };
 import { GitHubClient } from "../../src/gateway/client.js";
+import { WriteJournal } from "../../src/gateway/write-journal.js";
 import ownerReviews from "../fixtures/github/owner-reviews.json" with { type: "json" };
 import orchestratorReviews from "../fixtures/github/orchestrator-reviews.json" with { type: "json" };
 
@@ -112,6 +113,9 @@ test.each(["removed", "closed", "Done", "muted"])(
     f.cards = [card];
     object(card.content).state = "OPEN";
     object(card.status).name = "In review";
+    // A closure now clears both turn signals; reopening starts a new turn.
+    card.progress = { text: "🧭🔍" };
+    object(card.content).assignees = { nodes: [{ login: "peer" }] };
     if (state === "muted") {
       unmuteThread(f.config, f.env, "24");
     }
@@ -475,28 +479,32 @@ test.each(["reply", "issue reply", "approval"])(
   }
 );
 
-test("a closed card held in Backlog across three polls is noted only once", async () => {
+test("a UI-closed card moves to Done and reports its closure only once", async () => {
   const f = setup();
   f.task();
   const loop = f.loop();
   await f.once(loop);
   const card = f.card();
   object(card.content).state = "CLOSED";
+  object(card.content).closure = { nodes: [{ actor: { login: "someone" } }] };
+  object(card.content).assignees = { nodes: [{ login: "owner" }] };
+  card.progress = { text: "👤❓ 🔁2️⃣ 🔴" };
   f.cards.push(card);
   const notes: string[] = [];
   for (let i = 0; i < 3; i++) {
     f.advance();
     f.comment("Wake to flush the quiet digest", 0);
     const events = await f.once(loop);
-    notes.push(...events.flatMap((event) => event.quiet ?? []));
+    notes.push(...events.map((event) => event.line));
   }
-  expect(notes.filter((line) => line.includes("NOTE #6 (ISSUE): new card → Backlog"))).toHaveLength(
-    1
-  );
+  expect(notes.filter((line) => line.includes("CLOSED #6 (completed) by someone"))).toHaveLength(1);
+  expect(object(card.status).name).toBe("Done");
+  expect(object(card.progress).text).toBeNull();
+  expect(object(object(card.content).assignees).nodes).toEqual([]);
   expect(f.reports).toEqual([]);
 });
 
-test("a closed Done card absent from the listing is noted once after reappearing in Backlog", async () => {
+test("a closed Done card reappearing in Backlog is returned to Done without a duplicate closure", async () => {
   const f = setup();
   f.task();
   const card = f.card(6, "Done");
@@ -516,8 +524,265 @@ test("a closed Done card absent from the listing is noted once after reappearing
     notes.push(...(await f.once(loop)).flatMap((event) => event.quiet ?? []));
   }
   expect(notes.filter((line) => line.includes("NOTE #6 (ISSUE): new card → Backlog"))).toHaveLength(
-    1
+    0
   );
+  expect(object(card.status).name).toBe("Done");
+  expect(f.reports).toEqual([]);
+});
+
+test.each(["NOT_PLANNED", "COMPLETED"])(
+  "a peer request closed as %s reports the closure and remaining task, notifying only for not planned",
+  async (reason) => {
+    const f = setup();
+    f.watchPeople = people.map((person) =>
+      person.login === "peer" ? { ...person, repos: ["example/other"] } : person
+    );
+    f.task();
+    f.pulls[0].body = '<!-- vmethod-task {"issues":[6]} -->';
+    const card = f.card();
+    Object.assign(object(card.content), {
+      author: actor(2),
+      state: "CLOSED",
+      stateReason: reason,
+      closedAt: f.iso(),
+      closure: { nodes: [{ actor: { login: "owner" } }] },
+    });
+    f.cards.push(card);
+    let loop = f.loop();
+    const events = await f.once(loop);
+    expect(events.filter((event) => event.kind === "closed").map((event) => event.line)).toEqual(
+      reason === "NOT_PLANNED"
+        ? []
+        : [
+            "CLOSED #6 (completed) by owner; open task PR #24 remains https://github.com/example/project/issues/6",
+          ]
+    );
+    expect(
+      events.filter((event) => event.kind === "not-planned").map((event) => event.line)
+    ).toEqual(
+      reason === "NOT_PLANNED"
+        ? [
+            "NOT PLANNED #6 (requested by peer): tell the requester; open task PR #24 remains https://github.com/example/project/issues/6",
+          ]
+        : []
+    );
+    expect(object(card.status).name).toBe("Done");
+    expect(f.pulls).toHaveLength(1);
+    loop.close();
+    loop = f.loop();
+    expect(
+      (await f.once(loop)).filter((event) => ["closed", "not-planned"].includes(event.kind))
+    ).toEqual([]);
+    expect(f.reports).toEqual([]);
+  }
+);
+
+test.each(["local", "owner", "unverified", "foreign", "muted", "out of scope"])(
+  "a %s request does not produce a peer not-planned notification",
+  async (kind) => {
+    const f = setup();
+    f.watchPeople = people.map((person) =>
+      person.login === "peer"
+        ? { ...person, repos: [kind === "local" ? "example/project" : "example/other"] }
+        : person
+    );
+    const card = f.card();
+    Object.assign(object(card.content), {
+      author:
+        kind === "owner"
+          ? actor(0)
+          : kind === "unverified"
+            ? { ...actor(2), databaseId: 9999 }
+            : actor(2),
+      state: "CLOSED",
+      stateReason: "NOT_PLANNED",
+    });
+    if (kind === "foreign") {
+      object(card.content).repository = {
+        nameWithOwner: "example/other",
+        owner: { login: "example" },
+      };
+    }
+    f.cards = [card];
+    if (kind === "muted") {
+      muteThread(f.config, f.env, "6");
+    }
+    const events = await f.once(f.loop(kind === "out of scope" ? { only: [24] } : {}));
+    expect(events.filter((event) => event.kind === "not-planned")).toEqual([]);
+    expect(object(card.status).name).toBe(
+      ["foreign", "muted", "out of scope"].includes(kind) ? "Backlog" : "Done"
+    );
+    expect(f.reports).toEqual([]);
+  }
+);
+
+test.each(["CLOSED", "MERGED"])(
+  "a %s task PR clears the turn but preserves worker assignment",
+  async (state) => {
+    const f = setup();
+    f.task();
+    const card = f.cards[0];
+    object(card.content).state = state;
+    object(card.content).closure = { nodes: [{ actor: { login: "owner" } }] };
+    object(card.content).assignees = { nodes: [{ login: "owner" }, { login: "worker" }] };
+    const events = await f.once(f.loop());
+    expect(events.filter((event) => event.kind === "closed")).toEqual([]);
+    expect(object(card.status).name).toBe("Done");
+    expect(object(card.progress).text).toBeNull();
+    expect(object(object(card.content).assignees).nodes).toEqual([{ login: "worker" }]);
+    expect(f.reports).toEqual([]);
+  }
+);
+
+test("a failed closure board write retries without losing the closure event or restoring pending Progress", async () => {
+  const f = setup();
+  const card = f.card();
+  f.cards = [card];
+  const loop = f.loop();
+  await f.once(loop);
+  object(card.content).state = "CLOSED";
+  card.progress = { text: "👤❓" };
+  object(card.content).assignees = { nodes: [{ login: "owner" }] };
+  writeFileSync(
+    join(f.dir, "pending-progress-6"),
+    JSON.stringify({ status: "In review", state: "ready" })
+  );
+  f.failSet = true;
+  const failedEvents = await f.once(loop);
+  expect(object(card.status).name).toBe("Backlog");
+  expect(object(object(card.content).assignees).nodes).toEqual([]);
+  f.failSet = false;
+  f.advance();
+  const retriedEvents = await f.once(loop);
+  expect(object(card.status).name).toBe("Done");
+  expect(object(card.progress).text).toBeNull();
+  expect(existsSync(join(f.dir, "pending-progress-6"))).toBe(false);
+  expect(
+    [...failedEvents, ...retriedEvents].filter((event) => event.kind === "closed")
+  ).toHaveLength(1);
+});
+
+test("a peer issue already moved to Done by GitHub still clears the turn and notifies once", async () => {
+  const f = setup();
+  f.watchPeople = people.map((person) =>
+    person.login === "peer" ? { ...person, repos: ["example/other"] } : person
+  );
+  const card = f.card(6, "Done");
+  Object.assign(object(card.content), {
+    author: actor(2),
+    state: "CLOSED",
+    stateReason: "NOT_PLANNED",
+    assignees: { nodes: [{ login: "owner" }] },
+  });
+  card.progress = { text: "👤❓" };
+  f.cards = [card];
+  const loop = f.loop();
+  expect((await f.once(loop)).map((event) => event.kind)).toEqual(["not-planned"]);
+  expect(object(card.status).name).toBe("Done");
+  expect(object(card.progress).text).toBeNull();
+  expect(object(object(card.content).assignees).nodes).toEqual([]);
+  expect(await f.once(loop)).toEqual([]);
+  expect(f.reports).toEqual([]);
+});
+
+test("a reopened peer issue closed again emits a new closure notification", async () => {
+  const f = setup();
+  f.watchPeople = people.map((person) =>
+    person.login === "peer" ? { ...person, repos: ["example/other"] } : person
+  );
+  const card = f.card();
+  f.cards = [card];
+  Object.assign(object(card.content), {
+    author: actor(2),
+    state: "CLOSED",
+    stateReason: "NOT_PLANNED",
+    closedAt: f.iso(),
+  });
+  const loop = f.loop();
+  expect((await f.once(loop)).filter((event) => event.kind === "not-planned")).toHaveLength(1);
+  object(card.content).state = "OPEN";
+  object(card.status).name = "Backlog";
+  await f.once(loop);
+  f.advance();
+  Object.assign(object(card.content), { state: "CLOSED", closedAt: f.iso() });
+  expect((await f.once(loop)).filter((event) => event.kind === "not-planned")).toHaveLength(1);
+});
+
+test.each(["account", "journal", "merged reference", "later merged reference"])(
+  "an issue closure from %s cleans up silently, including after restart",
+  async (source) => {
+    const f = setup();
+    const card = f.card();
+    Object.assign(object(card.content), {
+      state: "CLOSED",
+      closedAt: f.iso(),
+      closure: { nodes: [{ actor: { login: source === "account" ? "Me" : "owner" } }] },
+      assignees: { nodes: [{ login: "owner" }] },
+    });
+    card.progress = { text: "👤❓" };
+    f.cards = [card];
+    if (source === "journal") {
+      new WriteJournal(f.config, f.env, () => f.clock).record(
+        "/repos/example/project/issues/6",
+        "PATCH",
+        { state: "closed" },
+        { number: 6 },
+        f.iso()
+      );
+    }
+    if (source === "merged reference") {
+      f.closingPrs[6] = [[{ state: "MERGED" }]];
+    }
+    if (source === "later merged reference") {
+      f.closingPrs[6] = [[{ state: "OPEN" }, { state: "CLOSED" }], [{ state: "MERGED" }]];
+    }
+    let loop = f.loop();
+    expect(await f.once(loop)).toEqual([]);
+    expect(object(card.status).name).toBe("Done");
+    expect(object(card.progress).text).toBeNull();
+    expect(object(object(card.content).assignees).nodes).toEqual([]);
+    loop.close();
+    loop = f.loop();
+    expect(await f.once(loop)).toEqual([]);
+    expect(f.reports).toEqual([]);
+  }
+);
+
+test("an owner UI closure with only open or unmerged closing references emits exactly one CLOSED", async () => {
+  const f = setup();
+  const card = f.card();
+  Object.assign(object(card.content), {
+    state: "CLOSED",
+    closedAt: f.iso(),
+    closure: { nodes: [{ actor: { login: "owner" } }] },
+  });
+  f.cards = [card];
+  f.closingPrs[6] = [[{ state: "OPEN" }], [{ state: "CLOSED" }]];
+  const loop = f.loop();
+  expect((await f.once(loop)).map((event) => event.line)).toEqual([
+    "CLOSED #6 (completed) by owner https://github.com/example/project/issues/6",
+  ]);
+  expect(await f.once(loop)).toEqual([]);
+  expect(f.reports).toEqual([]);
+});
+
+test("an own-account not-planned close still notifies a verified peer requester", async () => {
+  const f = setup();
+  f.watchPeople = people.map((person) =>
+    person.login === "peer" ? { ...person, repos: ["example/other"] } : person
+  );
+  const card = f.card();
+  Object.assign(object(card.content), {
+    author: actor(2),
+    state: "CLOSED",
+    stateReason: "NOT_PLANNED",
+    closedAt: f.iso(),
+    closure: { nodes: [{ actor: { login: "me" } }] },
+  });
+  f.cards = [card];
+  expect((await f.once(f.loop())).map((event) => event.line)).toEqual([
+    "NOT PLANNED #6 (requested by peer): tell the requester https://github.com/example/project/issues/6",
+  ]);
   expect(f.reports).toEqual([]);
 });
 
@@ -1619,13 +1884,15 @@ test("GRADE is once per open unestimated issue, never PR, closed or Done, respec
   ];
   object(f.cards[2].content).state = "CLOSED";
   const loop = f.loop();
-  expect(await f.tick(loop)).toEqual([]);
+  const closures = await f.tick(loop);
+  expect(closures.map((event) => event.kind)).toEqual(["closed"]);
+  await f.ack(loop, closures);
   f.advance();
   const batch = await f.tick(loop);
   expect(batch.map((e) => e.kind)).toEqual(["grade"]);
   await f.ack(loop, batch);
   expect(await f.tick(loop)).toEqual([]);
-  expect(f.writes.every((write) => write.value === null)).toBe(true);
+  expect(f.writes.every((write) => write.value === null || write.value === "Done")).toBe(true);
 });
 
 test("board Ready/Approved, NEXT, LAUNCH, assignments and owner completion wake; foreign cards never mutate", async () => {

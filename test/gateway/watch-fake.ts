@@ -95,6 +95,7 @@ export class WatchFake {
   ]);
   legacyError = false;
   assignmentEvents: ObjectData[] = [];
+  closingPrs: Record<number, ObjectData[][]> = {};
   boardSnapshot: ObjectData[] | null = null;
   boardTimeline: Record<string, ObjectData[][]> = {};
   scopeComments: ObjectData[] = [];
@@ -292,6 +293,33 @@ export class WatchFake {
                       timelineItems: {
                         nodes: this.assignmentEvents,
                         pageInfo: { hasNextPage: false },
+                      },
+                    },
+                  },
+                },
+              })
+            );
+          }
+          if (
+            operation.kind === Kind.OPERATION_DEFINITION &&
+            operation.name?.value === "WatchIssueClosers"
+          ) {
+            const pages = this.closingPrs[Number(payload.variables.number)] ?? [[]];
+            const index = payload.variables.cursor === null ? 0 : Number(payload.variables.cursor);
+            if (!pages[index]) {
+              return this.unknown(url);
+            }
+            return new Response(
+              JSON.stringify({
+                data: {
+                  repository: {
+                    issue: {
+                      closedByPullRequestsReferences: {
+                        nodes: pages[index],
+                        pageInfo: {
+                          hasNextPage: index + 1 < pages.length,
+                          endCursor: String(index + 1),
+                        },
                       },
                     },
                   },
@@ -511,6 +539,8 @@ export class WatchFake {
             }
             if (!suffix && init?.method === "PATCH" && body.state === "closed") {
               content.state = "CLOSED";
+              content.closedAt = this.iso();
+              content.closure = { nodes: [{ actor: { login: this.writeActor.login } }] };
               return new Response(JSON.stringify({ number, node_id: content.id, state: "closed" }));
             }
             return this.unknown(url);
@@ -691,6 +721,8 @@ export class WatchFake {
           throw new Error("Unmapped recorded issue closure in watch mirror");
         }
         object(card.content).state = "CLOSED";
+        object(card.content).closedAt = this.iso();
+        object(card.content).closure = { nodes: [{ actor: { login: this.writeActor.login } }] };
       } else if (
         /\/repos\/vworlds\/vmethod\/pulls$/.test(url.pathname) &&
         init?.method === "POST"
