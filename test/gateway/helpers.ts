@@ -12,7 +12,15 @@ import { validProject } from "../helpers.js";
 export const people: Person[] = [
   { login: "owner", id: 101, type: "User", role: "owner" },
   { login: "worker", id: 102, type: "User", role: "worker" },
-  { login: "peer", id: 103, type: "User", role: "orchestrator" },
+  {
+    login: "peer",
+    id: 103,
+    type: "User",
+    role: "orchestrator",
+    // The orchestrator role is per repository: this entry is the fixture project's
+    // bound orchestrator; foreign peers bind elsewhere and resolve to collaborators.
+    repos: ["example/project"],
+  },
   {
     login: "github-actions[bot]",
     id: 104,
@@ -117,9 +125,9 @@ export function fakeServer(requests: Request[]) {
   };
 }
 
-export function fixtureServer(requests: Request[], viewer = actor(2)) {
+export function fixtureServer(requests: Request[], viewer = actor(2), peopleList = people) {
   const root = validProject();
-  writeFileSync(join(root, "people.yaml"), stringify(people));
+  writeFileSync(join(root, "people.yaml"), stringify(peopleList));
   const fake = fakeServer(requests);
   let clock = Date.UTC(2026, 0, 1);
   const sleeps: number[] = [];

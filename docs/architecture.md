@@ -512,8 +512,10 @@ github-actions[bot] system        CI and release automation
 
 - Roles (owner-approved in #2):
   - `owner`: approves;
-  - `orchestrator`: peer input. For gating it counts like `collaborator`: it can ask, but never
-    approves or moves another project's cards to Approved;
+  - `orchestrator`: peer input. The role is per repository: the entry's `repos` binding
+    (used for learning submissions, #186) also lists the repositories where the account is
+    the orchestrator; for every other repository's gating it counts like `collaborator`:
+    it can ask, but never approves or moves another project's cards to Approved;
   - `worker`: its comments drive READY / QUESTION handling;
   - `collaborator`: proposes and comments;
   - `system`: automation such as `github-actions[bot]`. The gateway passes only structured facts

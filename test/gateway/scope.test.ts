@@ -132,6 +132,39 @@ test("trusted orchestrator OWNER QUESTION comments preserve the trivial shortcut
   }
 });
 
+test("the role is per repository: the bound orchestrator keeps the shortcut and a peer orchestrator's comments void it", () => {
+  // issue #186: a peer project's orchestrator is a collaborator here.
+  const foreign = () =>
+    new PeopleFilter(
+      people.map((person) =>
+        person.login === "peer" ? { ...person, repos: ["example/other"] } : person
+      ),
+      "example",
+      new Digest({ XDG_STATE_HOME: fixture() }, "scope-foreign", () => 0)
+    );
+  const move = [scopeMove()];
+  const question = scopeComment({
+    body: "[orchestrator] OWNER QUESTION\n\nMove this to Approved to start.",
+  });
+  const peerVotes = [
+    scopeComment(),
+    scopeComment({
+      body: `[orchestrator] SCOPE REVIEW\n\nPeer review.\n\nbody sha256: ${bodyHash("Final scope")}`,
+    }),
+    scopeComment({ lastEditedAt: "2026-01-02T01:00:00Z", editor: actor(2) }),
+  ];
+  // This repository's bound orchestrator keeps full shortcut authority.
+  expect(scopeApproved(scopeIssue(), [question], move, config, filter())).toBe(true);
+  expect(scopeApproved(scopeIssue(), [], move, config, filter())).toBe(true);
+  for (const comment of peerVotes) {
+    const issue = scopeIssue();
+    expect(scopeApproved(issue, [question, comment], move, config, filter())).toBe(true);
+    expect(scopeApproved(issue, [question, comment], move, config, foreign())).toBe(false);
+  }
+  // An issue written by a peer orchestrator (a collaborator here) has no shortcut.
+  expect(scopeApproved(scopeIssue(), [], move, config, foreign())).toBe(false);
+});
+
 test.each([false, true])(
   "scope review accepts exactly one plain or backtick-wrapped digest (wrapped=%s)",
   (wrapped) => {

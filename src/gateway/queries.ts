@@ -207,8 +207,14 @@ function filterDiagnosticValue(
     link = `https://github.com/${repoOf(item).repo}`;
   }
   if ("__vm_statusActor" in item) {
-    const owner = repoOf(object(item.__vm_statusCommit)).owner;
-    const person = filter.accept({ author: item.__vm_statusActor }, owner, link, "status");
+    const commit = object(item.__vm_statusCommit);
+    const owner = repoOf(commit).owner;
+    const person = filter.accept(
+      { author: item.__vm_statusActor, repository: commit.repository },
+      owner,
+      link,
+      "status"
+    );
     return person
       ? {
           attribution: `from ${person.login} (${person.role})`,
@@ -321,11 +327,18 @@ function filterDiagnosticValue(
       !injected &&
       hasContent &&
       (typeof item.created_at !== "string" || item.updated_at !== item.created_at);
+    // GraphQL reads inject `__vm_repository`; REST list items carry none, so the
+    // read context scopes their authors there.
+    const known = repoOf(item).repo;
+    const repository = known
+      ? (item.repository ?? item.__vm_repository)
+      : { nameWithOwner: repo, owner: { login: owner } };
     const person = filter.accept(
       {
         author,
         editor: injected ? item.__vm_editor : item.editor,
         lastEditedAt: unknownEditor ? "unknown" : injected ? item.__vm_edited : item.lastEditedAt,
+        repository,
       },
       owner,
       link

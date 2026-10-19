@@ -431,8 +431,9 @@ the state directory. A failed notice write leaves it unseen.
 
 The server watches the own repository's task PRs and board, plus issues, PRs,
 comments and assignments in `vmethod.repo` (default `vworlds/vmethod`; `off` disables
-it). Only pinned identities pass the people filter; peers' orchestrator comments
-wake too. Own comments are silent only when their numeric actor ID and this
+it). Only pinned identities pass the people filter; a peer project's orchestrator
+wakes on our threads too, delivered and labelled `(collaborator)`, never as
+authority. Own comments are silent only when their numeric actor ID and this
 session's gateway write journal match.
 System check runs update structured red-CI state, never expose free text.
 

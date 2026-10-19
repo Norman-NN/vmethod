@@ -1,12 +1,18 @@
 import { createHash } from "node:crypto";
 import type { Config } from "../config.js";
-import { object, type ObjectData, type PeopleFilter } from "./people.js";
+import { object, type ObjectData, type PeopleFilter, type Person } from "./people.js";
 import { identityFields, actorFields, repoOf } from "./queries.js";
 import type { GitHubClient } from "./client.js";
 
 /** Hash the exact GitHub body; the review comment, never the body, carries the digest. */
 export function bodyHash(body: string): string {
   return createHash("sha256").update(body, "utf8").digest("hex");
+}
+
+/** The orchestrator role is per repository (#186): a peer project's orchestrator
+ * never counts as this issue's trusted orchestrator, so its comments void the shortcut. */
+function orchestrates(filter: PeopleFilter, person: Person | undefined, repo: string): boolean {
+  return !!person && filter.roleIn(person, repo) === "orchestrator";
 }
 
 /** Scope evidence is independent of the card's current column, so parts share approval. */
@@ -20,9 +26,10 @@ export function scopeApproved(
   if (typeof issue.body !== "string") {
     return false;
   }
+  const repo = repoOf(issue).repo;
   const trusted = (item: ObjectData) =>
-    filter.identity(item.author)?.role === "orchestrator" &&
-    (item.lastEditedAt == null || filter.identity(item.editor)?.role === "orchestrator");
+    orchestrates(filter, filter.identity(item.author), repo) &&
+    (item.lastEditedAt == null || orchestrates(filter, filter.identity(item.editor), repo));
   const time = (item: ObjectData) => Date.parse(String(item.lastEditedAt ?? item.createdAt));
   const reviews = comments.filter(
     (comment) =>
@@ -97,10 +104,12 @@ function reviewPending(
   filter: PeopleFilter
 ): boolean {
   const time = (item: ObjectData) => Date.parse(String(item.lastEditedAt ?? item.createdAt));
+  const repo = repoOf(issue).repo;
   const reviews = comments.filter(
     (comment) =>
-      filter.identity(comment.author)?.role === "orchestrator" &&
-      (comment.lastEditedAt == null || filter.identity(comment.editor)?.role === "orchestrator") &&
+      orchestrates(filter, filter.identity(comment.author), repoOf(comment).repo || repo) &&
+      (comment.lastEditedAt == null ||
+        orchestrates(filter, filter.identity(comment.editor), repoOf(comment).repo || repo)) &&
       /^\[orchestrator\] SCOPE REVIEW(?:\r?\n|$)/.test(String(comment.body))
   );
   const review = reviews.sort((a, b) => time(b) - time(a))[0];
@@ -158,9 +167,17 @@ export class ScopeReader {
     const comments = await this.connections(issues, "comments");
     const timeline = await this.connections(issues, "timelineItems");
     const metas = [...comments.values()].flat();
-    const trusted = metas.filter(
-      (item) => this.accept(item) && this.filter.identity(item.author)?.role === "orchestrator"
-    );
+    // Only a comment by an orchestrator of the issue's repository can ever match
+    // SCOPE REVIEW; peer project orchestrators are collaborators here, so voiding
+    // them still needs no body read.
+    const binds = (item: ObjectData): boolean => {
+      const person = this.filter.identity(item.author);
+      return (
+        !!person &&
+        this.filter.roleIn(person, repoOf(item).repo || String(this.config.repo)) === "orchestrator"
+      );
+    };
+    const trusted = metas.filter((item) => this.accept(item) && binds(item));
     const requestedComments = new Set(trusted.map((item) => item.id));
     const bodies = new Map(
       (

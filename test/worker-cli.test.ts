@@ -203,7 +203,13 @@ test("check --online reports both credential identities through the built CLI", 
   writeFileSync(
     join(f.root, "people.yaml"),
     stringify([
-      { login: viewer.login, id: viewer.databaseId, type: viewer.__typename, role: "orchestrator" },
+      {
+        login: viewer.login,
+        id: viewer.databaseId,
+        type: viewer.__typename,
+        role: "orchestrator",
+        repos: ["example/project"],
+      },
       people[1],
     ])
   );

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { WatchFake } from "./watch-fake.js";
 import { WatchDelivery } from "../../src/gateway/watch-delivery.js";
 import { fixture } from "../helpers.js";
+import { people } from "./helpers.js";
 
 test("replay previous includes processed and lost batches, survives restart and does not acknowledge", async () => {
   const f = new WatchFake();
@@ -157,12 +158,26 @@ test.each(["REVIEW round 1", "OWNER REVIEW", "ANSWER", "AMENDMENT", "GO"])(
   }
 );
 
-test.each(["worker", "owner", "unknown", "edited"])(
+test.each(["worker", "peer", "owner", "unknown", "edited"])(
   "a %s ANSWER does not handle the worker request",
   async (kind) => {
     const f = new WatchFake();
     try {
       f.task();
+      if (kind === "peer") {
+        // A peer project's orchestrator must not hold this project's turn (#186);
+        // the fixture project keeps its own bound orchestrator.
+        f.watchPeople = [
+          ...people,
+          {
+            login: "vecsmaster",
+            id: 900,
+            type: "User",
+            role: "orchestrator",
+            repos: ["example/other"],
+          },
+        ];
+      }
       const loop = f.loop();
       await f.once(loop);
       f.advance();
@@ -173,11 +188,21 @@ test.each(["worker", "owner", "unknown", "edited"])(
         "[orchestrator] ANSWER",
         kind === "worker" ? 1 : kind === "owner" ? 0 : 2
       );
+      if (kind === "peer") {
+        comment.user = { login: "vecsmaster", id: 900, type: "User" };
+      }
       if (kind === "unknown") {
         comment.user = { login: "impostor", id: 999999, type: "User" };
       }
       if (kind === "edited") {
         comment.updated_at = f.iso(1);
+      }
+      const delivered = await f.once(loop);
+      if (kind === "peer") {
+        // Watch delivers the peer project's orchestrator as this project's collaborator.
+        expect(
+          delivered.some((event) => event.line.includes("from vecsmaster (collaborator)"))
+        ).toBe(true);
       }
       await f.once(loop);
       f.advance(4 * 60_000);
@@ -185,6 +210,10 @@ test.each(["worker", "owner", "unknown", "edited"])(
         (await f.once(loop)).filter((event) => event.line.includes("READY unhandled"))
       ).toHaveLength(1);
       expect(f.reports).toEqual([]);
+      if (kind === "peer") {
+        // The peer's tag never reaches the worker session itself.
+        expect(f.workerSends).toEqual([]);
+      }
     } finally {
       f.done();
     }

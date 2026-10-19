@@ -62,19 +62,37 @@ test("only owner reviews on the head or owner status-change actors approve; card
     project: { number: 1 },
     createdAt: "2026-01-01T01:00:00Z",
   };
-  expect(isOwnerApproved({ ...pr, reviews: [review] }, filter)).toBe(true);
+  expect(isOwnerApproved({ ...pr, reviews: [review] }, filter, "example/project")).toBe(true);
   expect(
-    isOwnerApproved({ ...pr, reviews: [{ ...review, commit: { oid: "old-head" } }] }, filter)
+    isOwnerApproved(
+      { ...pr, reviews: [{ ...review, commit: { oid: "old-head" } }] },
+      filter,
+      "example/project"
+    )
   ).toBe(false);
-  expect(isOwnerApproved({ ...pr, reviews: [{ ...review, author: actor(2) }] }, filter)).toBe(
-    false
-  );
-  expect(isOwnerApproved({ ...pr, timeline: [event] }, filter)).toBe(true);
-  expect(isOwnerApproved({ ...pr, timeline: [{ ...event, actor: actor(2) }] }, filter)).toBe(false);
-  expect(isOwnerApproved({ ...pr, timeline: [{ ...event, actor: null }] }, filter)).toBe("unknown");
-  expect(isOwnerApproved({ ...pr, timeline: [{ status: "Approved" }] }, filter)).toBe(false);
   expect(
-    isOwnerApproved({ ...pr, reviews: [review], timeline: [{ ...event, actor: null }] }, filter)
+    isOwnerApproved(
+      { ...pr, reviews: [{ ...review, author: actor(2) }] },
+      filter,
+      "example/project"
+    )
+  ).toBe(false);
+  expect(isOwnerApproved({ ...pr, timeline: [event] }, filter, "example/project")).toBe(true);
+  expect(
+    isOwnerApproved({ ...pr, timeline: [{ ...event, actor: actor(2) }] }, filter, "example/project")
+  ).toBe(false);
+  expect(
+    isOwnerApproved({ ...pr, timeline: [{ ...event, actor: null }] }, filter, "example/project")
+  ).toBe("unknown");
+  expect(
+    isOwnerApproved({ ...pr, timeline: [{ status: "Approved" }] }, filter, "example/project")
+  ).toBe(false);
+  expect(
+    isOwnerApproved(
+      { ...pr, reviews: [review], timeline: [{ ...event, actor: null }] },
+      filter,
+      "example/project"
+    )
   ).toBe(true);
   expect(
     isOwnerApproved(
@@ -82,7 +100,8 @@ test("only owner reviews on the head or owner status-change actors approve; card
         ...pr,
         reviews: [{ ...review, lastEditedAt: "now", editor: actor(2) }],
       },
-      filter
+      filter,
+      "example/project"
     )
   ).toBe(false);
   expect(
@@ -91,7 +110,8 @@ test("only owner reviews on the head or owner status-change actors approve; card
         ...pr,
         timeline: [{ ...event, actor: { ...actor(), databaseId: 999 } }],
       },
-      filter
+      filter,
+      "example/project"
     )
   ).toBe(false);
 }, 15000);
@@ -123,9 +143,11 @@ test("board approval is bound to the configured project, latest status event, an
     timeline: [event],
     boardNumber: 1,
   };
-  expect(isOwnerApproved(pr, filter)).toBe(true);
+  expect(isOwnerApproved(pr, filter, "example/project")).toBe(true);
   // Approve, then push a new head: the old handover cannot authorize it.
-  expect(isOwnerApproved({ ...pr, headRefOid: "b".repeat(40) }, filter)).toBe(false);
+  expect(isOwnerApproved({ ...pr, headRefOid: "b".repeat(40) }, filter, "example/project")).toBe(
+    false
+  );
   // Deliberately reverse API order: timestamps, not array order, determine latest.
   const away = {
     ...event,
@@ -133,10 +155,16 @@ test("board approval is bound to the configured project, latest status event, an
     previousStatus: "Approved",
     createdAt: "2026-01-01T03:00:00Z",
   };
-  expect(isOwnerApproved({ ...pr, timeline: [away, event] }, filter)).toBe(false);
-  expect(isOwnerApproved({ ...pr, timeline: [{ ...event, project: { number: 2 } }] }, filter)).toBe(
+  expect(isOwnerApproved({ ...pr, timeline: [away, event] }, filter, "example/project")).toBe(
     false
   );
+  expect(
+    isOwnerApproved(
+      { ...pr, timeline: [{ ...event, project: { number: 2 } }] },
+      filter,
+      "example/project"
+    )
+  ).toBe(false);
   expect(
     isOwnerApproved(
       {
@@ -150,14 +178,23 @@ test("board approval is bound to the configured project, latest status event, an
           },
         ],
       },
-      filter
+      filter,
+      "example/project"
     )
   ).toBe(false);
   expect(
-    isOwnerApproved({ ...pr, timeline: [{ ...event, createdAt: "2026-01-01T00:00:00Z" }] }, filter)
+    isOwnerApproved(
+      { ...pr, timeline: [{ ...event, createdAt: "2026-01-01T00:00:00Z" }] },
+      filter,
+      "example/project"
+    )
   ).toBe(false);
   expect(
-    isOwnerApproved({ ...pr, timeline: [{ ...event, createdAt: handover.createdAt }] }, filter)
+    isOwnerApproved(
+      { ...pr, timeline: [{ ...event, createdAt: handover.createdAt }] },
+      filter,
+      "example/project"
+    )
   ).toBe(false);
   expect(
     isOwnerApproved(
@@ -170,20 +207,24 @@ test("board approval is bound to the configured project, latest status event, an
           },
         ],
       },
-      filter
+      filter,
+      "example/project"
     )
   ).toBe(false);
   for (const author of [actor(), actor(1), { ...actor(2), databaseId: 999 }]) {
-    expect(isOwnerApproved({ ...pr, comments: [{ ...handover, author }] }, filter)).toBe(false);
+    expect(
+      isOwnerApproved({ ...pr, comments: [{ ...handover, author }] }, filter, "example/project")
+    ).toBe(false);
   }
-  expect(isOwnerApproved({ ...pr, comments: [] }, filter)).toBe(false);
+  expect(isOwnerApproved({ ...pr, comments: [] }, filter, "example/project")).toBe(false);
   expect(
     isOwnerApproved(
       {
         ...pr,
         comments: [{ ...handover, body: `Data\n[orchestrator] OWNER REVIEW\n${sha}` }],
       },
-      filter
+      filter,
+      "example/project"
     )
   ).toBe(false);
   expect(
@@ -198,7 +239,8 @@ test("board approval is bound to the configured project, latest status event, an
           },
         ],
       },
-      filter
+      filter,
+      "example/project"
     )
   ).toBe(false);
   expect(
@@ -207,7 +249,8 @@ test("board approval is bound to the configured project, latest status event, an
         ...pr,
         comments: [{ ...handover, lastEditedAt: handover.createdAt, editor: actor(1) }],
       },
-      filter
+      filter,
+      "example/project"
     )
   ).toBe(false);
   expect(
@@ -216,12 +259,17 @@ test("board approval is bound to the configured project, latest status event, an
         ...pr,
         timeline: [event, { ...event, actor: null, createdAt: "2026-01-01T03:00:00Z" }],
       },
-      filter
+      filter,
+      "example/project"
     )
   ).toBe("unknown");
-  expect(isOwnerApproved({ ...pr, timeline: [{ ...event, createdAt: undefined }] }, filter)).toBe(
-    "unknown"
-  );
+  expect(
+    isOwnerApproved(
+      { ...pr, timeline: [{ ...event, createdAt: undefined }] },
+      filter,
+      "example/project"
+    )
+  ).toBe("unknown");
 }, 15000);
 
 test("historical board approval survives a later non-owner move and is revoked by owner", () => {
@@ -257,23 +305,36 @@ test("historical board approval survives a later non-owner move and is revoked b
     boardNumber: 1,
     historical: true,
   };
-  expect(isOwnerApproved(pr, filter)).toBe(true);
+  expect(isOwnerApproved(pr, filter, "example/project")).toBe(true);
   expect(
-    isOwnerApproved({ ...pr, timeline: [approved, { ...movedAway, actor: actor() }] }, filter)
+    isOwnerApproved(
+      { ...pr, timeline: [approved, { ...movedAway, actor: actor() }] },
+      filter,
+      "example/project"
+    )
   ).toBe(false);
   expect(
     isOwnerApproved(
       { ...pr, reviews: [{ state: "APPROVED", author: actor(), commit: { oid: sha } }] },
-      filter
+      filter,
+      "example/project"
     )
   ).toBe(true);
   expect(
-    isOwnerApproved({ ...pr, timeline: [approved, { ...movedAway, createdAt: "invalid" }] }, filter)
+    isOwnerApproved(
+      { ...pr, timeline: [approved, { ...movedAway, createdAt: "invalid" }] },
+      filter,
+      "example/project"
+    )
   ).toBe("unknown");
-  expect(isOwnerApproved({ ...pr, timeline: [{ ...approved, actor: null }] }, filter)).toBe(
-    "unknown"
-  );
   expect(
-    isOwnerApproved({ ...pr, timeline: [approved, { ...movedAway, actor: null }] }, filter)
+    isOwnerApproved({ ...pr, timeline: [{ ...approved, actor: null }] }, filter, "example/project")
+  ).toBe("unknown");
+  expect(
+    isOwnerApproved(
+      { ...pr, timeline: [approved, { ...movedAway, actor: null }] },
+      filter,
+      "example/project"
+    )
   ).toBe("unknown");
 });

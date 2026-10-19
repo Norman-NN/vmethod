@@ -214,10 +214,14 @@ test.each(
     let sibling: WatchFake | undefined;
     try {
       w.enableWrites = true;
-      w.watchPeople = [
-        ...w.watchPeople,
-        { login: "me", id: 999, type: "User", role: "orchestrator", repos: ["example/project"] },
-      ];
+      // Exactly one bound orchestrator per repository: "me" acts here, "peer" is foreign.
+      w.watchPeople = w.watchPeople
+        .map((person) =>
+          person.login === "peer" ? { ...person, repos: ["example/other"] } : person
+        )
+        .concat([
+          { login: "me", id: 999, type: "User", role: "orchestrator", repos: ["example/project"] },
+        ]);
       f.host.people = w.watchPeople;
       w.root = f.root;
       w.config = { ...f.config, board: w.config.board, vmethod: { repo: "off" } };
