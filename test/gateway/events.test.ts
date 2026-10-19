@@ -149,6 +149,60 @@ test.each(["assignment", "progress", "both"])(
   }
 );
 
+test.each(["listing", "processing"])(
+  "failed PR %s preserves links and skips board violations until recovery",
+  async (failure) => {
+    const f = setup();
+    f.task();
+    f.pulls[0].body = '<!-- vmethod-task {"issues":[6]} -->';
+    f.cards.push(f.card(6, "In review"));
+    let fail = false;
+    const fetch = f.deps.fetch;
+    f.deps.fetch = async (input, init) => {
+      const url = new URL(String(input));
+      if (
+        fail &&
+        url.pathname ===
+          (failure === "listing"
+            ? "/repos/example/project/pulls"
+            : "/repos/example/project/issues/31/comments")
+      ) {
+        throw new Error("scripted PR poll failure");
+      }
+      return fetch(input, init);
+    };
+    const loop = f.loop();
+    await f.tick(loop);
+    f.advance();
+    // The new relation must not replace the last successful snapshot on failure.
+    f.pulls[0].body = '<!-- vmethod-task {"issues":[7]} -->';
+    f.pulls.push({ ...f.pulls[0], number: 31, head: { ref: "7-task", sha } });
+    f.cards.push(f.card(7, "In review"));
+    fail = true;
+    expect((await f.once(loop)).filter((event) => event.kind === "board-violation")).toEqual([]);
+    expect(f.reports).toEqual([
+      "watcher: pull requests failed: GitHub network request failed (retry limit reached)",
+    ]);
+    // Mirror cleanup still uses the retained links, independently of reporting.
+    object(f.cards[1].content).assignees = { nodes: [{ login: "owner" }] };
+    f.advance();
+    expect((await f.once(loop)).filter((event) => event.kind === "board-violation")).toEqual([]);
+    expect(object(object(f.cards[1].content).assignees).nodes).toEqual([]);
+    fail = false;
+    f.advance();
+    const recovered = await f.once(loop);
+    expect(
+      recovered.filter((event) => event.kind === "board-violation").map((e) => e.line)
+    ).toEqual([expect.stringContaining("BOARD VIOLATION #6: In review with no assignee")]);
+    await f.ack(loop, recovered);
+    f.pulls = [];
+    f.advance();
+    expect(
+      (await f.once(loop)).filter((event) => event.kind === "board-violation").map((e) => e.line)
+    ).toEqual([expect.stringContaining("BOARD VIOLATION #7: In review with no assignee")]);
+  }
+);
+
 test.each(["missing", "active", "stale"])(
   "linked issue is exempt after an owner merge only while follow-up is pending (%s journal)",
   async (journalState) => {
