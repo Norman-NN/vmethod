@@ -87,6 +87,50 @@ function setup() {
   return { root, git, head, deps, config, reports, commands, sessions, service, add };
 }
 
+test.each([false, true])(
+  "failed du reports size unknown and continues every tree (prune=%s)",
+  async (prune) => {
+    const f = setup();
+    const trees = [f.add(1), f.add(2)];
+    const exec = f.deps.exec;
+    const measured: string[] = [];
+    f.deps.exec = async (file, args, options) => {
+      if (file === "du") {
+        expect(options?.timeout).toBe(120000);
+        measured.push(String(args[2]));
+        if (args[2] === trees[0].path) {
+          throw new Error("du permission error or timeout");
+        }
+        return `128\t${args[2]}\n`;
+      }
+      return exec(file, args, options);
+    };
+    const output = await f
+      .service()
+      .list(async (branch) => trees.find((tree) => tree.task.branch === branch)?.task, prune);
+    expect(measured).toEqual(trees.map((tree) => tree.path));
+    expect(output).toContain(`${trees[0].path}: size unknown; ${prune ? "removed" : "removable"}`);
+    expect(output).toContain(`${trees[1].path}: 128 KiB; ${prune ? "removed" : "removable"}`);
+    expect(output).toContain(
+      `Total ${prune ? "freed" : "removable"}: 128 KiB + 1 tree(s) with size unknown`
+    );
+    expect(trees.map((tree) => existsSync(tree.path))).toEqual([!prune, !prune]);
+  },
+  15000
+);
+
+test("invalid du output is unknown rather than a zero measurement", async () => {
+  const f = setup();
+  const tree = f.add(1);
+  const exec = f.deps.exec;
+  f.deps.exec = async (file, args, options) =>
+    file === "du" ? "invalid measurement" : exec(file, args, options);
+  const output = await f.service().list(async () => tree.task, false);
+  expect(output).toContain(`${tree.path}: size unknown; removable`);
+  expect(output).toContain("Total removable: 0 KiB + 1 tree(s) with size unknown");
+  expect(f.reports.join("\n")).toContain("size unknown (du failed or returned invalid output");
+}, 15000);
+
 test("cleanup removes ignored dependencies and local branch; a retry is harmless", async () => {
   const f = setup();
   const tree = f.add(1);

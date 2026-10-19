@@ -48,23 +48,33 @@ export class WorktreeService {
   ): Promise<string> {
     const lines: string[] = [];
     let total = 0;
+    let unknown = 0;
     for (const tree of await this.trees()) {
       const task = await taskFor(tree.branch);
       if (!task || !["MERGED", "CLOSED"].includes(task.state)) {
         continue;
       }
       const size = await this.size(tree.path);
+      const measurement = size === undefined ? "size unknown" : `${size} KiB`;
       const reason = await this.reason(tree.path, task);
       if (reason) {
-        lines.push(`${tree.path}: ${size} KiB; skipped: ${reason}`);
+        lines.push(`${tree.path}: ${measurement}; skipped: ${reason}`);
       } else if (!prune || (await this.cleanup(task))) {
-        total += size;
-        lines.push(`${tree.path}: ${size} KiB; ${prune ? "removed" : "removable"} (#${task.pr})`);
+        if (size === undefined) {
+          unknown++;
+        } else {
+          total += size;
+        }
+        lines.push(
+          `${tree.path}: ${measurement}; ${prune ? "removed" : "removable"} (#${task.pr})`
+        );
       } else {
-        lines.push(`${tree.path}: ${size} KiB; skipped after safety recheck`);
+        lines.push(`${tree.path}: ${measurement}; skipped after safety recheck`);
       }
     }
-    lines.push(`Total ${prune ? "freed" : "removable"}: ${total} KiB`);
+    lines.push(
+      `Total ${prune ? "freed" : "removable"}: ${total} KiB${unknown ? ` + ${unknown} tree(s) with size unknown` : ""}`
+    );
     return lines.join("\n");
   }
 
@@ -208,13 +218,25 @@ export class WorktreeService {
     return true;
   }
 
-  private async size(path: string): Promise<number> {
-    const output = await this.deps.exec("du", ["-sk", "--", path], { cwd: this.main });
-    const match = /^(\d+)\s/.exec(output);
-    if (!match || !Number.isSafeInteger(Number(match[1]))) {
-      throw new Error(`Cannot measure worktree size: ${path}`);
+  private async size(path: string): Promise<number | undefined> {
+    try {
+      // Measurement has its own two-minute budget, independent of the CLI verb's default.
+      const output = await this.deps.exec("du", ["-sk", "--", path], {
+        cwd: this.main,
+        timeout: 120000,
+      });
+      const match = /^(\d+)\s/.exec(output);
+      if (!match || !Number.isSafeInteger(Number(match[1]))) {
+        throw new Error("Invalid du measurement");
+      }
+      return Number(match[1]);
+    } catch {
+      // A measurement failure grants no deletion authority and must not hide other trees.
+      this.deps.report(
+        `${path}: size unknown (du failed or returned invalid output; inspect permissions or retry measurement)`
+      );
+      return undefined;
     }
-    return Number(match[1]);
   }
 
   private async uncontained(head: string, task: WorktreeTask): Promise<boolean> {

@@ -733,6 +733,10 @@ the same guarded cleanup. Stopping alone never removes files.
 Use orchestrator-only `vmethod worktrees` to list merged/closed task trees and their
 sizes in allocated KiB, with a total of removable space. `vmethod worktrees --prune`
 rechecks the guards, removes eligible trees and reports the total actually freed.
+Size measurements are best-effort, with a separate two-minute timeout per tree.
+A failed or invalid measurement prints `size unknown` and does not prevent listing
+or guarded pruning of that tree or later trees. Totals show the measured KiB plus
+the count of eligible/removed trees with unknown sizes, never treating unknown as zero.
 This uses the existing orchestrator-only `worker` transport operation. It never
 stops sessions implicitly. Open tasks, ambiguous branch reuse and foreign PR heads
 are not cleanup candidates.
