@@ -96,6 +96,7 @@ export class WatchFake {
   legacyError = false;
   assignmentEvents: ObjectData[] = [];
   boardSnapshot: ObjectData[] | null = null;
+  boardTimeline: Record<string, ObjectData[][]> = {};
   scopeComments: ObjectData[] = [];
   scopeTimeline: ObjectData[] | null = null;
   scopeBody = "Final scope";
@@ -306,7 +307,34 @@ export class WatchFake {
             if (!card) {
               return this.unknown(url);
             }
-            return new Response(JSON.stringify({ data: { node: { status: card.status } } }));
+            const pages = this.boardTimeline[String(card.id)] ?? [[]];
+            const index = payload.variables.cursor === null ? 0 : Number(payload.variables.cursor);
+            if (!pages[index]) {
+              return this.unknown(url);
+            }
+            return new Response(
+              JSON.stringify({
+                data: {
+                  node: {
+                    status: card.status,
+                    ...(payload.variables.turn
+                      ? {
+                          progress: card.progress,
+                          content: {
+                            timelineItems: {
+                              nodes: pages[index],
+                              pageInfo: {
+                                hasNextPage: index + 1 < pages.length,
+                                endCursor: String(index + 1),
+                              },
+                            },
+                          },
+                        }
+                      : {}),
+                  },
+                },
+              })
+            );
           }
           if (
             operation.kind === Kind.OPERATION_DEFINITION &&

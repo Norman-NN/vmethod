@@ -23,6 +23,16 @@ recorded body. Regression tests retain both raw fields, reject the raw mismatch,
 and project the body with that additional newline to verify the quoted-hash
 compatibility. Production hashing remains exact-byte; it does not normalize text.
 
+## Queue-move turn ordering (PR #165)
+
+PR #165's queue-move tests reuse `issue-scope.json` status-change events through
+`scopeMove`, changing actor, project, status, previousStatus and timestamps to the
+isolated scenarios. The changed-card re-read projects those timeline events with
+the existing assignment-event recording from `watch-actions.json`. Pagination uses
+the same connection envelope. Progress `updatedAt` uses the ISO-string field-value
+timestamp shape already recorded for Status, applied to the text field; it is a
+documented projection, not a new live capture.
+
 ## Native closing references (PR #73)
 
 `task-development-links.json` groups the nine raw GraphQL responses supplied by
