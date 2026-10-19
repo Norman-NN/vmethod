@@ -28,6 +28,7 @@ export async function taskFlowVerb(
       "--unapproved": "unapproved",
       "--model": "model",
       "--model-override": "modelOverride",
+      "--from": "from",
     } as const;
     const flags = {
       "--hold": "hold",
@@ -53,7 +54,7 @@ export async function taskFlowVerb(
         input.issue = arg;
       } else {
         throw new Error(
-          'Usage: open-task <issue> [--direct title] [--unapproved reason] [--hold] [--part] [--model family] [--model-override "reason"] [--owner-approved]'
+          'Usage: open-task <issue> [--direct title] [--unapproved reason] [--hold] [--part] [--model family] [--model-override "reason"] [--from branch] [--owner-approved]'
         );
       }
     }

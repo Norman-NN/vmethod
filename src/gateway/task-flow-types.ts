@@ -8,6 +8,8 @@ export interface OpenTaskInput {
   model?: string;
   modelOverride?: string;
   ownerApproved?: boolean;
+  /** Merge origin/<branch> into the fresh task branch with a merge commit (never squash/rebase). */
+  from?: string;
 }
 export interface TaskModelOverride {
   from: string;
