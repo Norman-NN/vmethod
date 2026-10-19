@@ -445,12 +445,15 @@ the turn to the orchestrator. See the [protocol transition table](protocol.md).
 the existing board poll, survives watcher restarts, and resets when the card leaves
 that turn or disappears. See the [orchestrator guide](orchestrator-guide.md) for
 answering owner questions without leaving the turn on you.
-Board closures emit `CLOSED #n (<completed|not planned>) by <login>` and reconcile
-Status, Progress and management turn assignees as described in [Board](board.md).
+Board closures reconcile Status, Progress and management turn assignees as described
+in [Board](board.md). Only external issue closures emit
+`CLOSED #n (<completed|not planned>) by <login>`: PR closures, own-account/journalled
+closes and issues with merged `closedByPullRequestsReferences` are silent.
 For a not-planned issue whose verified author is bound to another project (and not
-this one), `NOT PLANNED #n (requested by <login>): tell the requester` asks you to
-notify that peer. Closure events list remaining open task PRs; they never close
-those PRs. See the [orchestrator guide](orchestrator-guide.md#watch-without-wasting-budget).
+this one), `NOT PLANNED #n (requested by <login>): tell the requester` instead asks
+you to notify that peer, even for an own-account close. Closure events list remaining
+open task PRs; they never close those PRs. See the
+[orchestrator guide](orchestrator-guide.md#watch-without-wasting-budget).
 READY moves the task card to In review. HANDOFF uses 🤖🤝 (migration 0002), not the
 🔁 round marker; subsequent worker activity restores working. Other wake events
 include COMMENT, BOARD, NEXT, LAUNCH, ASSIGNED, OWNER DONE, STALE (30 minutes),

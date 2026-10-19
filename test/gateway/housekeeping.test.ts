@@ -160,7 +160,8 @@ test.each(
       }
       const events = await once();
       if (verb === "issue close") {
-        expect(events.map((event) => event.kind)).toEqual(["closed"]);
+        // Both the writing session and an observer use the same orchestrator account.
+        expect(events).toEqual([]);
       } else if (owner) {
         expect(events.map((event) => event.kind)).toEqual(["board"]);
       } else {

@@ -49,9 +49,11 @@ moves its card to Done and clears its assignee.
 
 The watcher also reconciles closures made in GitHub's UI: closed issues and closed
 or merged task PRs move to Done, with Progress and owner/orchestrator turn assignees
-cleared (worker assignments remain). It reports the closure reason and actor, and
-flags any open task PR left for a closed issue. Foreign cards and muted or
-out-of-scope threads are not changed.
+cleared (worker assignments remain). External issue closures report the reason and
+actor unless covered by a merged PR's closing reference; PR and own-account or
+journalled closures are silent. Peer not-planned requests instead prompt a requester
+notification. These notices flag any open task PR left for the issue. Foreign cards
+and muted or out-of-scope threads are not changed.
 
 ## Issue scope approval
 

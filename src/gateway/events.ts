@@ -314,8 +314,9 @@ export function listMutes(config: Config, env: NodeJS.ProcessEnv): string {
  * gateway client, filters every author through people.yaml, and hands the client
  * metadata-only wake-up lines. Events are acknowledged only after the client
  * printed them, so a kill between fetch and print loses nothing.
- * Scoped board closures reconcile Done/Progress/management turns and emit CLOSED;
- * NOT PLANNED asks the orchestrator to notify a verified peer-project requester.
+ * Scoped board closures reconcile Done/Progress/management turns silently. External
+ * issue closures emit CLOSED unless covered by a merged PR; NOT PLANNED instead
+ * asks the orchestrator to notify a verified peer-project requester.
  */
 export class EventLoop {
   private readonly dir: string;
@@ -2626,34 +2627,6 @@ export class EventLoop {
       card.assignees = next;
     }
     remove(join(this.dir, `pending-progress-${card.number}`));
-    const reason = card.stateReason === "NOT_PLANNED" ? "not planned" : "completed";
-    const openTasks =
-      card.kind === "ISSUE"
-        ? [...this.taskIssues]
-            .filter(([, issues]) => issues.includes(card.number))
-            .map(([pr]) => `#${pr}`)
-        : [];
-    const taskNote = openTasks.length ? `; open task PR ${openTasks.join(", ")} remains` : "";
-    const closure = key(`${card.repo}#${card.number}@${card.closedAt}`);
-    this.produceOnce(
-      `closed-${closure}`,
-      "closed",
-      `CLOSED #${card.number} (${reason}) by ${/^[\w-]+$/.test(card.closedBy) ? card.closedBy : "unknown"}${taskNote} ${this.threadUrl(card.repo, card.number, card.kind)}`
-    );
-    if (
-      card.kind === "ISSUE" &&
-      reason === "not planned" &&
-      card.person?.role === "orchestrator" &&
-      card.person.login.toLowerCase() !== this.me?.toLowerCase() &&
-      card.person.repos?.some((repo) => repo.toLowerCase() !== card.repo.toLowerCase()) &&
-      !card.person.repos.some((repo) => repo.toLowerCase() === card.repo.toLowerCase())
-    ) {
-      this.produceOnce(
-        `not-planned-${closure}`,
-        "not-planned",
-        `NOT PLANNED #${card.number} (requested by ${card.person.login}): tell the requester${taskNote} ${this.threadUrl(card.repo, card.number, card.kind)}`
-      );
-    }
     if (card.column !== "Done") {
       await this.host.board.set({
         itemId: card.id,
@@ -2668,6 +2641,86 @@ export class EventLoop {
       card.progress = "";
     }
     atomicWrite(join(this.dir, "board", card.id), "Done\n");
+    if (card.kind === "ISSUE") {
+      await this.notifyClosedIssue(card);
+    }
+  }
+
+  private async notifyClosedIssue(card: CardInfo): Promise<void> {
+    const closure = key(`${card.repo}#${card.number}@${card.closedAt}`);
+    const observed = `closure-observed-${closure}`;
+    if (this.marked(observed)) {
+      return;
+    }
+    const reason = card.stateReason === "NOT_PLANNED" ? "not planned" : "completed";
+    const openTasks = [...this.taskIssues]
+      .filter(([, issues]) => issues.includes(card.number))
+      .map(([pr]) => `#${pr}`);
+    const taskNote = openTasks.length ? `; open task PR ${openTasks.join(", ")} remains` : "";
+    if (
+      reason === "not planned" &&
+      card.person?.role === "orchestrator" &&
+      card.person.login.toLowerCase() !== this.me?.toLowerCase() &&
+      card.person.repos?.some((repo) => repo.toLowerCase() !== card.repo.toLowerCase()) &&
+      !card.person.repos.some((repo) => repo.toLowerCase() === card.repo.toLowerCase())
+    ) {
+      this.produceOnce(
+        `not-planned-${closure}`,
+        "not-planned",
+        `NOT PLANNED #${card.number} (requested by ${card.person.login}): tell the requester${taskNote} ${this.threadUrl(card.repo, card.number, card.kind)}`
+      );
+    } else if (
+      card.closedBy.toLowerCase() !== this.me?.toLowerCase() &&
+      !this.writes.matches(
+        { kind: "closed", repo: card.repo, number: card.number },
+        card.closedAt
+      ) &&
+      !(await this.issueClosedByMerge(card))
+    ) {
+      this.produceOnce(
+        `closed-${closure}`,
+        "closed",
+        `CLOSED #${card.number} (${reason}) by ${/^[\w-]+$/.test(card.closedBy) ? card.closedBy : "unknown"}${taskNote} ${this.threadUrl(card.repo, card.number, card.kind)}`
+      );
+    }
+    this.mark(observed);
+  }
+
+  private async issueClosedByMerge(card: CardInfo): Promise<boolean> {
+    const [owner, name] = card.repo.split("/");
+    let cursor: string | null = null;
+    const seen = new Set<string>();
+    for (let page = 0; page < PAGE_LIMIT; page++) {
+      const data = object(
+        await this.host.github.graphql(
+          `query WatchIssueClosers($owner: String!, $name: String!, $number: Int!, $cursor: String) { repository(owner: $owner, name: $name) { issue(number: $number) { closedByPullRequestsReferences(first: 100, after: $cursor) { nodes { state } pageInfo { hasNextPage endCursor } } } } }`,
+          { owner, name, number: card.number, cursor }
+        )
+      );
+      const connection = object(
+        object(object(data.repository).issue).closedByPullRequestsReferences
+      );
+      if (!Array.isArray(connection.nodes)) {
+        throw new Error("Missing issue closing references");
+      }
+      if (this.list(connection.nodes).some((pr) => pr.state === "MERGED")) {
+        return true;
+      }
+      const info = object(connection.pageInfo);
+      if (info.hasNextPage === false) {
+        return false;
+      }
+      if (
+        info.hasNextPage !== true ||
+        typeof info.endCursor !== "string" ||
+        seen.has(info.endCursor)
+      ) {
+        throw new Error("Invalid issue closing references cursor");
+      }
+      cursor = info.endCursor;
+      seen.add(cursor);
+    }
+    throw new Error("Issue closing references pagination limit reached");
   }
 
   /** Extend the existing changed-card re-read, paginating only queue-move evidence. */

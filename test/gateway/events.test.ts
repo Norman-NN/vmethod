@@ -32,6 +32,7 @@ import { scopeMove } from "./scope-fixture.js";
 import recordedActions from "../fixtures/github/watch-actions.json" with { type: "json" };
 import recordedComment from "../fixtures/github/review-comment.json" with { type: "json" };
 import { GitHubClient } from "../../src/gateway/client.js";
+import { WriteJournal } from "../../src/gateway/write-journal.js";
 import ownerReviews from "../fixtures/github/owner-reviews.json" with { type: "json" };
 import orchestratorReviews from "../fixtures/github/orchestrator-reviews.json" with { type: "json" };
 
@@ -526,9 +527,13 @@ test.each(["NOT_PLANNED", "COMPLETED"])(
     f.cards.push(card);
     let loop = f.loop();
     const events = await f.once(loop);
-    expect(events.filter((event) => event.kind === "closed").map((event) => event.line)).toEqual([
-      `CLOSED #6 (${reason === "NOT_PLANNED" ? "not planned" : "completed"}) by owner; open task PR #24 remains https://github.com/example/project/issues/6`,
-    ]);
+    expect(events.filter((event) => event.kind === "closed").map((event) => event.line)).toEqual(
+      reason === "NOT_PLANNED"
+        ? []
+        : [
+            "CLOSED #6 (completed) by owner; open task PR #24 remains https://github.com/example/project/issues/6",
+          ]
+    );
     expect(
       events.filter((event) => event.kind === "not-planned").map((event) => event.line)
     ).toEqual(
@@ -598,9 +603,7 @@ test.each(["CLOSED", "MERGED"])(
     object(card.content).closure = { nodes: [{ actor: { login: "owner" } }] };
     object(card.content).assignees = { nodes: [{ login: "owner" }, { login: "worker" }] };
     const events = await f.once(f.loop());
-    expect(events.filter((event) => event.kind === "closed").map((event) => event.line)).toEqual([
-      "CLOSED #24 (completed) by owner https://github.com/example/project/pull/24",
-    ]);
+    expect(events.filter((event) => event.kind === "closed")).toEqual([]);
     expect(object(card.status).name).toBe("Done");
     expect(object(card.progress).text).toBeNull();
     expect(object(object(card.content).assignees).nodes).toEqual([{ login: "worker" }]);
@@ -651,7 +654,7 @@ test("a peer issue already moved to Done by GitHub still clears the turn and not
   card.progress = { text: "👤❓" };
   f.cards = [card];
   const loop = f.loop();
-  expect((await f.once(loop)).map((event) => event.kind)).toEqual(["closed", "not-planned"]);
+  expect((await f.once(loop)).map((event) => event.kind)).toEqual(["not-planned"]);
   expect(object(card.status).name).toBe("Done");
   expect(object(card.progress).text).toBeNull();
   expect(object(object(card.content).assignees).nodes).toEqual([]);
@@ -680,6 +683,84 @@ test("a reopened peer issue closed again emits a new closure notification", asyn
   f.advance();
   Object.assign(object(card.content), { state: "CLOSED", closedAt: f.iso() });
   expect((await f.once(loop)).filter((event) => event.kind === "not-planned")).toHaveLength(1);
+});
+
+test.each(["account", "journal", "merged reference", "later merged reference"])(
+  "an issue closure from %s cleans up silently, including after restart",
+  async (source) => {
+    const f = setup();
+    const card = f.card();
+    Object.assign(object(card.content), {
+      state: "CLOSED",
+      closedAt: f.iso(),
+      closure: { nodes: [{ actor: { login: source === "account" ? "Me" : "owner" } }] },
+      assignees: { nodes: [{ login: "owner" }] },
+    });
+    card.progress = { text: "👤❓" };
+    f.cards = [card];
+    if (source === "journal") {
+      new WriteJournal(f.config, f.env, () => f.clock).record(
+        "/repos/example/project/issues/6",
+        "PATCH",
+        { state: "closed" },
+        { number: 6 },
+        f.iso()
+      );
+    }
+    if (source === "merged reference") {
+      f.closingPrs[6] = [[{ state: "MERGED" }]];
+    }
+    if (source === "later merged reference") {
+      f.closingPrs[6] = [[{ state: "OPEN" }, { state: "CLOSED" }], [{ state: "MERGED" }]];
+    }
+    let loop = f.loop();
+    expect(await f.once(loop)).toEqual([]);
+    expect(object(card.status).name).toBe("Done");
+    expect(object(card.progress).text).toBeNull();
+    expect(object(object(card.content).assignees).nodes).toEqual([]);
+    loop.close();
+    loop = f.loop();
+    expect(await f.once(loop)).toEqual([]);
+    expect(f.reports).toEqual([]);
+  }
+);
+
+test("an owner UI closure with only open or unmerged closing references emits exactly one CLOSED", async () => {
+  const f = setup();
+  const card = f.card();
+  Object.assign(object(card.content), {
+    state: "CLOSED",
+    closedAt: f.iso(),
+    closure: { nodes: [{ actor: { login: "owner" } }] },
+  });
+  f.cards = [card];
+  f.closingPrs[6] = [[{ state: "OPEN" }], [{ state: "CLOSED" }]];
+  const loop = f.loop();
+  expect((await f.once(loop)).map((event) => event.line)).toEqual([
+    "CLOSED #6 (completed) by owner https://github.com/example/project/issues/6",
+  ]);
+  expect(await f.once(loop)).toEqual([]);
+  expect(f.reports).toEqual([]);
+});
+
+test("an own-account not-planned close still notifies a verified peer requester", async () => {
+  const f = setup();
+  f.watchPeople = people.map((person) =>
+    person.login === "peer" ? { ...person, repos: ["example/other"] } : person
+  );
+  const card = f.card();
+  Object.assign(object(card.content), {
+    author: actor(2),
+    state: "CLOSED",
+    stateReason: "NOT_PLANNED",
+    closedAt: f.iso(),
+    closure: { nodes: [{ actor: { login: "me" } }] },
+  });
+  f.cards = [card];
+  expect((await f.once(f.loop())).map((event) => event.line)).toEqual([
+    "NOT PLANNED #6 (requested by peer): tell the requester https://github.com/example/project/issues/6",
+  ]);
+  expect(f.reports).toEqual([]);
 });
 
 test.each(["auto-", "", "legacy"])(

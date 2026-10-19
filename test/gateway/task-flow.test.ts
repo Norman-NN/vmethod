@@ -270,6 +270,7 @@ test.each(
           ["27", ...(carryApproval ? ["--carry-approval", "Conflict resolution only"] : [])],
           commandEnv
         );
+        w.closingPrs[8] = [[{ state: "MERGED" }]];
       } else {
         const file = join(f.root, ".tmp", "review.md");
         mkdirSync(join(f.root, ".tmp"), { recursive: true });
@@ -339,9 +340,10 @@ test.each(
           verb === "open-task" ? "owner-done" : verb === "merge-task" ? "button-merge" : "comment"
         );
       } else {
-        expect(events.map((event) => event.kind)).toEqual(
-          verb === "merge-task" ? ["closed", "closed"] : []
-        );
+        expect(events).toEqual([]);
+      }
+      if (verb === "merge-task") {
+        expect(events.filter((event) => event.kind === "closed")).toEqual([]);
       }
       if (sibling) {
         expect(events.some((event) => event.line.includes("this account, another session"))).toBe(
@@ -360,11 +362,9 @@ test.each(
         sibling.pulls = w.pulls;
         sibling.gone = w.gone;
         sibling.assignmentEvents = w.assignmentEvents;
+        sibling.closingPrs = w.closingPrs;
         sibling.clock = w.clock;
-        const siblingEvents = await sibling.once(sibling.loops[0]);
-        expect(siblingEvents.map((event) => event.kind)).toEqual(
-          verb === "merge-task" ? ["closed", "closed"] : []
-        );
+        expect(await sibling.once(sibling.loops[0])).toEqual([]);
         expect(sibling.reports).toEqual([]);
       }
       expect(w.reports).toEqual([]);
