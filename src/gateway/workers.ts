@@ -331,9 +331,45 @@ export class WorkerService {
         record.segments.slice(0, -1).flatMap((s) => Object.keys(s.requests ?? {}))
       );
       const model = this.models.find((m) => m.family === segment.family);
+      const requests = (status.requests ?? []).filter((request) => {
+        if (priorIds.has(request.id)) {
+          return false;
+        }
+        if (record.segments.length === 1) {
+          return true;
+        }
+        if (request.model && request.model !== segment.model) {
+          return false;
+        }
+        // A unique model is sufficient even for adopted sessions predating `at`.
+        // Missing/repeated models need the switch time, not an absent legacy cache.
+        return request.model && !record.segments.slice(0, -1).some((s) => s.model === request.model)
+          ? true
+          : request.created !== undefined && request.created >= Date.parse(segment.at);
+      });
+      const cache = { ...segment.requests };
+      for (const request of requests) {
+        Object.defineProperty(cache, request.id, {
+          value: { tokens: request.tokens },
+          enumerable: true,
+          configurable: true,
+        });
+      }
+      const measured = Object.values(cache).reduce(
+        (sum, entry) => addTokens(sum, entry.tokens),
+        zeroTokens()
+      );
+      const exceedsTotal = (Object.keys(measured) as (keyof typeof measured)[]).some(
+        (key) => measured[key] > segment.usage!.tokens[key]
+      );
+      // Inconsistent history cannot block grading or count another segment twice.
+      // Discard its request cache and use only this segment's recorded totals.
+      if (exceedsTotal) {
+        segment.requests = {};
+      }
       const cost = requestCost(
         segment.usage.tokens,
-        (status.requests ?? []).filter((request) => !priorIds.has(request.id)),
+        exceedsTotal ? [] : requests,
         (request) =>
           request.model
             ? (this.models.find((m) => m.model === request.model) ?? {})
