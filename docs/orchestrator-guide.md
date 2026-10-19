@@ -68,9 +68,13 @@ sets `👤🔍`. Nothing is added to the body. Have the owner read it and move i
 Approved again. Changes requested or further discussion require another rewrite
 and scope review. `open-task` and `merge-task` check the same body-bound evidence;
 an unchanged approval covers all parts despite intervening orchestrator moves.
+Hand-posted reviews may wrap the hex digest in backticks; exactly one hash line
+is required in either format.
 
-An owner Approved move on an orchestrator-written issue with no comments is the
-trivial shortcut. Any comment voids that shortcut. Projects can opt specific
+An owner Approved move on an orchestrator-written issue with only trusted
+orchestrator comments (or no comments) is the trivial shortcut. Comments from
+anyone else void it, including unknown authors/editors. Your own OWNER QUESTION
+handover does not: fold conclusions into the body, not comments. Projects can opt specific
 labels into `scope.fastPath`, for example `{ fastPath: [bug] }` under `scope` in
 `vmethod.yaml`. A matching label waives the owner wait only after SCOPE REVIEW
 records the current body. It is off by default and unset in vmethod itself.

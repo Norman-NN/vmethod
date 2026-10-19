@@ -46,7 +46,7 @@ export function scopeApproved(
     ) {
       return true;
     }
-  } else if (!trusted(issue) || comments.length !== 0) {
+  } else if (!trusted(issue) || comments.some((comment) => !trusted(comment))) {
     return false;
   }
   const latest = ownerApprovalAt(timeline, config, filter);
@@ -82,8 +82,11 @@ function ownerApprovalAt(
 }
 
 function matchesBody(review: ObjectData, body: string): boolean {
-  const hashes = [...String(review.body).matchAll(/^body sha256: ([a-f\d]{64})\r?$/gm)];
-  return hashes.length === 1 && hashes[0][1] === bodyHash(body);
+  const lines = String(review.body)
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("body sha256:"));
+  const hash = /^body sha256: (?:([a-f\d]{64})|`([a-f\d]{64})`)$/.exec(lines[0] ?? "");
+  return lines.length === 1 && hash !== null && (hash[1] ?? hash[2]) === bodyHash(body);
 }
 
 function reviewPending(
@@ -115,7 +118,7 @@ function reviewPending(
 }
 
 /** Batch scope reads for a board poll. Unknown authors are filtered before body reads.
- * Connections paginate; all comments (including rejected authors) count for the shortcut.
+ * Connections paginate; non-orchestrator comments (including rejected authors) void the shortcut.
  */
 export class ScopeReader {
   constructor(
@@ -158,6 +161,7 @@ export class ScopeReader {
     const trusted = metas.filter(
       (item) => this.accept(item) && this.filter.identity(item.author)?.role === "orchestrator"
     );
+    const requestedComments = new Set(trusted.map((item) => item.id));
     const bodies = new Map(
       (
         await this.nodes(
@@ -175,11 +179,17 @@ export class ScopeReader {
       }
       const id = String(issue.id);
       const events = timeline.get(id) ?? [];
-      const discussion = (comments.get(id) ?? []).map((meta) => bodies.get(meta.id) ?? meta);
+      const commentMetas = comments.get(id) ?? [];
+      // A rejected body re-read must not restore an earlier, trusted editor snapshot.
+      const complete = !commentMetas.some(
+        (meta) => requestedComments.has(meta.id) && !bodies.has(meta.id)
+      );
+      const discussion = commentMetas.map((meta) => bodies.get(meta.id) ?? meta);
       result.set(id, {
-        approved: scopeApproved(issue, discussion, events, this.config, this.filter),
+        approved: complete && scopeApproved(issue, discussion, events, this.config, this.filter),
         ownerApproved: ownerApprovalAt(events, this.config, this.filter) !== null,
-        reviewPending: reviewPending(issue, discussion, events, this.config, this.filter),
+        reviewPending:
+          complete && reviewPending(issue, discussion, events, this.config, this.filter),
       });
     }
     return result;

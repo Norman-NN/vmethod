@@ -17,6 +17,12 @@ preserving their recorded types. WatchFake's default scope evidence represents
 an orchestrator-written, uncommented issue followed by an owner Approved move;
 explicit scope tests replace those defaults with discussion and review evidence.
 
+The captured hand-posted SCOPE REVIEW wraps its digest in backticks. Its digest
+matches the recorded body **plus one additional trailing newline**, not the exact
+recorded body. Regression tests retain both raw fields, reject the raw mismatch,
+and project the body with that additional newline to verify the quoted-hash
+compatibility. Production hashing remains exact-byte; it does not normalize text.
+
 ## Native closing references (PR #73)
 
 `task-development-links.json` groups the nine raw GraphQL responses supplied by

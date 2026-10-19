@@ -8,7 +8,7 @@ import { getConfig } from "../../src/config.js";
 import { object, type ObjectData } from "../../src/gateway/people.js";
 import type { Card } from "../../src/board/types.js";
 import { validProject } from "../helpers.js";
-import { people, sha } from "./helpers.js";
+import { actor, people, sha } from "./helpers.js";
 import legacyBodies from "../fixtures/github/legacy-task-bodies.json" with { type: "json" };
 import closingReferences from "../fixtures/github/task-closing-references.json" with { type: "json" };
 import developmentLinks from "../fixtures/github/task-development-links.json" with { type: "json" };
@@ -33,6 +33,8 @@ test.each([
   { scenario: "reviewed", proceed: true },
   { scenario: "changed", proceed: false },
   { scenario: "trivial", proceed: true },
+  { scenario: "orchestrator question", proceed: true },
+  { scenario: "quoted hash", proceed: true },
   { scenario: "one comment", proceed: false },
   { scenario: "fast", proceed: true },
   { scenario: "fast unset", proceed: false },
@@ -50,9 +52,12 @@ test.each([
       ? []
       : [
           scopeComment({
+            author: ["conclusions", "one comment"].includes(scenario) ? actor() : actor(2),
             body: ["conclusions", "one comment"].includes(scenario)
               ? "Discussion"
-              : `[orchestrator] SCOPE REVIEW\n\nbody sha256: ${bodyHash("Final scope")}`,
+              : scenario === "orchestrator question"
+                ? "[orchestrator] OWNER QUESTION\n\nMove this to Approved to start."
+                : `[orchestrator] SCOPE REVIEW\n\nbody sha256: ${scenario === "quoted hash" ? `\`${bodyHash("Final scope")}\`` : bodyHash("Final scope")}`,
           }),
         ];
   if (scenario === "fast") {

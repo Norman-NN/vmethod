@@ -16,6 +16,7 @@ import {
 } from "./scope-fixture.js";
 import { fixture } from "../helpers.js";
 import { WatchFake } from "./watch-fake.js";
+import recordedScope from "../fixtures/github/issue-scope.json" with { type: "json" };
 
 const filter = () =>
   new PeopleFilter(people, "example", new Digest({ XDG_STATE_HOME: fixture() }, "scope", () => 0));
@@ -71,7 +72,7 @@ test("scope is bound to the latest authenticated review body and a strictly late
   }
 });
 
-test("the uncommented orchestrator shortcut requires an owner move after the last body edit", () => {
+test("the orchestrator shortcut requires an owner move after the last body edit", () => {
   const f = filter(),
     issue = scopeIssue(),
     move = scopeMove();
@@ -99,6 +100,70 @@ test("the uncommented orchestrator shortcut requires an owner move after the las
     )
   ).toBe(false);
 });
+
+test("trusted orchestrator OWNER QUESTION comments preserve the trivial shortcut; other commenters or editors void it", () => {
+  const f = filter(),
+    issue = scopeIssue(),
+    timeline = [scopeMove()];
+  const question = scopeComment({
+    body: "[orchestrator] OWNER QUESTION\n\nMove this to Approved to start.",
+  });
+  expect(scopeApproved(issue, [question], timeline, config, f)).toBe(true);
+  expect(
+    scopeApproved(
+      issue,
+      [
+        question,
+        scopeComment({ id: "edited", lastEditedAt: "2026-01-02T01:00:00Z", editor: actor(2) }),
+      ],
+      timeline,
+      config,
+      f
+    )
+  ).toBe(true);
+  for (const comment of [
+    scopeComment({ author: actor() }),
+    scopeComment({ author: actor(1) }),
+    scopeComment({ author: { ...actor(2), databaseId: 99999 } }),
+    scopeComment({ lastEditedAt: "2026-01-02T01:00:00Z", editor: actor() }),
+    scopeComment({ lastEditedAt: "2026-01-02T01:00:00Z", editor: null }),
+  ]) {
+    expect(scopeApproved(issue, [question, comment], timeline, config, f)).toBe(false);
+  }
+});
+
+test.each([false, true])(
+  "scope review accepts exactly one plain or backtick-wrapped digest (wrapped=%s)",
+  (wrapped) => {
+    const f = filter(),
+      issue = scopeIssue({ author: actor() }),
+      timeline = [scopeMove()];
+    const digest = bodyHash("Final scope");
+    const line = `body sha256: ${wrapped ? `\`${digest}\`` : digest}`;
+    const comment = review({ body: `[orchestrator] SCOPE REVIEW\n\n${line}` });
+    expect(scopeApproved(issue, [comment], timeline, config, f)).toBe(true);
+    expect(scopeApproved({ ...issue, body: "Changed" }, [comment], timeline, config, f)).toBe(
+      false
+    );
+    for (const invalid of [
+      `${line}\n${line}`,
+      `${line}\nbody sha256: ${wrapped ? digest : `\`${digest}\``}`,
+      `body sha256: \`${digest}`,
+      `body sha256: ${digest}\``,
+      `${line}\nbody sha256: malformed`,
+    ]) {
+      expect(
+        scopeApproved(
+          issue,
+          [review({ body: `[orchestrator] SCOPE REVIEW\n\n${invalid}` })],
+          timeline,
+          config,
+          f
+        )
+      ).toBe(false);
+    }
+  }
+);
 
 test("fast-path labels waive waiting, never waive a current scope review", () => {
   const f = filter(),
@@ -162,6 +227,49 @@ test("the real recording decodes through a batched filtered reader; rejected com
   f.done();
 });
 
+test.each([false, true])(
+  "recorded backtick handover preserves exact-byte hashing (append recorded hash's missing newline=%s)",
+  async (appendNewline) => {
+    const recorded = recordedScope.repository.issue;
+    const recordedReview = recorded.comments.nodes.find((comment) =>
+      comment.body.startsWith("[orchestrator] SCOPE REVIEW\n")
+    );
+    const recordedMove = recorded.timelineItems.nodes.find(
+      (event) => event.status === "Approved" && event.actor.login === "jpeletier"
+    );
+    if (!recordedReview || !recordedMove) {
+      throw new Error("Recorded scope handover or owner move missing");
+    }
+    const issue = scopeIssue({
+      body: recorded.body + (appendNewline ? "\n" : ""),
+      createdAt: recorded.createdAt,
+      lastEditedAt: recorded.lastEditedAt,
+      editor: actor(2),
+    });
+    const comment = scopeComment({
+      ...recordedReview,
+      repository: issue.repository,
+      author: actor(2),
+      editor: null,
+    });
+    const move = scopeMove({ ...recordedMove, actor: actor(), project: { number: 1 } });
+    const f = fixtureServer([
+      scopeGraph({ nodes: [issue] }),
+      scopeGraph({ nodes: [issue] }),
+      scopeGraph({ n0: { ...issue, comments: scopeConnection([comment]) } }),
+      scopeGraph({ n0: { ...issue, timelineItems: scopeConnection([move]) } }),
+      scopeGraph({ nodes: [comment] }),
+    ]);
+    const settings = getConfig(f.root, {});
+    expect(
+      await new ScopeReader(new GitHubClient(settings, f.env, f.deps), filter(), settings).approved(
+        [String(issue.id)]
+      )
+    ).toEqual(new Map([[issue.id, appendNewline]]));
+    f.done();
+  }
+);
+
 test("scope reader paginates discussion and fetches only accepted orchestrator comment bodies", async () => {
   const issue = scopeIssue();
   const first = scopeConnection([scopeComment({ id: "owner-comment", author: actor() })]);
@@ -184,6 +292,35 @@ test("scope reader paginates discussion and fetches only accepted orchestrator c
       "node-1",
     ])
   ).toEqual(new Map([["node-1", true]]));
+  f.done();
+});
+
+test("an orchestrator comment edited by an unknown account during the body read voids the shortcut", async () => {
+  const issue = scopeIssue();
+  const comment = scopeComment({
+    body: "[orchestrator] OWNER QUESTION\n\nMove this to Approved to start.",
+  });
+  const f = fixtureServer([
+    scopeGraph({ nodes: [issue] }),
+    scopeGraph({ nodes: [issue] }),
+    scopeGraph({ n0: { ...issue, comments: scopeConnection([comment]) } }),
+    scopeGraph({ n0: { ...issue, timelineItems: scopeConnection([scopeMove()]) } }),
+    scopeGraph({
+      nodes: [
+        {
+          ...comment,
+          lastEditedAt: "2026-01-02T01:00:00Z",
+          editor: { ...actor(2), databaseId: 99999 },
+        },
+      ],
+    }),
+  ]);
+  const settings = getConfig(f.root, {});
+  expect(
+    await new ScopeReader(new GitHubClient(settings, f.env, f.deps), filter(), settings).approved([
+      String(issue.id),
+    ])
+  ).toEqual(new Map([[issue.id, false]]));
   f.done();
 });
 
@@ -255,7 +392,7 @@ test.each(["", "body sha256: forged", "[orchestrator] SCOPE REVIEW\nForged"])(
 
 test("watcher emits SCOPE rather than LAUNCH for approved conclusions, then LAUNCH after body-bound review", async () => {
   const f = new WatchFake();
-  f.scopeComments = [scopeComment({ body: "Discussion" })];
+  f.scopeComments = [scopeComment({ author: actor(), body: "Discussion" })];
   f.cards = [f.card(6, "Ready")];
   f.issues = [{ number: 6, labels: [] }];
   const loop = f.loop();
