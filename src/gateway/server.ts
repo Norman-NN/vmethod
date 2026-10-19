@@ -857,10 +857,10 @@ class GatewayServer {
     );
     await this.board.setIssueField(
       String(issue.id),
-      "Progress",
+      "Status",
+      "In review",
       renderProgress({ state: "owner-review", round: null, red: false })
     );
-    await this.board.setIssueField(String(issue.id), "Status", "In review");
     return `Scope review requested for #${number}`;
   };
 

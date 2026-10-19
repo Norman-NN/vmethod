@@ -439,7 +439,12 @@ export class BoardService implements BoardIO {
    * Estimates must use the shared points scale. Cost is refused. Status writes clear Progress;
    * GitHubClient journals the successful mutations.
    */
-  async setIssueField(contentId: string, name: string, value: string | null): Promise<string> {
+  async setIssueField(
+    contentId: string,
+    name: string,
+    value: string | null,
+    progressValue?: string
+  ): Promise<string> {
     if (name === "Cost") {
       throw new Error("Never set Cost on an issue");
     }
@@ -452,6 +457,9 @@ export class BoardService implements BoardIO {
     }
     if (value === null && !["Progress", "Estimate"].includes(name)) {
       throw new Error("Only Progress and Estimate support --clear");
+    }
+    if (progressValue !== undefined && (name !== "Status" || !progressValue.trim())) {
+      throw new Error("Progress override is supported only for Status writes");
     }
     const snapshot = await this.snapshot();
     compatibility(readState(snapshot.readme), this.boardVersion, this.report);
@@ -469,6 +477,19 @@ export class BoardService implements BoardIO {
         ...Object.values(readState(snapshot.readme).aliases),
       ]);
       const words = value.trim().split(/\s+/);
+      if (
+        !states.has(words[0]) ||
+        !/^(?:🔁(?:\d\uFE0F\u20E3)+(?: 🔴)?|🔴)?$/.test(words.slice(1).join(" "))
+      ) {
+        throw new Error("Invalid Progress value");
+      }
+    }
+    if (progressValue !== undefined) {
+      const states = new Set([
+        ...Object.values(progressStates),
+        ...Object.values(readState(snapshot.readme).aliases),
+      ]);
+      const words = progressValue.trim().split(/\s+/);
       if (
         !states.has(words[0]) ||
         !/^(?:🔁(?:\d\uFE0F\u20E3)+(?: 🔴)?|🔴)?$/.test(words.slice(1).join(" "))
@@ -498,11 +519,11 @@ export class BoardService implements BoardIO {
       { id: card.id, field, value: parsed },
     ];
     if (name === "Status") {
-      const progress = snapshot.fields.find((field) => field.name === "Progress");
-      if (!progress) {
+      const progressField = snapshot.fields.find((field) => field.name === "Progress");
+      if (!progressField) {
         throw new Error("Missing Progress field");
       }
-      changes.unshift({ id: card.id, field: progress, value: null });
+      changes.unshift({ id: card.id, field: progressField, value: progressValue ?? null });
     }
     await this.setChanges(snapshot.id, changes);
     return "Board field updated";

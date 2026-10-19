@@ -27,35 +27,6 @@ test("scope-review publishes the body hash and hands the issue card to the owner
       }),
     }),
     {
-      path: "/repos/example/project/issues/39/comments",
-      body: {
-        body: `[orchestrator] SCOPE REVIEW\n\nI have updated the main body to the final scope.\n\n${summary}\n\nbody sha256: ${bodyHash("Specification")}`,
-      },
-      json: {},
-    },
-    ...boardReads(recording),
-    {
-      path: "/graphql",
-      json: {
-        data: { m0: { projectV2Item: { id: card.id } }, m1: { projectV2Item: { id: card.id } } },
-      },
-      checkQuery(_query, variables) {
-        expect(
-          Object.values(variables).map((value) => (value as { value: unknown }).value)
-        ).toEqual([undefined, { singleSelectOptionId: option.id }]);
-      },
-    },
-    ...boardReads(recording),
-    {
-      path: "/graphql",
-      json: { data: { m0: { projectV2Item: { id: card.id } } } },
-      checkQuery(_query, variables) {
-        expect(
-          Object.values(variables).map((value) => (value as { value: unknown }).value)
-        ).toEqual([{ text: "👤🔍" }]);
-      },
-    },
-    {
       path: "/repos/example/project/issues/39/assignees",
       method: "DELETE",
       body: { assignees: ["peer"] },
@@ -66,6 +37,23 @@ test("scope-review publishes the body hash and hands the issue card to the owner
       method: "POST",
       body: { assignees: ["owner"] },
       json: {},
+    },
+    {
+      path: "/repos/example/project/issues/39/comments",
+      body: {
+        body: `[orchestrator] SCOPE REVIEW\n\nI have updated the main body to the final scope.\n\n${summary}\n\nbody sha256: ${bodyHash("Specification")}`,
+      },
+      json: {},
+    },
+    ...boardReads(recording),
+    {
+      path: "/graphql",
+      json: { data: { m0: { projectV2Item: { id: card.id } } } },
+      checkQuery(_query, variables) {
+        expect(
+          Object.values(variables).map((value) => (value as { value: unknown }).value)
+        ).toEqual([{ text: "👤🔍" }, { singleSelectOptionId: option.id }]);
+      },
     },
   ]);
   const file = join(f.root, "scope-summary.md");

@@ -150,6 +150,29 @@ test.each(["assignment", "progress", "both"])(
   }
 );
 
+test("watcher suppresses a recent own In review violation during the handoff poll", async () => {
+  const f = setup();
+  const card = f.card(6, "In review");
+  card.progress = { text: "👤🔍" };
+  f.cards.push(card);
+  mkdirSync(f.dir, { recursive: true });
+  writeFileSync(
+    join(f.dir, "writes.jsonl"),
+    `${JSON.stringify({
+      at: f.iso(),
+      kind: "board",
+      repo: "example/project",
+      number: 6,
+      field: "Status",
+      value: "In review",
+    })}\n`
+  );
+  const loop = f.loop();
+  expect((await f.once(loop)).filter((event) => event.kind === "board-violation")).toEqual([]);
+  expect(object(object(card.content).assignees).nodes).toEqual([{ login: "owner" }]);
+  f.done();
+});
+
 test.each(["listing", "processing"])(
   "failed PR %s preserves links and skips board violations until recovery",
   async (failure) => {
