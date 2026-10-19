@@ -911,12 +911,20 @@ test.each([false, true])(
     } else {
       await f.flow().ask("8", file);
       expect(f.touched).toContainEqual(
-        expect.objectContaining({ id: "issue", field: "Progress", value: "👤❓" })
+        expect.objectContaining({
+          id: "issue",
+          field: "Status",
+          value: "In review",
+          progress: "👤❓",
+        })
       );
       expect(f.writes).toContainEqual({
         path: "/repos/example/project/issues/8/assignees",
         body: { assignees: ["owner"] },
       });
+      expect(f.events.indexOf("POST /repos/example/project/issues/8/assignees")).toBeLessThan(
+        f.events.indexOf("board issue Status In review")
+      );
       expect(f.writes.find((write) => write.path.endsWith("/comments"))?.body.body).toMatch(
         /^\[orchestrator\] OWNER QUESTION/
       );

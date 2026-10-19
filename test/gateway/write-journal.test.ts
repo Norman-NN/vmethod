@@ -31,6 +31,22 @@ test.each([
   }
 );
 
+test("recent own In review status writes identify a handoff window for the watcher", () => {
+  const f = fixtureServer([]);
+  const config = { ...getConfig(f.root, {}), repo: "example/project" };
+  const at = new Date(f.deps.now()).toISOString();
+  const dir = join(f.env.XDG_STATE_HOME, "vmethod", "example-state");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, "writes.jsonl"),
+    `${JSON.stringify({ at, kind: "board", repo: "example/project", number: 58, field: "Status", value: "In review" })}\n`
+  );
+  const journal = new WriteJournal(config, f.env, f.deps.now);
+  expect(journal.recentlyWrote("example/project", 58)).toBe(true);
+  expect(journal.recentlyWrote("example/project", 59)).toBe(false);
+  f.done();
+});
+
 test("GraphQL comment database/node ids use the same exact attribution as REST", async () => {
   const f = fixtureServer([
     { path: "/graphql", json: { data: { repository: { issue: { id: "issue-node" } } } } },
