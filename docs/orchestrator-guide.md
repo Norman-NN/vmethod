@@ -116,7 +116,10 @@ as worker discretion. Execution instructions belong in the pinned
 
 Use `open-task` (vmethod 1.0, #8) and `start-worker` (vmethod 1.0, #9).
 Set the PR card's Model field, respect holds and gates, and give one worker its own
-worktree. `worker start` generates the first prompt with inline authority rules,
+worktree. The issue card's Model is the owner's hint: omit `--model` to use it, and
+launch on a different family only when your analysis says otherwise, passing
+`--model-override "<reason>"` so the override is recorded on the issue and graded
+with the delivery's opening model segment. `worker start` generates the first prompt with inline authority rules,
 task values and the guide path; adoption, backend changes and replacement sessions
 receive it again, but ordinary same-backend switches and review wakes do not. Inspect
 status shortly after launch for permission or turn failures. Keep prompts and logs

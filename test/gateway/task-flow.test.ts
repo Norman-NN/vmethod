@@ -20,6 +20,7 @@ import { taskFlowVerb } from "../../src/cli/task-flow.js";
 import type { Operations, Transport } from "../../src/gateway/transport.js";
 import { WorkerService } from "../../src/gateway/workers.js";
 import { bodyHash, scopeApproved } from "../../src/gateway/scope.js";
+import { taskModelOverride } from "../../src/gateway/task-flow-types.js";
 import { PeopleFilter } from "../../src/gateway/people.js";
 import { Digest } from "../../src/gateway/digest.js";
 import { scopeIssue, scopeComment, scopeMove } from "./scope-fixture.js";
@@ -79,6 +80,95 @@ test.each([
     expect(f.writes).toEqual([]);
   }
   f.done();
+});
+
+test.each([
+  {
+    case: "contradicting model",
+    input: { issue: "8", model: "sol" },
+    error:
+      'issue #8 has Model glm on its card; use it (omit --model) or override with --model-override "<reason>"',
+  },
+  {
+    case: "empty override reason",
+    input: { issue: "8", model: "sol", modelOverride: "  " },
+    error: "Invalid task text argument",
+  },
+  {
+    case: "multiline override reason",
+    input: { issue: "8", model: "sol", modelOverride: "first\nsecond" },
+    error: "--model-override requires --model and a single-line reason",
+  },
+  {
+    case: "override without model",
+    input: { issue: "8", modelOverride: "tier" },
+    error: "--model-override requires --model and a single-line reason",
+  },
+])(
+  "open-task refuses a contradicting model without a written reason: $case",
+  async ({ input, error }) => {
+    const f = fixture();
+    f.cards[0].values.Model = "glm";
+    await expect(f.flow().open(input)).rejects.toThrow(error);
+    expect(f.writes).toEqual([]);
+    f.done();
+  }
+);
+
+test("open-task override posts the issue note and records the marker override", async () => {
+  const f = fixture();
+  f.cards[0].values.Model = "glm";
+  await expect(
+    f.flow().open({ issue: "8", model: "sol", modelOverride: "needs expensive tier" })
+  ).resolves.toContain("27");
+  const note = f.writes.find((write) => write.path === "/repos/example/project/issues/8/comments");
+  expect(note?.body.body).toBe(
+    "[orchestrator] NOTE: model override: using sol instead of the card's glm — needs expensive tier"
+  );
+  const created = f.writes.find((write) => write.path === "/repos/example/project/pulls");
+  expect(String(created?.body.body)).toContain(
+    '"modelOverride":{"from":"glm","to":"sol","reason":"needs expensive tier"}'
+  );
+  f.done();
+});
+
+test.each([
+  { case: "matching --model", card: "glm", input: { issue: "8", model: "glm" }, family: "glm" },
+  { case: "absent --model", card: "glm", input: { issue: "8" }, family: "glm" },
+  { case: "no card Model", card: undefined, input: { issue: "8", model: "sol" }, family: "sol" },
+])("open-task without an override proceeds unchanged: $case", async ({ card, input, family }) => {
+  const f = fixture();
+  if (card) {
+    f.cards[0].values.Model = card;
+  }
+  await expect(f.flow().open(input)).resolves.toContain("27");
+  const created = f.writes.find((write) => write.path === "/repos/example/project/pulls");
+  expect(String(created?.body.body)).not.toContain("modelOverride");
+  expect(
+    f.writes.filter((write) => write.path === "/repos/example/project/issues/8/comments")
+  ).toEqual([]);
+  expect(f.touched).toContainEqual(
+    expect.objectContaining({ id: "pr", field: "Model", value: family })
+  );
+  f.done();
+});
+
+test("taskModelOverride reads only the structured marker and refuses malformed overrides", () => {
+  expect(taskModelOverride('<!-- vmethod-task {"issues":[8]} -->')).toBeUndefined();
+  expect(
+    taskModelOverride(
+      '<!-- vmethod-task {"issues":[8],"modelOverride":{"from":"glm","to":"sol","reason":"tier"}} -->'
+    )
+  ).toEqual({ from: "glm", to: "sol", reason: "tier" });
+  for (const body of [
+    '<!-- vmethod-task {"issues":[8],"modelOverride":{}} -->',
+    '<!-- vmethod-task {"issues":[8],"modelOverride":null} -->',
+    '<!-- vmethod-task {"issues":[8],"modelOverride":"wrong"} -->',
+    '<!-- vmethod-task {"issues":[8],"modelOverride":{"from":"glm","to":"sol","reason":"  "}} -->',
+    '<!-- vmethod-task {"issues":[8],"modelOverride":{"from":"glm","to":"sol"}} -->',
+  ]) {
+    expect(() => taskModelOverride(body)).toThrow("Invalid task model override");
+  }
 });
 
 test.each([false, true])("merge-task rechecks scope for part PRs (changed=%s)", async (changed) => {

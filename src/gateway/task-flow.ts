@@ -184,7 +184,13 @@ export class TaskFlow {
         throw new Error("Invalid task flags");
       }
     }
-    for (const value of [input.issue, input.direct, input.model, input.unapproved]) {
+    for (const value of [
+      input.issue,
+      input.direct,
+      input.model,
+      input.unapproved,
+      input.modelOverride,
+    ]) {
       if (value !== undefined && (typeof value !== "string" || !value.trim())) {
         throw new Error("Invalid task text argument");
       }
@@ -194,6 +200,9 @@ export class TaskFlow {
       (input.unapproved !== undefined && !input.unapproved.trim())
     ) {
       throw new Error("Issue/direct title and nonempty exception reason required");
+    }
+    if (input.modelOverride !== undefined && (!input.model || /[\r\n]/.test(input.modelOverride))) {
+      throw new Error("--model-override requires --model and a single-line reason");
     }
     const issue = input.issue
       ? await this.host.thread(String(this.number(input.issue)), "issue")
@@ -236,6 +245,13 @@ export class TaskFlow {
     }
     if (model.gate === "owner" && input.ownerApproved !== true) {
       throw new Error("Model requires --owner-approved");
+    }
+    // The card's Model is the owner's hint; launching on a different family needs a reason.
+    const overriding = Boolean(input.model && hint && input.model !== hint);
+    if (overriding && !input.modelOverride) {
+      throw new Error(
+        `issue #${input.issue} has Model ${hint} on its card; use it (omit --model) or override with --model-override "<reason>"`
+      );
     }
     let title = String(input.direct ?? issue?.title ?? "");
     if (!input.direct && issue) {
@@ -291,6 +307,9 @@ export class TaskFlow {
         issues: issue ? [Number(input.issue)] : [],
         ...(input.part ? { part: true } : {}),
         ...(input.unapproved ? { scopeException: input.unapproved } : {}),
+        ...(overriding
+          ? { modelOverride: { from: hint, to: input.model, reason: input.modelOverride } }
+          : {}),
       }),
     };
     // Substitute once: issue text containing template tokens must remain verbatim.
@@ -303,6 +322,12 @@ export class TaskFlow {
     await checkMarkdown(this.root, body);
     if (input.unapproved && issue) {
       await this.post(input.issue!, `[orchestrator] Unapproved exception\n\n${input.unapproved}`);
+    }
+    if (overriding) {
+      await this.post(
+        input.issue!,
+        `[orchestrator] NOTE: model override: using ${input.model} instead of the card's ${hint} — ${input.modelOverride}`
+      );
     }
     const git = this.git();
     if (!(await git.transfer("fetch", [`+refs/heads/${base}:refs/remotes/origin/${base}`]))) {

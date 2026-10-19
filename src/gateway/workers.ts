@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { estimateScale } from "../board/estimate.js";
 import { parseProgress } from "../board/progress.js";
 import { taskHeld } from "./task-hold.js";
+import { taskModelOverride } from "./task-flow-types.js";
 import {
   addTokens,
   boardCost,
@@ -1323,6 +1324,8 @@ export class WorkerService {
         "Missing opening Estimate snapshot in task PR (points_open or Estimate header); refusing to substitute today's issue Estimate"
       );
     }
+    // An opening override recorded by open-task grades as this segment's reason.
+    const override = !unknown && !replace ? taskModelOverride(meta.body) : undefined;
     const directory = await this.hooks.prepare(pr);
     const packagePath = join(directory, "package.json");
     const selfHosting =
@@ -1380,7 +1383,13 @@ export class WorkerService {
           family: model.family,
           model: model.model,
           rounds: [this.round(meta)],
-          why: unknown ? "resume" : replace ? "owner-request" : "start",
+          why: unknown
+            ? "resume"
+            : replace
+              ? "owner-request"
+              : override
+                ? `override: ${override.reason}`
+                : "start",
           at: new Date(this.deps.now()).toISOString(),
           ...(model.kind === "claude" && previous
             ? {

@@ -6,7 +6,13 @@ export interface OpenTaskInput {
   /** Requires issue; records a partial relation that merge follow-up must not complete. */
   part?: boolean;
   model?: string;
+  modelOverride?: string;
   ownerApproved?: boolean;
+}
+export interface TaskModelOverride {
+  from: string;
+  to: string;
+  reason: string;
 }
 export interface ReviewInput {
   ref: string;
@@ -40,6 +46,40 @@ export function taskRelation(body: string): { issues: number[]; part: boolean } 
     throw new Error("Invalid task issue relation");
   }
   return { issues: [...new Set<number>(relation.issues)], part: relation.part === true };
+}
+
+/** The opening model override `open-task` recorded in the structured marker, never prose. */
+export function taskModelOverride(body: string): TaskModelOverride | undefined {
+  const marker = /<!-- vmethod-task (\{[^\r\n]*\}) -->/.exec(body);
+  if (!marker) {
+    return undefined;
+  }
+  let value: { modelOverride?: unknown };
+  try {
+    value = JSON.parse(marker[1]);
+  } catch {
+    return undefined;
+  }
+  if (value.modelOverride === undefined) {
+    return undefined;
+  }
+  const override =
+    typeof value.modelOverride === "object" && value.modelOverride !== null
+      ? (value.modelOverride as { from?: unknown; to?: unknown; reason?: unknown })
+      : undefined;
+  if (
+    !override ||
+    ![override.from, override.to, override.reason].every(
+      (field) => typeof field === "string" && field.trim()
+    )
+  ) {
+    throw new Error("Invalid task model override");
+  }
+  return {
+    from: override.from as string,
+    to: override.to as string,
+    reason: override.reason as string,
+  };
 }
 
 /** Recognize a task header or a valid structured task marker, including direct tasks. */
