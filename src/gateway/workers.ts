@@ -1045,7 +1045,7 @@ export class WorkerService {
           throw error;
         }
         if (attempt < 19) {
-          await new Promise((resolve) => setTimeout(resolve, 100));
+          await this.deps.sleep(100);
           continue;
         }
         mkdirSync(this.state, { recursive: true, mode: 0o700 });
