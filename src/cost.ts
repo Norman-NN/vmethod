@@ -64,11 +64,11 @@ export function requestCost(
   };
 }
 
-/** Decode assistant-message request usage; anonymous legacy messages retain stable keys. */
+/** Decode token-bearing OpenCode messages as requests; anonymous legacy messages retain stable keys. */
 export function opencodeRequests(messages: readonly unknown[]): CostRequest[] {
   return messages.flatMap((value) => {
     const message = object(value);
-    const usage = message.type === "assistant" ? opencodeUsage(message) : undefined;
+    const usage = opencodeUsage(message);
     const model = object(message.model);
     return usage
       ? [

@@ -1,6 +1,7 @@
 import { expect, test } from "vitest";
 import {
   claudeUsage,
+  opencodeRequests,
   boardCost,
   dollars,
   opencodeUsage,
@@ -61,6 +62,40 @@ test("per-message prices are summed, cached across polls and updated for streami
     10
   );
   expect(calls).toBe(11);
+});
+
+test("OpenCode token-bearing messages are priced individually, including compaction", () => {
+  const messages = [
+    {
+      id: "assistant",
+      type: "assistant",
+      model: { providerID: "test", id: "base" },
+      tokens: { input: 100, output: 10, reasoning: 0, cache: { read: 0, write: 0 } },
+    },
+    {
+      id: "compaction",
+      type: "compaction",
+      model: { providerID: "test", id: "compaction-model" },
+      tokens: { input: 272001, output: 20, reasoning: 0, cache: { read: 0, write: 0 } },
+    },
+    { id: "synthetic", type: "synthetic" },
+    { id: "user", type: "user" },
+    { id: "idle", type: "idle" },
+  ];
+  const requests = opencodeRequests(messages);
+  expect(requests.map(({ id, model }) => [id, model])).toEqual([
+    ["assistant", "test/base"],
+    ["compaction", "test/compaction-model"],
+  ]);
+  const total = { input: 272101, output: 30, cached: 0 };
+  expect(
+    requestCost(
+      total,
+      requests,
+      (request) => ({ price: base, tiers: request.id === "compaction" ? tiers : [] }),
+      base
+    )
+  ).toEqual({ usd: expect.closeTo(0.0544302, 10), lowerBound: false });
 });
 
 test("totals-only and incomplete histories stay base-price lower bounds; unknown stays null", () => {
