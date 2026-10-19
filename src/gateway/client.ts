@@ -756,8 +756,6 @@ export class OpencodeClient {
     const latest = uniqueMessages.map(object).find((m) => m.type === "idle");
     if (!usage) {
       const measured = uniqueMessages
-        .map(object)
-        .filter((m) => m.type === "assistant")
         .map((message) => opencodeUsage(message))
         .filter((u) => u !== undefined);
       if (measured.length) {
