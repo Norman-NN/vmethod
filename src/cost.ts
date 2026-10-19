@@ -23,6 +23,8 @@ export interface CostRequest {
   id: string;
   tokens: Tokens;
   model?: string;
+  /** Assistant creation time in epoch milliseconds, for model-switch attribution. */
+  created?: number;
 }
 
 /** Persisted per-message prices; unchanged messages are never repriced on polling. */
@@ -73,6 +75,9 @@ export function opencodeRequests(messages: readonly unknown[]): CostRequest[] {
           {
             id: typeof message.id === "string" ? message.id : JSON.stringify(message),
             tokens: usage.tokens,
+            ...(typeof object(message.time).created === "number"
+              ? { created: object(message.time).created as number }
+              : {}),
             ...(model.providerID && model.id
               ? { model: `${String(model.providerID)}/${String(model.id)}` }
               : {}),

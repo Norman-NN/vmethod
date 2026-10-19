@@ -500,54 +500,166 @@ test("model switch snapshots cumulative baseline and grades each family's delta"
   f.done();
 });
 
-test("per-request caches stay with their model segment across a switch", async () => {
-  const first = {
-    ...messageCapture.data[0],
-    id: "first",
-    model: { providerID: "fake", id: "glm" },
-    tokens: { input: 300000, output: 1000, reasoning: 0, cache: { read: 0, write: 0 } },
-  };
-  const second = {
-    ...first,
-    id: "second",
-    model: { providerID: "fake", id: "sol" },
-    tokens: { ...first.tokens, input: 30000 },
-  };
-  const poll = (messages: (typeof first)[], input: number, output: number) =>
-    measuredStatus().map((request) =>
+test.each([false, true])(
+  "per-request attribution survives a switch with legacy cache=%s",
+  async (legacy) => {
+    const first = {
+      ...messageCapture.data[0],
+      id: "first",
+      model: { providerID: "fake", id: "glm" },
+      tokens: { input: 300000, output: 1000, reasoning: 0, cache: { read: 0, write: 0 } },
+    };
+    const second = {
+      ...first,
+      id: "second",
+      model: { providerID: "fake", id: "sol" },
+      tokens: { ...first.tokens, input: 30000 },
+    };
+    const poll = (messages: (typeof first)[], input: number, output: number) =>
+      measuredStatus().map((request) =>
+        request.path === "/api/session/ses_fake"
+          ? {
+              ...request,
+              data: {
+                ...captured.data,
+                id: "ses_fake",
+                tokens: { ...first.tokens, input, output },
+              },
+            }
+          : request.path.endsWith("?limit=20")
+            ? { ...request, data: messages }
+            : request
+      );
+    const f = fixture(
+      [
+        ...start,
+        ...poll([first], 300000, 1000),
+        {
+          path: "/api/session/ses_fake/model",
+          method: "POST",
+          body: { model: { providerID: "fake", id: "sol" } },
+        },
+        { path: "/api/session/ses_fake", method: "PATCH", body: { title: "project#31" } },
+        ...poll([second, first], 330000, 2000),
+      ],
+      true
+    );
+    await f.service.command(["start", "31"]);
+    await f.service.command(["model", "31", "sol", "--owner-approved"]);
+    const before = f.record();
+    if (legacy) {
+      delete before.segments[0].requests;
+      delete before.costHistoryLoaded;
+      writeFileSync(
+        join(f.root, "state/vmethod/example-state/workers/31.json"),
+        JSON.stringify(before)
+      );
+    }
+    f.meta.state = "CLOSED";
+    await f.service.grade(31, 3);
+    expect(f.record().segments.map((segment: { usd: number }) => segment.usd)).toEqual([
+      expect.closeTo(1.215, 8),
+      expect.closeTo(0.14, 8),
+    ]);
+    expect(f.record().segments[0]).toEqual(before.segments[0]);
+    expect(Object.keys(f.record().segments[1].requests)).toEqual(["second"]);
+    const log = JSON.parse(readFileSync(join(f.root, ".vmethod/model-log.jsonl"), "utf8"));
+    expect(
+      log.segments.reduce(
+        (sum: number, segment: { tokens: { input: number } }) => sum + segment.tokens.input,
+        0
+      )
+    ).toBe(330000);
+    expect(log.usd).toBeCloseTo(1.355, 8);
+    f.done();
+  }
+);
+
+test.each(["model", "time", "repeated model", "excess history", "cached excess"])(
+  "legacy luna then sol grades safely with %s attribution",
+  async (mode) => {
+    // Recorded assistant envelope, projected to model-switch boundaries and counts.
+    const first = {
+      ...messageCapture.data[0],
+      id: "luna-request",
+      time: { ...messageCapture.data[0].time, created: 1000 },
+      model: { providerID: "fake", id: mode === "repeated model" ? "sol" : "luna" },
+      tokens: { input: 100, output: 20, reasoning: 0, cache: { read: 30, write: 0 } },
+    };
+    const second = {
+      ...first,
+      id: "sol-request",
+      time: { ...first.time, created: 2000 },
+      model: mode === "time" ? undefined : { providerID: "fake", id: "sol" },
+      tokens: { ...first.tokens, input: mode === "excess history" ? 301 : 300 },
+    };
+    const poll = measuredStatus().map((request) =>
       request.path === "/api/session/ses_fake"
         ? {
             ...request,
-            data: { ...captured.data, id: "ses_fake", tokens: { ...first.tokens, input, output } },
+            data: {
+              ...captured.data,
+              tokens: { ...first.tokens, input: 400, output: 40, cache: { read: 60, write: 0 } },
+            },
           }
         : request.path.endsWith("?limit=20")
-          ? { ...request, data: messages }
+          ? { ...request, data: [second, first] }
           : request
     );
-  const f = fixture(
-    [
-      ...start,
-      ...poll([first], 300000, 1000),
+    const f = fixture([...start, ...poll], true);
+    await f.service.command(["start", "31"]);
+    const record = f.record();
+    const legacy = {
+      family: "luna",
+      model: first.model.providerID + "/" + first.model.id,
+      rounds: [1],
+      why: "start",
+      at: new Date(0).toISOString(),
+      usage: { tokens: { input: 100, output: 20, cached: 30 }, reportedUsd: 0 },
+      usd: 0.0123,
+    };
+    record.model = { ...record.model, family: "sol", model: "fake/sol" };
+    record.segments = [
+      legacy,
       {
-        path: "/api/session/ses_fake/model",
-        method: "POST",
-        body: { model: { providerID: "fake", id: "sol" } },
+        family: "sol",
+        model: "fake/sol",
+        rounds: [2],
+        why: "switch",
+        at: new Date(2000).toISOString(),
+        baseline: legacy.usage,
+        ...(mode === "cached excess"
+          ? {
+              requests: {
+                contaminated: { tokens: { input: 400, output: 40, cached: 60 }, usd: 9 },
+              },
+            }
+          : {}),
       },
-      { path: "/api/session/ses_fake", method: "PATCH", body: { title: "project#31" } },
-      ...poll([second, first], 330000, 2000),
-    ],
-    true
-  );
-  await f.service.command(["start", "31"]);
-  await f.service.command(["model", "31", "sol", "--owner-approved"]);
-  f.meta.state = "CLOSED";
-  await f.service.grade(31, 3);
-  expect(f.record().segments.map((segment: { usd: number }) => segment.usd)).toEqual([
-    expect.closeTo(1.215, 8),
-    expect.closeTo(0.14, 8),
-  ]);
-  f.done();
-});
+    ];
+    writeFileSync(
+      join(f.root, "state/vmethod/example-state/workers/31.json"),
+      JSON.stringify(record)
+    );
+    f.meta.state = "CLOSED";
+    await f.service.grade(31, 3);
+    const saved = f.record();
+    expect(saved.segments[0]).toEqual(legacy);
+    expect(saved.segments[1].usage.tokens).toEqual({ input: 300, output: 20, cached: 30 });
+    expect(saved.segments[1].usd).toBeCloseTo(0.001612, 10);
+    const fallback = mode === "excess history" || mode === "cached excess";
+    expect(saved.segments[1].lowerBound).toBe(fallback);
+    expect(Object.keys(saved.segments[1].requests)).toEqual(fallback ? [] : ["sol-request"]);
+    expect(f.hooks.setCost).toHaveBeenCalledWith(31, fallback ? "≥ $0.01" : "$0.01");
+    const log = JSON.parse(readFileSync(join(f.root, ".vmethod/model-log.jsonl"), "utf8"));
+    expect(log.usd).toBeCloseTo(0.013912, 10);
+    expect(log.segments.map((segment: { tokens: unknown }) => segment.tokens)).toEqual([
+      { input: 100, output: 20, cached: 30 },
+      { input: 300, output: 20, cached: 30 },
+    ]);
+    f.done();
+  }
+);
 
 test("watch status uses the recorded task session and client update time without reading comments", async () => {
   const f = fixture([

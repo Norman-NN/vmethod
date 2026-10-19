@@ -286,7 +286,12 @@ and migrate the board as described in [worker cost accounting](learnings.md#work
 task PRs. It reads worker state first, configured legacy worktree records second,
 and model-log USD values last. OpenCode assistant-message usage is priced per
 request at its model family's matching prompt tier, then summed. When
-assistant-message history is truncated, the remaining
+worker sessions contain legacy segments without request caches, requests are
+attributed by their own model, or by the switch timestamp for missing/repeated
+models. Recorded earlier segment totals and USD are preserved. If attributed
+request usage exceeds a segment's totals, that segment uses totals-only base
+pricing and displays `≥` rather than blocking status or grading.
+When assistant-message history is truncated, the remaining
 cumulative tokens are priced at the session's model and marked `partial message
 history`. Totals-only, partial-history and legacy-only records are lower bounds:
 the report and board show `≥
