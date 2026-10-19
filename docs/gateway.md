@@ -538,7 +538,10 @@ The last output line is the verdict. `wait-checks` exits **0** green, **1** red
 (with failing checks and a short digest), **2** no verdict/head moved (run again,
 never report BLOCKED), or **3** conflict (merge the base, push, run again).
 `check-task-ci` uses the same codes, but green also requires every trusted check's
-workflow-associated PR head/base SHAs to match the current PR. Missing workflow
+workflow-associated PR head/base SHAs to match the current PR head and live base
+branch head, not the PR's potentially stale base SHA. `check-task-ci` and
+`refresh-checks` read the branch endpoint and recheck it after collecting CI evidence;
+`merge-task` resolves its fetched base ref through the same live-base helper. Missing workflow
 evidence fails closed with code 2; commit timestamps cannot establish the tested
 base. It returns check names, without downloading failure logs. `refresh-checks`
 returns 0 for a successful push or no-op, 2 for a ref moving during preparation,
