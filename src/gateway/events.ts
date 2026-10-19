@@ -1228,7 +1228,7 @@ export class EventLoop {
     }
     const itemsOk = await this.step("subscribed items", () => this.pollSubscribedItems());
     const assignedOk = await this.step("assignments", () => this.pollAssigned());
-    const boardOk = await this.step("board", () => this.pollBoard());
+    const boardOk = await this.step("board", () => this.pollBoard(pullsOk));
     if (!boardOk) {
       remove(join(this.dir, "unestimated.json"));
     }
@@ -1314,10 +1314,10 @@ export class EventLoop {
   // ---------------------------------------------------------------- pull requests
 
   private async pollPulls(): Promise<void> {
-    this.observedPrs = [];
-    this.taskIssues.clear();
-    this.pendingMergedIssues.clear();
-    this.heldTasks.clear();
+    const observedPrs: PrInfo[] = [];
+    const taskIssues = new Map<number, number[]>();
+    const pendingMergedIssues = new Set<number>();
+    const heldTasks = new Map<number, string>();
     const items = await this.restPages(
       (page) => `/repos/${this.own}/pulls?state=open&per_page=100&page=${page}`,
       (data) => this.list(data)
@@ -1328,12 +1328,12 @@ export class EventLoop {
       if (this.host.filter.identity(restActor(item.user)) !== undefined) {
         const number = count(item.number);
         if (number !== null) {
-          this.taskIssues.set(number, taskIssueNumbers(str(item.body)) ?? []);
+          taskIssues.set(number, taskIssueNumbers(str(item.body)) ?? []);
           if (
             taskIssueNumbers(str(item.body)) !== undefined &&
             taskHeld(str(item.title), str(item.body))
           ) {
-            this.heldTasks.set(number, `${str(item.title)}\n${str(item.body)}`);
+            heldTasks.set(number, `${str(item.title)}\n${str(item.body)}`);
           }
         }
         for (const issue of taskIssueNumbers(str(item.body)) ?? []) {
@@ -1341,10 +1341,6 @@ export class EventLoop {
         }
       }
     }
-    if ([...launched].sort().join(",") !== [...this.launchedIssues].sort().join(",")) {
-      this.nextSignature = "";
-    }
-    this.launchedIssues = launched;
     for (const item of items) {
       const number = count(item.number);
       const head = object(item.head);
@@ -1379,7 +1375,7 @@ export class EventLoop {
         this.host.digest.drop(this.threadUrl(this.own, number, "PR"));
         continue;
       }
-      await this.processOpenPr({
+      const pr: PrInfo = {
         number,
         branch,
         sha,
@@ -1395,13 +1391,15 @@ export class EventLoop {
             : detail.mergeable === true
               ? "MERGEABLE"
               : "UNKNOWN",
-      });
+      };
+      await this.processOpenPr(pr);
+      observedPrs.push(pr);
     }
     for (const name of readdirSync(this.dir)) {
       const match = /^open-(\d+)$/.exec(name);
       const number = match ? count(match[1]) : null;
       if (number !== null && !open.has(number)) {
-        await this.processGonePr(number);
+        await this.processGonePr(number, pendingMergedIssues, heldTasks);
       }
     }
     if (this.cycle % WORKER_EVERY === 1) {
@@ -1413,6 +1411,15 @@ export class EventLoop {
         }
       }
     }
+    // Publish only a complete poll; downstream steps retain the last good links on failure.
+    this.observedPrs = observedPrs;
+    this.taskIssues = taskIssues;
+    this.pendingMergedIssues = pendingMergedIssues;
+    this.heldTasks = heldTasks;
+    if ([...launched].sort().join(",") !== [...this.launchedIssues].sort().join(",")) {
+      this.nextSignature = "";
+    }
+    this.launchedIssues = launched;
   }
 
   private async processOpenPr(pr: PrInfo): Promise<void> {
@@ -1497,7 +1504,6 @@ export class EventLoop {
         this.produceOnce(`conflict-result-${pr.number}-${pr.sha}`, "conflict-resolution", result);
       }
     }
-    this.observedPrs.push(pr);
   }
 
   private async watchStale(pr: PrInfo): Promise<void> {
@@ -1609,7 +1615,11 @@ export class EventLoop {
     }
   }
 
-  private async processGonePr(number: number): Promise<void> {
+  private async processGonePr(
+    number: number,
+    pendingMergedIssues: Set<number>,
+    heldTasks: Map<number, string>
+  ): Promise<void> {
     if (this.muted(this.own, number)) {
       return;
     }
@@ -1652,7 +1662,7 @@ export class EventLoop {
         (Number.isFinite(mergeTime) && this.host.deps.now() - mergeTime < BUTTON_RETRY_MS));
     if (data.merged === true && person !== undefined && !legacy && followUpPending) {
       for (const issue of taskIssueNumbers(str(data.body)) ?? []) {
-        this.pendingMergedIssues.add(issue);
+        pendingMergedIssues.add(issue);
       }
     }
     const self = count(object(data.merged_by).id) === this.meId;
@@ -1688,7 +1698,7 @@ export class EventLoop {
           : complete
             ? "follow-up complete"
             : "run merge-task";
-      const waiting = [...this.heldTasks]
+      const waiting = [...heldTasks]
         .filter(
           ([pr, reason]) => pr !== number && new RegExp(`(^|[^\\w])#${number}\\b`).test(reason)
         )
@@ -2171,7 +2181,7 @@ export class EventLoop {
     return true;
   }
 
-  private async pollBoard(): Promise<void> {
+  private async pollBoard(pullsOk: boolean): Promise<void> {
     if (!this.boardAllowed()) {
       remove(join(this.dir, "unestimated.json"));
       return;
@@ -2263,7 +2273,7 @@ export class EventLoop {
       currentCards.push(card);
       const columnProgress = existsSync(join(this.dir, `pending-progress-${card.number}`));
       await this.applyProgress(card);
-      await this.reconcileTurn(card, !pendingProgress && !columnProgress);
+      await this.reconcileTurn(card, pullsOk && !pendingProgress && !columnProgress);
       if (
         card.kind === "ISSUE" &&
         card.state === "OPEN" &&

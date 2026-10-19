@@ -434,7 +434,9 @@ number are identified so you can review their dependencies and release them.
 Worker READY, QUESTION, DESIGN, BLOCKED and HANDOFF wake and update Progress.
 The watcher synchronizes management assignees and clears stale owner mirrors on
 linked issues. It reports unassigned In review cards (except linked task issues)
-and Progress/assignee mismatches.
+and Progress/assignee mismatches. PR links are replaced only after the full PR poll
+succeeds; a failed PR poll retains the last successful snapshot and skips board
+violation reporting for that cycle, so stale or missing links never produce a verdict.
 Known states repair assignments from the same board poll; ambiguous states are
 reported for manual review. Owner replies and current-head owner reviews return
 the turn to the orchestrator. See the [protocol transition table](protocol.md).
