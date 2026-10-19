@@ -119,6 +119,9 @@ interface CardInfo {
   number: number;
   kind: "ISSUE" | "PR";
   state: string;
+  stateReason: string;
+  closedBy: string;
+  closedAt: string;
   column: string;
   columnAt: string;
   assignees: string[];
@@ -311,6 +314,8 @@ export function listMutes(config: Config, env: NodeJS.ProcessEnv): string {
  * gateway client, filters every author through people.yaml, and hands the client
  * metadata-only wake-up lines. Events are acknowledged only after the client
  * printed them, so a kill between fetch and print loses nothing.
+ * Scoped board closures reconcile Done/Progress/management turns and emit CLOSED;
+ * NOT PLANNED asks the orchestrator to notify a verified peer-project requester.
  */
 export class EventLoop {
   private readonly dir: string;
@@ -2206,6 +2211,7 @@ export class EventLoop {
       (card) =>
         this.isOwn(card.repo) &&
         card.kind === "ISSUE" &&
+        card.state === "OPEN" &&
         parseProgress(card.progress).state === "owner-review"
     );
     const scopeWaits = await new ScopeReader(
@@ -2250,6 +2256,10 @@ export class EventLoop {
         await this.trackOne(card.number);
       }
       if (!this.inScope(card.number) || this.muted(card.repo, card.number)) {
+        continue;
+      }
+      if (card.state === "CLOSED" || card.state === "MERGED") {
+        await this.applyClosedCard(card);
         continue;
       }
       if (
@@ -2382,7 +2392,7 @@ export class EventLoop {
       for (;;) {
         const data = object(
           await this.host.github.graphql(
-            `query WatchBoard($owner: String!, $number: Int!, $cursor: String) { organization(login: $owner) { projectV2(number: $number) { id readme items(first: 100, after: $cursor, query: "-status:Done") { nodes { id status: fieldValueByName(name: "Status") { ... on ProjectV2ItemFieldSingleSelectValue { name updatedAt } } estimate: fieldValueByName(name: "Estimate") { ... on ProjectV2ItemFieldNumberValue { number } } progress: fieldValueByName(name: "Progress") { ... on ProjectV2ItemFieldTextValue { text } } content { __typename ... on Issue { id number state title author { __typename login ... on User { databaseId } ... on Bot { databaseId } } repository { nameWithOwner owner { login } } assignees(first: 10) { nodes { login } } } ... on PullRequest { number state title headRefOid reviews(last: 100) { nodes { id state commit { oid } author { ${actorFields} } } } author { __typename login ... on User { databaseId } ... on Bot { databaseId } } repository { nameWithOwner owner { login } } assignees(first: 10) { nodes { login } } } } } pageInfo { hasNextPage endCursor } } } } }`,
+            `query WatchBoard($owner: String!, $number: Int!, $cursor: String) { organization(login: $owner) { projectV2(number: $number) { id readme items(first: 100, after: $cursor) { nodes { id status: fieldValueByName(name: "Status") { ... on ProjectV2ItemFieldSingleSelectValue { name updatedAt } } estimate: fieldValueByName(name: "Estimate") { ... on ProjectV2ItemFieldNumberValue { number } } progress: fieldValueByName(name: "Progress") { ... on ProjectV2ItemFieldTextValue { text } } content { __typename ... on Issue { id number state stateReason closedAt closure: timelineItems(last: 1, itemTypes: [CLOSED_EVENT]) { nodes { ... on ClosedEvent { actor { login } } } } title author { __typename login ... on User { databaseId } ... on Bot { databaseId } } repository { nameWithOwner owner { login } } assignees(first: 10) { nodes { login } } } ... on PullRequest { number state closedAt closure: timelineItems(last: 1, itemTypes: [CLOSED_EVENT, MERGED_EVENT]) { nodes { ... on ClosedEvent { actor { login } } ... on MergedEvent { actor { login } } } } title headRefOid reviews(last: 100) { nodes { id state commit { oid } author { ${actorFields} } } } author { __typename login ... on User { databaseId } ... on Bot { databaseId } } repository { nameWithOwner owner { login } } assignees(first: 10) { nodes { login } } } } } pageInfo { hasNextPage endCursor } } } } }`,
             { owner, number, cursor }
           )
         );
@@ -2452,6 +2462,9 @@ export class EventLoop {
       number,
       kind,
       state: str(content.state),
+      stateReason: str(content.stateReason),
+      closedBy: str(object(this.list(object(content.closure).nodes).at(-1)?.actor).login),
+      closedAt: str(content.closedAt),
       column: str(object(node.status).name),
       columnAt: str(object(node.status).updatedAt),
       assignees: this.list(object(content.assignees).nodes).map((entry) => str(entry.login)),
@@ -2603,6 +2616,58 @@ export class EventLoop {
     );
     remember();
     return true;
+  }
+
+  private async applyClosedCard(card: CardInfo): Promise<void> {
+    // Clear the turn before moving to Done; a failed write remains retryable.
+    const next = turnAssignees(this.host.filter.people, card.repo, card.assignees, null);
+    if (next.join(",") !== card.assignees.join(",")) {
+      await setTurn(this.host.github, card.repo, card.number, card.assignees, next);
+      card.assignees = next;
+    }
+    remove(join(this.dir, `pending-progress-${card.number}`));
+    const reason = card.stateReason === "NOT_PLANNED" ? "not planned" : "completed";
+    const openTasks =
+      card.kind === "ISSUE"
+        ? [...this.taskIssues]
+            .filter(([, issues]) => issues.includes(card.number))
+            .map(([pr]) => `#${pr}`)
+        : [];
+    const taskNote = openTasks.length ? `; open task PR ${openTasks.join(", ")} remains` : "";
+    const closure = key(`${card.repo}#${card.number}@${card.closedAt}`);
+    this.produceOnce(
+      `closed-${closure}`,
+      "closed",
+      `CLOSED #${card.number} (${reason}) by ${/^[\w-]+$/.test(card.closedBy) ? card.closedBy : "unknown"}${taskNote} ${this.threadUrl(card.repo, card.number, card.kind)}`
+    );
+    if (
+      card.kind === "ISSUE" &&
+      reason === "not planned" &&
+      card.person?.role === "orchestrator" &&
+      card.person.login.toLowerCase() !== this.me?.toLowerCase() &&
+      card.person.repos?.some((repo) => repo.toLowerCase() !== card.repo.toLowerCase()) &&
+      !card.person.repos.some((repo) => repo.toLowerCase() === card.repo.toLowerCase())
+    ) {
+      this.produceOnce(
+        `not-planned-${closure}`,
+        "not-planned",
+        `NOT PLANNED #${card.number} (requested by ${card.person.login}): tell the requester${taskNote} ${this.threadUrl(card.repo, card.number, card.kind)}`
+      );
+    }
+    if (card.column !== "Done") {
+      await this.host.board.set({
+        itemId: card.id,
+        field: "Status",
+        value: "Done",
+        progress: null,
+      });
+      card.column = "Done";
+      card.progress = "";
+    } else if (card.progress) {
+      await this.host.board.set({ itemId: card.id, field: "Progress", value: null });
+      card.progress = "";
+    }
+    atomicWrite(join(this.dir, "board", card.id), "Done\n");
   }
 
   /** Extend the existing changed-card re-read, paginating only queue-move evidence. */

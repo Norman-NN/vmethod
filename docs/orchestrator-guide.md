@@ -262,6 +262,11 @@ A `button-merge` event (`PR #n MERGED by <owner>: run merge-task`) is an action
 item, not information: run `merge-task <n>`. The event repeats until merge follow-up
 is complete. The watcher itself never writes that follow-up.
 
+When the watcher reports `NOT PLANNED #n`, post one short comment on the issue
+mentioning its requester so they know not to wait or fork locally. Quote the owner's
+reason when one was given. If the event says an open task PR remains, decide whether
+to close that PR; the watcher does not close it automatically.
+
 When several orchestrator sessions share one account, an item's author no longer
 identifies the session that owns it. Ask the owning session before acting rather
 than inferring ownership from the account. Sessions sharing an account **must have

@@ -159,7 +159,9 @@ test.each(
         );
       }
       const events = await once();
-      if (owner) {
+      if (verb === "issue close") {
+        expect(events.map((event) => event.kind)).toEqual(["closed"]);
+      } else if (owner) {
         expect(events.map((event) => event.kind)).toEqual(["board"]);
       } else {
         expect(events).toEqual([]);

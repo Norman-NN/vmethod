@@ -339,7 +339,9 @@ test.each(
           verb === "open-task" ? "owner-done" : verb === "merge-task" ? "button-merge" : "comment"
         );
       } else {
-        expect(events).toEqual([]);
+        expect(events.map((event) => event.kind)).toEqual(
+          verb === "merge-task" ? ["closed", "closed"] : []
+        );
       }
       if (sibling) {
         expect(events.some((event) => event.line.includes("this account, another session"))).toBe(
@@ -359,7 +361,10 @@ test.each(
         sibling.gone = w.gone;
         sibling.assignmentEvents = w.assignmentEvents;
         sibling.clock = w.clock;
-        expect(await sibling.once(sibling.loops[0])).toEqual([]);
+        const siblingEvents = await sibling.once(sibling.loops[0]);
+        expect(siblingEvents.map((event) => event.kind)).toEqual(
+          verb === "merge-task" ? ["closed", "closed"] : []
+        );
         expect(sibling.reports).toEqual([]);
       }
       expect(w.reports).toEqual([]);
