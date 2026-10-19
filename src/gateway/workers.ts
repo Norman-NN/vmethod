@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { estimateScale } from "../board/estimate.js";
+import { taskHeld } from "./task-hold.js";
 import {
   addTokens,
   boardCost,
@@ -926,7 +927,7 @@ export class WorkerService {
     if (!meta.issue) {
       throw new Error("Task PR has no linked issue");
     }
-    if (meta.blocked || /ON HOLD|\[HOLD:/i.test(meta.title + "\n" + meta.body)) {
+    if (meta.blocked || taskHeld(meta.title, meta.body)) {
       throw new Error("Task issue is blocked or on hold");
     }
     const model = this.resolve(selected ?? meta.model ?? "", approved);

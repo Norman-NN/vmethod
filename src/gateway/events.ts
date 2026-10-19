@@ -34,6 +34,7 @@ import { repoOf, restActor, actorFields } from "./queries.js";
 import { WriteJournal } from "./write-journal.js";
 import { workerWorktree } from "./worker-path.js";
 import { taskIssueNumbers } from "./task-flow-types.js";
+import { taskHeld } from "./task-hold.js";
 import { setTurn, turnAssignees } from "./turn.js";
 import { resolveSession, type ResolvedSession, type SessionInput } from "./watch-scope.js";
 export { resolveSession, type ResolvedSession, type SessionInput } from "./watch-scope.js";
@@ -335,6 +336,7 @@ export class EventLoop {
   private readonly cycleOwnMoves = new Set<string>();
   private inprogress: { number: number; branch: string; working: boolean }[] = [];
   private taskIssues = new Map<number, number[]>();
+  private heldTasks = new Map<number, string>();
   private prCostCards = new Map<number, string>();
   private observedPrs: PrInfo[] = [];
   private nextBoardAt = 0;
@@ -1306,6 +1308,7 @@ export class EventLoop {
   private async pollPulls(): Promise<void> {
     this.observedPrs = [];
     this.taskIssues.clear();
+    this.heldTasks.clear();
     const items = await this.restPages(
       (page) => `/repos/${this.own}/pulls?state=open&per_page=100&page=${page}`,
       (data) => this.list(data)
@@ -1317,6 +1320,12 @@ export class EventLoop {
         const number = count(item.number);
         if (number !== null) {
           this.taskIssues.set(number, taskIssueNumbers(str(item.body)) ?? []);
+          if (
+            taskIssueNumbers(str(item.body)) !== undefined &&
+            taskHeld(str(item.title), str(item.body))
+          ) {
+            this.heldTasks.set(number, `${str(item.title)}\n${str(item.body)}`);
+          }
         }
         for (const issue of taskIssueNumbers(str(item.body)) ?? []) {
           launched.add(issue);
@@ -1336,7 +1345,7 @@ export class EventLoop {
         number === null ||
         !branch ||
         !/^[a-f\d]{40}$/i.test(sha) ||
-        !this.taskBranch.test(branch)
+        (taskIssueNumbers(str(item.body)) === undefined && !this.taskBranch.test(branch))
       ) {
         continue;
       }
@@ -1623,10 +1632,16 @@ export class EventLoop {
           : complete
             ? "follow-up complete"
             : "run merge-task";
+      const waiting = [...this.heldTasks]
+        .filter(
+          ([pr, reason]) => pr !== number && new RegExp(`(^|[^\\w])#${number}\\b`).test(reason)
+        )
+        .map(([pr]) => `#${pr}`);
+      const holds = waiting.length ? `; held task references: ${waiting.join(", ")}` : "";
       this.emit(
         `button-${number}@${at}`,
         "button-merge",
-        `PR #${number} MERGED by ${/^[\w-]+$/.test(merger) ? merger : "unknown"}${sibling}: ${action}${this.previewText(person, str(data.title))} ${url}`
+        `PR #${number} MERGED by ${/^[\w-]+$/.test(merger) ? merger : "unknown"}${sibling}: ${action}${holds}${this.previewText(person, str(data.title))} ${url}`
       );
       this.mark(`merge-notified-${number}`);
       atomicWrite(join(this.dir, `merge-attempt-${number}`), `${at}\n`);

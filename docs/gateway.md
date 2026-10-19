@@ -236,6 +236,9 @@ Missing worktrees use `start-task`; existing worktrees retain uncommitted work,
 but their repository and branch are checked. Task PRs link their issue through
 GitHub's linked issues or an explicit `# Task: … (issue #N)` header. Multiple or
 foreign-repository issue links are refused rather than guessed.
+Start refuses the exact `open-task --hold` banner line or an anchored legacy
+`[HOLD: reason]` title prefix; hold terminology quoted in prose does not block it.
+Use `release-hold` to remove the markers before starting work.
 For the self-hosting `@vworlds/vmethod` package, start runs `npm ci` then
 `npm run build` in the worktree and requires readable `dist/vmethod.mjs` instead
 of a self-installed binary. Consumer projects still require the executable bin.
@@ -384,6 +387,9 @@ pre-existing history; pending unacknowledged events are retained independently.
 Review/assignment timelines are read without a time cursor. LAUNCH excludes issues
 with an open, trusted task PR in the configured repository, using its task header or
 structured `vmethod-task` relation, not its branch name or an incidental issue mention.
+The watcher tracks these task PRs even without a worker session or a matching task
+branch name. Their merges emit MERGED notices; held task PRs referencing the merged
+number are identified so you can review their dependencies and release them.
 
 Worker READY, QUESTION, DESIGN, BLOCKED and HANDOFF wake and update Progress.
 The watcher synchronizes management assignees and clears stale owner mirrors on
@@ -663,7 +669,11 @@ These commands require `VMETHOD_ROLE=orchestrator`:
   `revise estimates: …` for own-repository dependents. Missing native links never
   block merging. If GitHub already closed the issue, follow-up still sets its card
   to Done without another close write or duplicate comment.
-- `release-hold <pr>` posts GO, updates Progress and resumes the worker.
+- `release-hold <pr>` removes the exact hold banner and any legacy hold title prefix
+  in one body/title edit, posts GO, moves the card to In progress and resumes the
+  worker if present. It preserves other prompt text and refuses non-held PRs
+  (including a second release). If the prompt changes during preparation, read it
+  and retry rather than overwriting the edit.
 
 `review changes`, `review answer` and `release-hold` send only a fixed notification:
 `[orchestrator] REVIEW round N is on your PR; read it with vmethod read pr <n> and act.`
