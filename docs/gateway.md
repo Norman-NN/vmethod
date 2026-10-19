@@ -784,7 +784,11 @@ notification and return `queued for #n`; the worker-status poll delivers queued
 lines once the turn ends, without steering. A queued notification whose
 `[orchestrator]` comment is already older than the worker's latest protocol reply
 is dropped at that poll with a `stale wake dropped for #n` report instead of
-restarting the worker for an answered turn. `review owner` hands the turn to the
+restarting the worker for an answered turn. Replies the dispatched conflict
+fixer posted for its resolution (between its dispatch NOTE and the next
+orchestrator turn comment) belong to the resolution, never to the task, and do
+not count, so a queued wake for an unanswered ANSWER is still delivered even
+when the fixer has posted its own READY or BLOCKED. `review owner` hands the turn to the
 owner and clears every queued wake for that PR. Conflict-fixer wakes do not use
 this queue: the resolver dispatches them directly, so they are never dropped as
 stale. No recorded/reachable session returns

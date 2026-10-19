@@ -641,6 +641,109 @@ test("a CHECK-IN wake without a triggering comment survives a newer protocol rep
   f.done();
 });
 
+test("fixer replies do not make queued wakes stale: the queued ANSWER is delivered", async () => {
+  const answerWake =
+    "[orchestrator] ANSWER is on your PR; read it with vmethod read pr 31 and act.";
+  const reviewWake =
+    "[orchestrator] REVIEW round 2 is on your PR; read it with vmethod read pr 31 and act.";
+  const conflictLine =
+    "CONFLICT: merge origin/dev, resolve keeping both sides' behaviour, push, wait-checks, READY";
+  const times = [
+    "2026-01-01T00:00:00Z",
+    "2026-01-01T00:01:00Z",
+    "2026-01-01T00:02:00Z",
+    "2026-01-01T00:03:00Z",
+    "2026-01-01T00:04:00Z",
+  ];
+  const switchTo = (id: string): Request[] => [
+    {
+      path: "/api/session/ses_fake/model",
+      method: "POST",
+      body: { model: { providerID: "fake", id } },
+    },
+    { path: "/api/session/ses_fake", method: "PATCH", body: { title: "project#31" } },
+  ];
+  const busy = measuredStatus().map((request) =>
+    request.path === "/api/session/active" ? { ...request, data: { ses_fake: {} } } : request
+  );
+  const f = fixture(
+    [
+      ...start,
+      ...busy,
+      ...busy,
+      ...measuredStatus(),
+      ...switchTo("glm"),
+      {
+        path: "/api/session/ses_fake/prompt",
+        method: "POST",
+        body: { text: conflictLine, delivery: "queue" },
+      },
+      ...measuredStatus(),
+      ...switchTo("sol"),
+      {
+        path: "/api/session/ses_fake/prompt",
+        method: "POST",
+        body: { text: answerWake, delivery: "queue" },
+      },
+      ...busy,
+      ...measuredStatus(),
+    ],
+    true
+  );
+  f.meta.model = "sol";
+  f.meta.comments = [
+    { body: "[orchestrator] ANSWER\n\nthe answer text", role: "orchestrator", date: times[0] },
+  ];
+  // Gateway notes land on the thread when posted, so the fake mirrors them into metadata.
+  let posted = 0;
+  f.hooks.modelComment = vi.fn(async (_pr: number, body: string) => {
+    f.meta.comments.push({
+      body,
+      role: "orchestrator",
+      date: posted++ === 0 ? times[1] : "2026-01-01T00:01:30Z",
+    });
+  });
+  await f.service.command(["start", "31", "--owner-approved"]);
+  expect(await f.service.resume(31, answerWake)).toBe("queued for #31");
+  expect(await f.service.resolveConflict(31, "dev", ["conflict.txt"])).toBe(2);
+  expect(
+    f.meta.comments.some((comment) =>
+      comment.body.startsWith("[orchestrator] NOTE: resolving a conflict")
+    )
+  ).toBe(true);
+  // The dispatched fixer's turn runs, completes and posts its own protocol reply.
+  await f.service.watchStatus(31);
+  expect(f.prompts.at(-1)).toBe(conflictLine);
+  f.meta.comments.push({
+    body: "[worker] READY FOR REVIEW (round 1)",
+    role: "worker",
+    date: times[2],
+  });
+  expect(f.record().pendingWake).toEqual([answerWake]);
+  // At the idle drain the unanswered ANSWER survives the fixer's READY.
+  await f.service.watchStatus(31);
+  expect(f.prompts.at(-1)).toBe(answerWake);
+  expect(f.record().pendingWake).toBeUndefined();
+  expect(f.deps.report).not.toHaveBeenCalledWith("stale wake dropped for #31");
+  // Once the orchestrator turns again, a later task reply still drops its wake.
+  f.meta.comments.push({
+    body: "[orchestrator] REVIEW round 2\n\nthe review text",
+    role: "orchestrator",
+    date: times[3],
+  });
+  expect(await f.service.resume(31, reviewWake)).toBe("queued for #31");
+  f.meta.comments.push({
+    body: "[worker] READY FOR REVIEW (round 2)",
+    role: "worker",
+    date: times[4],
+  });
+  await f.service.watchStatus(31);
+  expect(f.prompts.at(-1)).toBe(answerWake);
+  expect(f.record().pendingWake).toBeUndefined();
+  expect(f.deps.report).toHaveBeenCalledWith("stale wake dropped for #31");
+  f.done();
+});
+
 test("clearWake drops the queued record wake and any persisted wake file", async () => {
   const f = fixture(
     [

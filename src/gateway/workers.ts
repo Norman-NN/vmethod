@@ -442,13 +442,38 @@ export class WorkerService {
       return [];
     }
     const meta = await this.hooks.metadata(record.pr);
+    const firstLine = (body: string): string => body.split(/\r?\n/)[0];
+    const dispatchNote = /^\[orchestrator\] NOTE: resolving a conflict with /;
+    const turnComment =
+      /^\[orchestrator\] (?:REVIEW|OWNER REVIEW|OWNER QUESTION|ANSWER|AMENDMENT|GO|APPROVED)\b/;
+    const notes = meta.comments
+      .filter(
+        (comment) => comment.role === "orchestrator" && dispatchNote.test(firstLine(comment.body))
+      )
+      .map((comment) => comment.date)
+      .sort();
+    // Replies the dispatched conflict fixer posted for its resolution (between its
+    // dispatch NOTE and the next orchestrator turn comment) belong to the
+    // resolution, never to the task, and must not make queued wakes stale.
+    const fixerReplied = (date: string): boolean => {
+      const anchor = notes.filter((at) => at < date).at(-1);
+      if (!anchor) {
+        return false;
+      }
+      return !meta.comments.some(
+        (comment) =>
+          comment.role === "orchestrator" &&
+          turnComment.test(firstLine(comment.body)) &&
+          anchor < comment.date &&
+          comment.date < date
+      );
+    };
     const reply = meta.comments
       .filter(
         (comment) =>
           comment.role === "worker" &&
-          /^\[worker\] (?:READY|QUESTION|BLOCKED|DESIGN|HANDOFF)\b/.test(
-            comment.body.split(/\r?\n/)[0]
-          )
+          /^\[worker\] (?:READY|QUESTION|BLOCKED|DESIGN|HANDOFF)\b/.test(firstLine(comment.body)) &&
+          !fixerReplied(comment.date)
       )
       .map((comment) => comment.date)
       .sort()
