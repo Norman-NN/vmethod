@@ -35,6 +35,7 @@ import { WriteJournal } from "./write-journal.js";
 import { workerWorktree } from "./worker-path.js";
 import { taskIssueNumbers } from "./task-flow-types.js";
 import { taskHeld } from "./task-hold.js";
+import { ScopeReader } from "./scope.js";
 import { setTurn, turnAssignees } from "./turn.js";
 import { resolveSession, type ResolvedSession, type SessionInput } from "./watch-scope.js";
 export { resolveSession, type ResolvedSession, type SessionInput } from "./watch-scope.js";
@@ -106,6 +107,8 @@ interface PrInfo {
 }
 
 interface CardInfo {
+  contentId: string;
+  scopePending?: boolean;
   ownerReview?: string;
   id: string;
   repo: string;
@@ -336,6 +339,7 @@ export class EventLoop {
   private readonly cycleOwnMoves = new Set<string>();
   private inprogress: { number: number; branch: string; working: boolean }[] = [];
   private taskIssues = new Map<number, number[]>();
+  private pendingMergedIssues = new Set<number>();
   private heldTasks = new Map<number, string>();
   private prCostCards = new Map<number, string>();
   private observedPrs: PrInfo[] = [];
@@ -1308,6 +1312,7 @@ export class EventLoop {
   private async pollPulls(): Promise<void> {
     this.observedPrs = [];
     this.taskIssues.clear();
+    this.pendingMergedIssues.clear();
     this.heldTasks.clear();
     const items = await this.restPages(
       (page) => `/repos/${this.own}/pulls?state=open&per_page=100&page=${page}`,
@@ -1587,6 +1592,22 @@ export class EventLoop {
       ? object(JSON.parse(readFileSync(mergeFile, "utf8")))
       : {};
     const complete = Array.isArray(followUp.done) && followUp.done.includes("follow-up");
+    const mergeTime = Date.parse(str(data.merged_at));
+    const journalActive =
+      existsSync(mergeFile) &&
+      !complete &&
+      this.host.deps.now() - statSync(mergeFile).mtimeMs < BUTTON_RETRY_MS;
+    // A recent checkpoint counts as a running follow-up. An interrupted journal
+    // ages out; a missing journal still gets ten minutes from the merge itself.
+    const followUpPending =
+      !complete &&
+      (journalActive ||
+        (Number.isFinite(mergeTime) && this.host.deps.now() - mergeTime < BUTTON_RETRY_MS));
+    if (data.merged === true && person !== undefined && !legacy && followUpPending) {
+      for (const issue of taskIssueNumbers(str(data.body)) ?? []) {
+        this.pendingMergedIssues.add(issue);
+      }
+    }
     const self = count(object(data.merged_by).id) === this.meId;
     const matched = this.writes.matches(
       { kind: "merged", repo: this.own, number },
@@ -1601,7 +1622,6 @@ export class EventLoop {
     if (data.merged === true) {
       // Never run follow-up from the watcher. A sibling's same-account merge is
       // still work unless this session recorded it AND recovery is complete.
-      const mergeTime = Date.parse(str(data.merged_at));
       const attempted = Number(this.readMarker(`merge-attempt-${number}`)) * 1000;
       if (this.host.deps.now() - attempted < BUTTON_RETRY_MS) {
         return;
@@ -1609,18 +1629,7 @@ export class EventLoop {
       if (self && !complete && notified) {
         return;
       }
-      const journalActive =
-        existsSync(mergeFile) &&
-        !complete &&
-        this.host.deps.now() - statSync(mergeFile).mtimeMs < BUTTON_RETRY_MS;
-      // A recent checkpoint counts as a running follow-up. An interrupted journal
-      // ages out; a missing journal still gets ten minutes from the merge itself.
-      if (
-        self &&
-        !complete &&
-        (journalActive ||
-          (Number.isFinite(mergeTime) && this.host.deps.now() - mergeTime < BUTTON_RETRY_MS))
-      ) {
+      if (self && followUpPending) {
         return;
       }
       const at = Math.floor(this.host.deps.now() / 1000);
@@ -2127,6 +2136,20 @@ export class EventLoop {
       throw new Error("Missing board configuration");
     }
     const cards = await this.readBoard(owner, number);
+    const ownerWaits = cards.list.filter(
+      (card) =>
+        this.isOwn(card.repo) &&
+        card.kind === "ISSUE" &&
+        parseProgress(card.progress).state === "owner-review"
+    );
+    const scopeWaits = await new ScopeReader(
+      this.host.github,
+      this.host.filter,
+      this.host.config
+    ).read(ownerWaits.map((card) => card.contentId));
+    for (const card of ownerWaits) {
+      card.scopePending = scopeWaits.get(card.contentId)?.reviewPending;
+    }
     this.prCostCards = new Map(
       cards.list
         .filter((card) => card.repo === this.own && card.kind === "PR")
@@ -2252,7 +2275,7 @@ export class EventLoop {
       for (;;) {
         const data = object(
           await this.host.github.graphql(
-            `query WatchBoard($owner: String!, $number: Int!, $cursor: String) { organization(login: $owner) { projectV2(number: $number) { id readme items(first: 100, after: $cursor, query: "-status:Done") { nodes { id status: fieldValueByName(name: "Status") { ... on ProjectV2ItemFieldSingleSelectValue { name updatedAt } } estimate: fieldValueByName(name: "Estimate") { ... on ProjectV2ItemFieldNumberValue { number } } progress: fieldValueByName(name: "Progress") { ... on ProjectV2ItemFieldTextValue { text } } content { __typename ... on Issue { number state title author { __typename login ... on User { databaseId } ... on Bot { databaseId } } repository { nameWithOwner owner { login } } assignees(first: 10) { nodes { login } } } ... on PullRequest { number state title headRefOid reviews(last: 100) { nodes { id state commit { oid } author { ${actorFields} } } } author { __typename login ... on User { databaseId } ... on Bot { databaseId } } repository { nameWithOwner owner { login } } assignees(first: 10) { nodes { login } } } } } pageInfo { hasNextPage endCursor } } } } }`,
+            `query WatchBoard($owner: String!, $number: Int!, $cursor: String) { organization(login: $owner) { projectV2(number: $number) { id readme items(first: 100, after: $cursor, query: "-status:Done") { nodes { id status: fieldValueByName(name: "Status") { ... on ProjectV2ItemFieldSingleSelectValue { name updatedAt } } estimate: fieldValueByName(name: "Estimate") { ... on ProjectV2ItemFieldNumberValue { number } } progress: fieldValueByName(name: "Progress") { ... on ProjectV2ItemFieldTextValue { text } } content { __typename ... on Issue { id number state title author { __typename login ... on User { databaseId } ... on Bot { databaseId } } repository { nameWithOwner owner { login } } assignees(first: 10) { nodes { login } } } ... on PullRequest { number state title headRefOid reviews(last: 100) { nodes { id state commit { oid } author { ${actorFields} } } } author { __typename login ... on User { databaseId } ... on Bot { databaseId } } repository { nameWithOwner owner { login } } assignees(first: 10) { nodes { login } } } } } pageInfo { hasNextPage endCursor } } } } }`,
             { owner, number, cursor }
           )
         );
@@ -2317,6 +2340,7 @@ export class EventLoop {
         .filter(Boolean)
         .at(-1),
       id: str(node.id),
+      contentId: str(content.id),
       repo: scope.repo,
       number,
       kind,
@@ -2568,7 +2592,9 @@ export class EventLoop {
     const linkedIssue =
       this.isOwn(card.repo) &&
       card.kind === "ISSUE" &&
-      [...this.taskIssues.values()].some((issues) => issues.includes(card.number));
+      !card.scopePending &&
+      ([...this.taskIssues.values()].some((issues) => issues.includes(card.number)) ||
+        this.pendingMergedIssues.has(card.number));
     const role =
       state === "owner-review" || state === "owner-question"
         ? linkedIssue
@@ -2630,7 +2656,7 @@ export class EventLoop {
       const issue = cards.find(
         (card) => this.isOwn(card.repo) && card.number === number && card.kind === "ISSUE"
       );
-      if (!issue || !this.inScope(number)) {
+      if (!issue || !this.inScope(number) || issue.scopePending) {
         continue;
       }
       const mirrored = ["owner-review", "owner-question"].includes(
@@ -2690,8 +2716,20 @@ export class EventLoop {
       remove(join(this.dir, "recheck-next"));
     }
     const next = await this.firstUnblocked(ready);
+    const candidates = approved.filter((card) => !this.launchedIssues.has(card.number));
+    const scopes = await new ScopeReader(this.host.github, this.host.filter, this.host.config).read(
+      candidates.map((card) => card.contentId)
+    );
     const launch = await this.firstUnblocked(
-      approved.filter((card) => card.kind !== "ISSUE" || !this.launchedIssues.has(card.number))
+      candidates.filter((card) => scopes.get(card.contentId)?.approved === true)
+    );
+    const scope = candidates.find(
+      (card) => scopes.get(card.contentId)?.ownerApproved && !scopes.get(card.contentId)?.approved
+    );
+    this.recordStartable(
+      "scope",
+      scope ? { number: scope.number, kind: scope.kind, repo: scope.repo } : null,
+      scope ? this.cycleOwnMoves.has(scope.id) : false
     );
     this.recordStartable(
       "next",
@@ -2715,7 +2753,9 @@ export class EventLoop {
       const line =
         name === "next"
           ? `NEXT #${value.number} (${value.kind})`
-          : `LAUNCH #${value.number} (${value.kind}): approved and nothing blocks it`;
+          : name === "scope"
+            ? `SCOPE #${value.number}: approved conclusions; rewrite body and request scope review`
+            : `LAUNCH #${value.number} (${value.kind}): approved and nothing blocks it`;
       this.emit(
         `${name}-${key(stored)}`,
         name,

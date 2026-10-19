@@ -19,6 +19,7 @@ import { object, type ObjectData, type Person } from "./people.js";
 import { checkMarkdown, guardClosingKeywords } from "./markdown.js";
 import { GitTransport, taskBranch, validateBranch } from "./git.js";
 import { cleanBaseMerges } from "./clean-base.js";
+import { liveBaseHead } from "./base-head.js";
 import { approvalCarryFiles } from "./carry-approval.js";
 import type { OpenTaskInput, ReviewInput } from "./task-flow-types.js";
 import { taskIssueNumbers, taskRelation } from "./task-flow-types.js";
@@ -203,12 +204,8 @@ export class TaskFlow {
       if (issue.state !== "OPEN") {
         throw new Error("Issue is not open");
       }
-      if (
-        !input.direct &&
-        input.unapproved === undefined &&
-        (await this.host.issueApproved(issue)) !== true
-      ) {
-        throw new Error("Issue is not Approved by an owner id");
+      if (input.unapproved === undefined && (await this.host.issueApproved(issue)) !== true) {
+        throw new Error("scope not approved: post SCOPE REVIEW first");
       }
     }
     let hint: string | undefined;
@@ -336,7 +333,7 @@ export class TaskFlow {
       (handoff
         ? "\nAt each defined breakpoint post `[worker] HANDOFF` with what is done, uncommitted files and remaining mechanical steps, then end your turn.\n"
         : "") +
-      `\n<!-- vmethod-task ${JSON.stringify({ issues: issue ? [Number(input.issue)] : [], ...(input.part ? { part: true } : {}) })} -->\n`;
+      `\n<!-- vmethod-task ${JSON.stringify({ issues: issue ? [Number(input.issue)] : [], ...(input.part ? { part: true } : {}), ...(input.unapproved ? { scopeException: input.unapproved } : {}) })} -->\n`;
     const checkedBody = async (taskPr: string): Promise<string> => {
       const body = renderBody(taskPr);
       guardClosingKeywords(body);
@@ -819,6 +816,17 @@ export class TaskFlow {
     }
     const git = this.git();
     if (item.state === "OPEN") {
+      for (const number of taskIssueNumbers(String(item.body)) ?? []) {
+        const issue = await this.host.thread(String(number), "issue");
+        const marker = /<!-- vmethod-task (\{[^\r\n]*\}) -->\s*$/.exec(String(item.body));
+        const exception = marker ? object(JSON.parse(marker[1])).scopeException : undefined;
+        if (
+          !(typeof exception === "string" && exception.trim()) &&
+          (await this.host.issueApproved(issue)) !== true
+        ) {
+          throw new Error("scope not approved: post SCOPE REVIEW first");
+        }
+      }
       const baseSha = sha(item.baseRefOid);
       if (
         !(await git.transfer("fetch", [
@@ -828,7 +836,7 @@ export class TaskFlow {
       ) {
         throw new Error("Fetch failed");
       }
-      const liveBase = sha((await git.run("rev-parse", `refs/remotes/origin/${base}`)).trim());
+      const liveBase = await liveBaseHead(base, { git });
       let certification: string | undefined;
       if (carryApproval !== undefined) {
         for (const approved of await this.host.candidates(ref)) {
@@ -890,7 +898,7 @@ export class TaskFlow {
         current.headRefOid !== head ||
         current.baseRefOid !== baseSha ||
         current.baseRefName !== base ||
-        (await git.run("rev-parse", `refs/remotes/origin/${base}`)).trim() !== liveBase
+        (await liveBaseHead(base, { git })) !== liveBase
       ) {
         throw new Error("Head or base moved during merge checks");
       }

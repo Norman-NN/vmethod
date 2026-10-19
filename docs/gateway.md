@@ -76,10 +76,20 @@ and explicit `repos` bindings. See [shared learnings](learnings.md).
 - `vmethod board migrate [--dry-run] [--steal]`
 - `vmethod issue create <title> <body-file> [--label l] [--estimate n] [--status name]`
 - `vmethod issue close <n> [--comment file]`
+- `vmethod issue edit <n> <body-file>`
+- `vmethod scope-review <n> <summary-file>`
 - `vmethod board set <issue> <field> <value>|--clear`
 
 Thread references also accept `org/repo#n` within the configured org. Invoke the
 installed package with `npm exec --no -- vmethod`, never a downloading fallback.
+
+`issue edit` and `scope-review` are orchestrator-only, configured-repository writes.
+Read an issue first: `read issue` saves its exact body hash in worktree-local
+`.tmp/`; `issue edit` checks the live body against it immediately before writing.
+This is a stale-read guard, not an atomic GitHub compare-and-swap. Both writes
+validate Markdown and closing syntax. `scope-review` takes a plain change summary,
+adds the live hash itself and hands the issue to the owner. See the
+[scope review procedure](orchestrator-guide.md#scope-review).
 
 Read operations gate metadata before fetching bodies, comments, reviews, files,
 diffs or checks, and recheck identity on body responses. Accepted text is labelled
@@ -538,7 +548,10 @@ The last output line is the verdict. `wait-checks` exits **0** green, **1** red
 (with failing checks and a short digest), **2** no verdict/head moved (run again,
 never report BLOCKED), or **3** conflict (merge the base, push, run again).
 `check-task-ci` uses the same codes, but green also requires every trusted check's
-workflow-associated PR head/base SHAs to match the current PR. Missing workflow
+workflow-associated PR head/base SHAs to match the current PR head and live base
+branch head, not the PR's potentially stale base SHA. `check-task-ci` and
+`refresh-checks` read the branch endpoint and recheck it after collecting CI evidence;
+`merge-task` resolves its fetched base ref through the same live-base helper. Missing workflow
 evidence fails closed with code 2; commit timestamps cannot establish the tested
 base. It returns check names, without downloading failure logs. `refresh-checks`
 returns 0 for a successful push or no-op, 2 for a ref moving during preparation,
