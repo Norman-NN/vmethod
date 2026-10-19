@@ -19,6 +19,7 @@ import { object, type ObjectData, type Person } from "./people.js";
 import { checkMarkdown, guardClosingKeywords } from "./markdown.js";
 import { GitTransport, taskBranch, validateBranch } from "./git.js";
 import { cleanBaseMerges } from "./clean-base.js";
+import { liveBaseHead } from "./base-head.js";
 import { approvalCarryFiles } from "./carry-approval.js";
 import type { OpenTaskInput, ReviewInput } from "./task-flow-types.js";
 import { taskIssueNumbers, taskRelation } from "./task-flow-types.js";
@@ -834,7 +835,7 @@ export class TaskFlow {
       ) {
         throw new Error("Fetch failed");
       }
-      const liveBase = sha((await git.run("rev-parse", `refs/remotes/origin/${base}`)).trim());
+      const liveBase = await liveBaseHead(base, { git });
       let certification: string | undefined;
       if (carryApproval !== undefined) {
         for (const approved of await this.host.candidates(ref)) {
@@ -896,7 +897,7 @@ export class TaskFlow {
         current.headRefOid !== head ||
         current.baseRefOid !== baseSha ||
         current.baseRefName !== base ||
-        (await git.run("rev-parse", `refs/remotes/origin/${base}`)).trim() !== liveBase
+        (await liveBaseHead(base, { git })) !== liveBase
       ) {
         throw new Error("Head or base moved during merge checks");
       }
