@@ -14,16 +14,19 @@ export async function watchClient(
 ): Promise<void> {
   const session: SessionInput = {};
   let once = env.ONESHOT === "1";
+  let replay: string | undefined;
   for (let i = 0; i < args.length; i++) {
     const flag = args[i];
     if (flag === "--once") {
       once = true;
-    } else if (["--track", "--only", "--skip"].includes(flag)) {
+    } else if (["--track", "--only", "--skip", "--replay"].includes(flag)) {
       const value = args[++i];
       if (!value || value.startsWith("--")) {
         throw new Error(`Missing value for ${flag}`);
       }
-      if (flag === "--track") {
+      if (flag === "--replay") {
+        replay = value;
+      } else if (flag === "--track") {
         session.track = value;
       } else {
         if (!/^[1-9]\d*(?:,[1-9]\d*)*$/.test(value)) {
@@ -33,7 +36,7 @@ export async function watchClient(
       }
     } else {
       throw new Error(
-        "Usage: vmethod watch [--once] [--track <name>|--only <numbers>|--skip <numbers>]"
+        "Usage: vmethod watch [--once] [--replay <previous|seq|time>] [--track <name>|--only <numbers>|--skip <numbers>]"
       );
     }
   }
@@ -54,12 +57,30 @@ export async function watchClient(
   }
   const ctx = context(env);
   let ack: string[] = [];
+  let first = true;
+  let guideSeen = false;
   for (;;) {
-    const { events } = await transport.call(
+    const { events, notice } = await transport.call(
       "nextEvents",
-      { ...session, timeoutSeconds: once ? 0 : 300, ack, ...(once ? { pollOnce: true } : {}) },
+      {
+        ...session,
+        timeoutSeconds: once || replay !== undefined ? 0 : 300,
+        ...(replay !== undefined
+          ? { replay }
+          : {
+              ack,
+              ...(guideSeen ? { guideSeen: true } : {}),
+              ...(first ? { watchStart: true } : {}),
+              ...(once ? { pollOnce: true } : {}),
+            }),
+      },
       ctx
     );
+    first = false;
+    if (notice) {
+      await write(`${notice}\n`);
+      guideSeen = true;
+    }
     for (const event of events) {
       const quiet = event.quiet?.length
         ? `quiet since the last wake-up:\n${event.quiet.map((line) => `  ${line}\n`).join("")}`
@@ -67,9 +88,16 @@ export async function watchClient(
       await write(`${quiet}${event.line}\n`);
     }
     ack = events.map((event) => event.id);
+    if (replay !== undefined) {
+      return;
+    }
     if (once) {
-      if (events.length) {
-        await transport.call("nextEvents", { ...session, timeoutSeconds: 0, ack }, ctx);
+      if (events.length || guideSeen) {
+        await transport.call(
+          "nextEvents",
+          { ...session, timeoutSeconds: 0, ack, ...(guideSeen ? { guideSeen: true } : {}) },
+          ctx
+        );
       }
       return;
     }

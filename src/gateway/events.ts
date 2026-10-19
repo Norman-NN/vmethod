@@ -14,6 +14,9 @@ import {
 } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import manifest from "../../package.json" with { type: "json" };
+import { WatchDelivery } from "./watch-delivery.js";
 import type { Config } from "../config.js";
 import { boardCost } from "../cost.js";
 import { parseProgress, renderProgress, revivedProgressStates } from "../board/progress.js";
@@ -57,6 +60,17 @@ const PAGE_LIMIT = 20;
 const PREVIEW_LIMIT = 120;
 const RED_CI = ["FAILURE", "ERROR", "TIMED_OUT", "STARTUP_FAILURE", "ACTION_REQUIRED"];
 const ID = /^[A-Za-z0-9_.@#-]{1,160}$/;
+declare const __VERSION__: string;
+const VERSION = typeof __VERSION__ === "string" ? __VERSION__ : manifest.version;
+
+interface WatchInput {
+  timeoutSeconds: unknown;
+  ack?: unknown;
+  pollOnce?: unknown;
+  watchStart?: unknown;
+  guideSeen?: unknown;
+  replay?: unknown;
+}
 
 export interface WatchEvent {
   /** Ack key: the event's dedup key for once events, stable across restarts. */
@@ -405,25 +419,38 @@ export class EventLoop {
     );
   }
 
-  async nextEvents(input: { timeoutSeconds: unknown; ack?: unknown; pollOnce?: unknown }): Promise<{
+  async nextEvents(input: WatchInput): Promise<{
     events: WatchEvent[];
+    notice?: string;
   }> {
     if (this.reading) {
       throw new Error("watch: another reader is already waiting for this session");
     }
     this.reading = true;
     try {
-      return await this.readEvents(input);
+      const result = await this.readEvents(input);
+      if (input.replay === undefined) {
+        new WatchDelivery(this.dir, this.host.deps.now).append(result.events);
+      }
+      if (input.watchStart && !this.marked(`guide-seen-${VERSION}`)) {
+        const here = dirname(fileURLToPath(import.meta.url));
+        const guide = [
+          join(here, "../docs/orchestrator-guide.md"),
+          join(here, "../../docs/orchestrator-guide.md"),
+        ].find(existsSync);
+        if (!guide) {
+          throw new Error("Cannot locate orchestrator-guide.md");
+        }
+        const notice = `vmethod ${VERSION} in use: read ${guide} (changes: https://github.com/vworlds/vmethod/releases/tag/v${VERSION})`;
+        return { ...result, notice };
+      }
+      return result;
     } finally {
       this.reading = false;
     }
   }
 
-  private async readEvents(input: {
-    timeoutSeconds: unknown;
-    ack?: unknown;
-    pollOnce?: unknown;
-  }): Promise<{ events: WatchEvent[] }> {
+  private async readEvents(input: WatchInput): Promise<{ events: WatchEvent[] }> {
     if (
       typeof input.timeoutSeconds !== "number" ||
       !Number.isSafeInteger(input.timeoutSeconds) ||
@@ -441,8 +468,37 @@ export class EventLoop {
     if (input.pollOnce !== undefined && typeof input.pollOnce !== "boolean") {
       throw new Error("Expected a boolean pollOnce");
     }
+    if (input.watchStart !== undefined && typeof input.watchStart !== "boolean") {
+      throw new Error("Expected a boolean watchStart");
+    }
+    if (input.guideSeen !== undefined && typeof input.guideSeen !== "boolean") {
+      throw new Error("Expected a boolean guideSeen");
+    }
+    if (
+      input.replay !== undefined &&
+      (typeof input.replay !== "string" ||
+        input.watchStart ||
+        input.guideSeen ||
+        (input.ack as string[] | undefined)?.length)
+    ) {
+      throw new Error("Replay requires a string selector, no start and no acknowledgements");
+    }
     await this.start();
+    const delivery = new WatchDelivery(this.dir, this.host.deps.now);
+    if (typeof input.replay === "string") {
+      return { events: delivery.replay(input.replay) };
+    }
+    if (input.watchStart) {
+      delivery.start();
+    }
+    if (input.guideSeen) {
+      this.mark(`guide-seen-${VERSION}`);
+    }
     this.applyAck((input.ack ?? []) as string[]);
+    // Deliver onboarding immediately rather than hiding it behind a five-minute long poll.
+    if (input.watchStart && !input.pollOnce && !this.marked(`guide-seen-${VERSION}`)) {
+      return { events: this.buildBatch() };
+    }
     // Zero timeout is the ack-only operation used by --once; do not fetch unprinted events.
     if ((input.timeoutSeconds === 0 && !input.pollOnce) || this.pending().length) {
       return { events: this.buildBatch() };
@@ -2331,12 +2387,15 @@ export class EventLoop {
     await this.watchNext(ready, approved);
   }
 
-  /** Remind once after 30 observed minutes on our turn, then at hourly intervals. */
+  /** Backstop unanswered worker protocol at five minutes; other turns settle for thirty. */
   private watchOrchestratorTurns(cards: CardInfo[]): void {
     const previous = object(safeJson(this.readMarker("orchestrator-turns.json")));
-    const next: Record<string, { since: number; reminded?: number }> = {};
+    const next: Record<string, { since: number; reminded?: number; request?: string }> = {};
     const now = this.host.deps.now();
     for (const card of cards) {
+      const protocol = object(safeJson(this.readMarker(`unhandled-worker-${card.number}`)));
+      const unanswered =
+        protocol.tag && !protocol.handled && Number.isFinite(Date.parse(str(protocol.at)));
       const assigned = card.assignees.some(
         (login) =>
           login.toLowerCase() === this.me?.toLowerCase() ||
@@ -2347,21 +2406,32 @@ export class EventLoop {
       if (
         card.state !== "OPEN" ||
         card.column === "Done" ||
-        (!card.progress.startsWith("🧭") && !(card.column === "In review" && assigned))
+        (!card.progress.startsWith("🧭") &&
+          !((card.column === "In review" || unanswered) && assigned))
       ) {
         continue;
       }
       const old = object(previous[card.id]);
-      const since = typeof old.since === "number" && old.since <= now ? old.since : now;
-      const reminded = typeof old.reminded === "number" ? old.reminded : undefined;
-      const turn = { since, ...(reminded === undefined ? {} : { reminded }) };
+      const request = unanswered ? str(protocol.at) : undefined;
+      const since = unanswered
+        ? Date.parse(str(protocol.at))
+        : typeof old.since === "number" && old.since <= now
+          ? old.since
+          : now;
+      const reminded =
+        old.request === request && typeof old.reminded === "number" ? old.reminded : undefined;
+      const turn = {
+        since,
+        ...(request ? { request } : {}),
+        ...(reminded === undefined ? {} : { reminded }),
+      };
       if (
-        now - since >= STALE_MS &&
-        (reminded === undefined || now - reminded >= 60 * 60_000) &&
+        now - since >= (unanswered ? 5 * 60_000 : STALE_MS) &&
+        (reminded === undefined || now - reminded >= (unanswered ? 30 : 60) * 60_000) &&
         this.emit(
           `orchestrator-turn-${card.number}@${since}-${now}`,
           "orchestrator-turn",
-          `ORCHESTRATOR TURN #${card.number}: waiting on you for 30+ min (${card.progress}) ${this.threadUrl(card.repo, card.number, card.kind)}`
+          `ORCHESTRATOR TURN #${card.number}: ${unanswered ? `${str(protocol.tag)} unhandled for 5+ min` : `waiting on you for 30+ min (${card.progress})`} ${this.threadUrl(card.repo, card.number, card.kind)}`
         )
       ) {
         turn.reminded = now;
@@ -3045,6 +3115,20 @@ export class EventLoop {
       return;
     }
     const first = str(comment.body).split(/\r?\n/)[0];
+    const requestTag =
+      role === "worker" ? /^\[worker\] (READY|QUESTION|BLOCKED)\b/.exec(first)?.[1] : undefined;
+    const reply =
+      role === "orchestrator" &&
+      /^\[orchestrator\] (?:REVIEW|OWNER REVIEW|ANSWER|AMENDMENT|GO)\b/.test(first);
+    if (requestTag || reply) {
+      const previous = object(safeJson(this.readMarker(`unhandled-worker-${number}`)));
+      if (at >= str(previous.at)) {
+        this.writeMarker(
+          `unhandled-worker-${number}`,
+          JSON.stringify({ at, ...(requestTag ? { tag: requestTag } : { handled: true }) })
+        );
+      }
+    }
     let active: boolean;
     let workerTag: string | undefined;
     if (role === "worker") {

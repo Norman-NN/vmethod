@@ -138,3 +138,5 @@ of the legacy Claude process; coordinate stopping that process before relaunchin
 - [ ] Confirm the upgraded checkout, state compatibility and hooks work, and record
       the rollout outcome. Keep the previous release available for diagnosis without
       mixing its running files with the new install.
+
+restart every orchestrator and worker session, or have it re-read `AGENTS.md`; sessions started before adoption keep the old instructions.

@@ -258,6 +258,22 @@ watching continuously and re-arm the watch on every expiry, including quiet ones
 so changes to the methodology and your own cards always reach you. Follow
 [tooling budget rules](tooling-rules.md).
 
+Run `watch` unwrapped, with no filtering pipe: filtering can hide the wake line
+while still acknowledging its batch. A `quiet since the last wake-up:` digest
+always rides on a wake event. A digest without its wake line means a lost event:
+replay it with `watch --replay previous`.
+
+On every re-arm, run `watch --replay previous` first, then list the cards on your
+orchestrator turn and act on any you have not yet handled. Replay uses the previous
+real watch start in the same state directory, so you need no cursor after context
+compaction. Then start the unwrapped `watch` again. History is retained for seven
+days; `watch --replay <seq|time>` supports manual inspection. See
+[delivery and replay](gateway.md#watching-and-muting).
+
+The first watch after adoption or a version bump prints the installed version,
+guide path and version's release notes. Read the guide when that notice appears;
+subsequent starts of the same version stay quiet.
+
 A `button-merge` event (`PR #n MERGED by <owner>: run merge-task`) is an action
 item, not information: run `merge-task <n>`. The event repeats until merge follow-up
 is complete. The watcher itself never writes that follow-up.

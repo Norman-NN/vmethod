@@ -2383,9 +2383,19 @@ test.each(["worker", "owner", "unknown", "forged", "edited"])(
     for (let i = 0; i < 6; i++) {
       events.push(...(await f.once(loop)));
     }
-    expect(events.map((event) => event.kind)).toEqual(
-      ["worker", "owner"].includes(reply) ? ["silent"] : []
+    // Unanswered BLOCKED now has an independent orchestrator-turn backstop.
+    expect(
+      events.filter((event) => event.kind === "orchestrator-turn").map((event) => event.line)
+    ).toEqual(
+      reply === "edited"
+        ? []
+        : [
+            "ORCHESTRATOR TURN #24: BLOCKED unhandled for 5+ min https://github.com/example/project/pull/24",
+          ]
     );
+    expect(
+      events.filter((event) => event.kind !== "orchestrator-turn").map((event) => event.kind)
+    ).toEqual(["worker", "owner"].includes(reply) ? ["silent"] : []);
   }
 );
 
@@ -2452,14 +2462,20 @@ test.each(["REVIEW round 1", "ANSWER", "AMENDMENT", "GO", "CHANGES"])(
     await f.once(loop);
     f.advance(41 * 60_000);
     for (let i = 0; i < 6; i++) {
-      expect(await f.once(loop)).toEqual([]);
+      const events = await f.once(loop);
+      expect(events.map((event) => event.kind)).toEqual(i === 0 ? ["orchestrator-turn"] : []);
+      if (i === 0) {
+        expect(events[0].line).toContain("BLOCKED unhandled for 5+ min");
+      }
     }
     f.advance();
     const reply = f.comment(`[orchestrator] ${tag}`, 2);
     reply.user = { login: "me", id: 999, type: "User" };
     await f.once(loop);
     f.advance(41 * 60_000);
-    expect((await f.once(loop)).map((event) => event.kind)).toEqual(["stale"]);
+    expect((await f.once(loop)).map((event) => event.kind)).toEqual(
+      tag === "CHANGES" ? ["stale", "orchestrator-turn"] : ["stale"]
+    );
   }
 );
 
