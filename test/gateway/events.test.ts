@@ -549,7 +549,7 @@ test.each(["NOT_PLANNED", "COMPLETED"])(
   }
 );
 
-test.each(["local", "owner", "unverified", "foreign", "muted"])(
+test.each(["local", "owner", "unverified", "foreign", "muted", "out of scope"])(
   "a %s request does not produce a peer not-planned notification",
   async (kind) => {
     const f = setup();
@@ -579,9 +579,11 @@ test.each(["local", "owner", "unverified", "foreign", "muted"])(
     if (kind === "muted") {
       muteThread(f.config, f.env, "6");
     }
-    const events = await f.once(f.loop());
+    const events = await f.once(f.loop(kind === "out of scope" ? { only: [24] } : {}));
     expect(events.filter((event) => event.kind === "not-planned")).toEqual([]);
-    expect(object(card.status).name).toBe(["foreign", "muted"].includes(kind) ? "Backlog" : "Done");
+    expect(object(card.status).name).toBe(
+      ["foreign", "muted", "out of scope"].includes(kind) ? "Backlog" : "Done"
+    );
     expect(f.reports).toEqual([]);
   }
 );
@@ -620,15 +622,41 @@ test("a failed closure board write retries without losing the closure event or r
     JSON.stringify({ status: "In review", state: "ready" })
   );
   f.failSet = true;
-  await f.once(loop);
+  const failedEvents = await f.once(loop);
   expect(object(card.status).name).toBe("Backlog");
   expect(object(object(card.content).assignees).nodes).toEqual([]);
   f.failSet = false;
   f.advance();
-  await f.once(loop);
+  const retriedEvents = await f.once(loop);
   expect(object(card.status).name).toBe("Done");
   expect(object(card.progress).text).toBeNull();
   expect(existsSync(join(f.dir, "pending-progress-6"))).toBe(false);
+  expect(
+    [...failedEvents, ...retriedEvents].filter((event) => event.kind === "closed")
+  ).toHaveLength(1);
+});
+
+test("a peer issue already moved to Done by GitHub still clears the turn and notifies once", async () => {
+  const f = setup();
+  f.watchPeople = people.map((person) =>
+    person.login === "peer" ? { ...person, repos: ["example/other"] } : person
+  );
+  const card = f.card(6, "Done");
+  Object.assign(object(card.content), {
+    author: actor(2),
+    state: "CLOSED",
+    stateReason: "NOT_PLANNED",
+    assignees: { nodes: [{ login: "owner" }] },
+  });
+  card.progress = { text: "👤❓" };
+  f.cards = [card];
+  const loop = f.loop();
+  expect((await f.once(loop)).map((event) => event.kind)).toEqual(["closed", "not-planned"]);
+  expect(object(card.status).name).toBe("Done");
+  expect(object(card.progress).text).toBeNull();
+  expect(object(object(card.content).assignees).nodes).toEqual([]);
+  expect(await f.once(loop)).toEqual([]);
+  expect(f.reports).toEqual([]);
 });
 
 test("a reopened peer issue closed again emits a new closure notification", async () => {
