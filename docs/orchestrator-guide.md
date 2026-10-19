@@ -48,6 +48,12 @@ counts as their approval; see [Security](security.md#authority-and-filtering).
 
 ## Scope review
 
+While an issue is under discussion, leave its body alone. Acknowledge and reason
+about each point (yours, the owner's, other orchestrators') in comments, so the
+thread shows how the ideas fit together. Do not fold each comment into the body as
+it arrives: rewriting mid-discussion confuses readers and wastes work. The rewrite
+happens once, after the owner moves the card to Approved.
+
 Before opening task PRs, fold every settled discussion conclusion into the issue
 body. An owner Approved move without reviewed scope means agreement with the
 conclusions, not permission to launch. On SCOPE, move the issue to In progress,
@@ -68,8 +74,11 @@ sets `👤🔍`. Nothing is added to the body. Have the owner read it and move i
 Approved again. Changes requested or further discussion require another rewrite
 and scope review. `open-task` and `merge-task` check the same body-bound evidence;
 an unchanged approval covers all parts despite intervening orchestrator moves.
-Hand-posted reviews may wrap the hex digest in backticks; exactly one hash line
-is required in either format.
+Always post the review with `scope-review`, which computes the digest. Do not hash
+the body by hand: shell pipelines (for example `jq` output) add a trailing newline,
+the digest then never matches, and the owner's approval silently fails to count.
+Hand-posted reviews may wrap the hex digest in backticks; exactly one hash line is
+required in either format.
 
 An owner Approved move on an orchestrator-written issue with only trusted
 orchestrator comments (or no comments) is the trivial shortcut. Comments from
