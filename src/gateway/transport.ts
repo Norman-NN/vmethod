@@ -41,8 +41,16 @@ export interface Operations {
   releaseHold: { input: { ref: string }; output: string };
   workerStatus: { input: { ref: string }; output: "live" | "stopped" | "unknown" };
   nextEvents: {
-    input: SessionInput & { timeoutSeconds: number; ack?: string[]; pollOnce?: boolean };
-    output: { events: WatchEvent[] };
+    /** watchStart marks a CLI invocation; replay reads history without polling or acknowledging. */
+    input: SessionInput & {
+      timeoutSeconds: number;
+      ack?: string[];
+      pollOnce?: boolean;
+      watchStart?: boolean;
+      guideSeen?: boolean;
+      replay?: string;
+    };
+    output: { events: WatchEvent[]; notice?: string };
   };
   watchMute: { input: { ref: string }; output: string };
   watchUnmute: { input: { ref: string }; output: string };

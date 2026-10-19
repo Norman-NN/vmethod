@@ -874,7 +874,7 @@ export class WatchFake {
         printed.push(line);
       }
     );
-    expect(printed).toHaveLength(events.length);
+    expect(printed.filter((line) => !line.startsWith("vmethod "))).toHaveLength(events.length);
     return events;
   }
   async ack(loop: EventLoop, events: { id: string }[]) {

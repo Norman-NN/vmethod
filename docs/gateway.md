@@ -395,19 +395,33 @@ preparation never changes another checkout's metadata ownership.
 Run as an orchestrator (`VMETHOD_ROLE=orchestrator`):
 
 - `vmethod watch [--once] [--track <name>|--only <n,n>|--skip <n,n>]`
+- `vmethod watch --replay <previous|seq|time> [--track <name>|--only <n,n>|--skip <n,n>]`
 - `vmethod mute <org/repo#n>` (or a local number)
 - `vmethod unmute <org/repo#n>`
 - `vmethod mutes`
 
 The CLI only prints server-produced `nextEvents` records; it never polls GitHub.
-`nextEvents` takes `{ timeoutSeconds, ack?, pollOnce?, track?, only?, skip? }` and returns
-`{ events: [{ id, kind, line, quiet? }] }`. A zero timeout applies acknowledgements
+`nextEvents` takes `{ timeoutSeconds, ack?, pollOnce?, watchStart?, guideSeen?, replay?, track?, only?, skip? }` and returns
+`{ events: [{ id, kind, line, quiet? }], notice? }`. A zero timeout applies acknowledgements
 without polling. The client acknowledges IDs **after stdout finishes writing**;
 `--once` delivers pending events or polls once without waiting for an event, then
 acknowledges any printed batch and exits, including when nothing is new. It uses
 `{ timeoutSeconds: 0, pollOnce: true }`; an ack-only call omits `pollOnce`. A failed
 write leaves the batch pending. Reconnects redeliver pending events until acknowledged;
 delivery is at least once, so a crash after print but before ack may repeat that batch.
+
+The CLI sets `watchStart` on its first normal request, not on long-poll continuations.
+Each nonempty delivered batch is persisted before return in `delivered.jsonl`, with
+an increasing `seq`, ISO `at` timestamp and complete `events` (including quiet digests).
+The state directory retains seven days of history independently of acknowledgements.
+`--replay previous` returns all batches since the last real watch invocation began;
+run it **before** starting the next watch. Replay never advances that boundary, polls
+GitHub, acknowledges pending events or appends a duplicate history record. Manual
+sequence and ISO timestamp selectors are inclusive. Repeated delivery can therefore
+appear repeatedly in history. The watcher lock also protects replay and pruning.
+After printing the notice, the client sends `guideSeen: true`; only then does the
+server write `guide-seen-<version>`, suppressing later notices for that version in
+the state directory. A failed notice write leaves it unseen.
 
 The server watches the own repository's task PRs and board, plus issues, PRs,
 comments and assignments in `vmethod.repo` (default `vworlds/vmethod`; `off` disables
@@ -432,6 +446,10 @@ branch name. Their merges emit MERGED notices; held task PRs referencing the mer
 number are identified so you can review their dependencies and release them.
 
 Worker READY, QUESTION, DESIGN, BLOCKED and HANDOFF wake and update Progress.
+An unanswered verified worker READY, QUESTION or BLOCKED on an orchestrator-turn
+card additionally emits `ORCHESTRATOR TURN #n: <state> unhandled for 5+ min` after
+five minutes, then every thirty minutes. A verified orchestrator REVIEW, OWNER
+REVIEW, ANSWER, AMENDMENT or GO handles that request. Other comments do not.
 The watcher synchronizes management assignees and clears stale owner mirrors on
 linked issues. It reports unassigned In review cards (except linked task issues)
 and Progress/assignee mismatches. PR links are replaced only after the full PR poll

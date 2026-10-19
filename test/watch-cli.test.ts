@@ -5,7 +5,7 @@ import type { Transport } from "../src/gateway/transport.js";
 import { actor, fixtureServer } from "./gateway/helpers.js";
 import { WatchFake } from "./gateway/watch-fake.js";
 import { spawnSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { build } from "esbuild";
 import { stringify } from "yaml";
@@ -42,6 +42,7 @@ test("--once writes the batch completely before a zero-timeout ack", async () =>
     timeoutSeconds: 0,
     pollOnce: true,
     ack: [],
+    watchStart: true,
   });
 });
 
@@ -69,18 +70,19 @@ test("a second --once on existing state with nothing new polls once and exits wi
         input as { timeoutSeconds: number; pollOnce?: boolean; ack?: string[] }
       );
     });
-    const write = vi.fn(async () => {});
+    const write = vi.fn<(text: string) => Promise<void>>().mockResolvedValue(undefined);
     await watchClient({ call }, ["--once"], { VMETHOD_ROLE: "orchestrator" }, write);
     loop.close();
     loop = f.loop();
     const requestsBefore = f.requests.length;
     await watchClient({ call }, ["--once"], { VMETHOD_ROLE: "orchestrator" }, write);
-    expect(call).toHaveBeenCalledTimes(2);
+    expect(call).toHaveBeenCalledTimes(3);
     expect(f.requests.length).toBeGreaterThan(requestsBefore);
     expect(
       f.requests.slice(requestsBefore).filter((request) => request.includes("/graphql"))
     ).toHaveLength(1);
-    expect(write).not.toHaveBeenCalled();
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(write.mock.calls[0][0]).toContain("in use: read");
     expect(f.sleeps).toEqual([]);
   } finally {
     f.done();
@@ -96,9 +98,41 @@ test("empty --once does not re-arm, including the legacy ONESHOT setting", async
   expect(call.mock.calls[0][1]).toMatchObject({ timeoutSeconds: 0, pollOnce: true });
 });
 
+test("guide notice is acknowledged only after successful stdout, even without events", async () => {
+  const call = vi
+    .fn<Transport["call"]>()
+    .mockResolvedValue({ events: [], notice: "vmethod test in use: read guide" });
+  await expect(
+    watchClient({ call }, ["--once"], {}, async () => {
+      throw new Error("closed");
+    })
+  ).rejects.toThrow("closed");
+  expect(call).toHaveBeenCalledTimes(1);
+  call.mockClear();
+  await watchClient({ call }, ["--once"], {}, async () => {});
+  expect(call.mock.calls[1][1]).toEqual({ timeoutSeconds: 0, ack: [], guideSeen: true });
+});
+
+test("replay prints complete digests and wake lines once without starting or acknowledging", async () => {
+  const call = vi.fn<Transport["call"]>().mockResolvedValue({
+    events: [{ id: "lost", kind: "ready", line: "READY #24", quiet: ["NOTE #24"] }],
+  });
+  const writes: string[] = [];
+  await watchClient({ call }, ["--replay", "previous", "--track", "alpha"], {}, async (text) => {
+    writes.push(text);
+  });
+  expect(writes).toEqual(["quiet since the last wake-up:\n  NOTE #24\nREADY #24\n"]);
+  expect(call.mock.calls).toEqual([
+    ["nextEvents", { track: "alpha", replay: "previous", timeoutSeconds: 0 }, { role: "worker" }],
+  ]);
+});
+
 test("built CLI --once exits promptly on two successive empty runs against the same state", async () => {
   const f = fixtureServer([]);
-  const cli = join(f.root, "watch-cli.mjs");
+  mkdirSync(join(f.root, "dist"));
+  mkdirSync(join(f.root, "docs"));
+  writeFileSync(join(f.root, "docs/orchestrator-guide.md"), "# Guide\n");
+  const cli = join(f.root, "dist/watch-cli.mjs");
   const preload = join(f.root, "offline-fetch.mjs");
   writeFileSync(
     join(f.root, "vmethod.yaml"),
@@ -154,7 +188,15 @@ test("built CLI --once exits promptly on two successive empty runs against the s
     expect(result.error).toBeUndefined();
     expect(result.stderr).toBe("");
     expect(result.status).toBe(0);
-    expect(result.stdout).toBe("");
+    if (run === 0) {
+      expect(result.stdout).toContain("vmethod test in use: read");
+      expect(result.stdout).toContain("docs/orchestrator-guide.md");
+      expect(result.stdout).toContain(
+        "changes: https://github.com/vworlds/vmethod/releases/tag/vtest"
+      );
+    } else {
+      expect(result.stdout).toBe("");
+    }
   }
   f.done();
 }, 15000);
