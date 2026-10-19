@@ -1073,6 +1073,100 @@ test.each(["self", "owner", "sibling"])(
   }
 );
 
+test.each(["Backlog", "Ready"])(
+  "a person's move to %s clears the turn without cleanup event noise",
+  async (column) => {
+    const f = setup();
+    const card = f.card(6, "In review");
+    card.progress = { text: "👤❓ 🔁2️⃣ 🔴" };
+    object(card.content).assignees = { nodes: [{ login: "owner" }] };
+    f.cards = [card];
+    const loop = f.loop();
+    expect(await f.tick(loop)).toEqual([]);
+    // The owner tables the question by moving only Status in the board UI.
+    f.advance();
+    card.status = { name: column, updatedAt: f.iso() };
+    const events = await f.tick(loop);
+    expect(events.filter((event) => event.kind !== "next").map((event) => event.kind)).toEqual([
+      "board",
+    ]);
+    expect(events.find((event) => event.kind === "board")?.line).toContain(`In review → ${column}`);
+    expect(object(card.progress).text).toBeNull();
+    expect(object(card.content).assignees).toEqual({ nodes: [] });
+    await f.ack(loop, events);
+    const writes = f.writes.length;
+    f.advance();
+    expect(await f.tick(loop)).toEqual([]);
+    expect(f.writes).toHaveLength(writes);
+    expect(f.reports).toEqual([]);
+  }
+);
+
+test.each(["Backlog", "Ready"])(
+  "a move to %s removes management assignees but preserves workers",
+  async (column) => {
+    const f = setup();
+    const card = f.card(6, "In progress");
+    object(card.content).assignees = { nodes: [{ login: "peer" }, { login: "worker" }] };
+    f.cards = [card];
+    const loop = f.loop();
+    await f.tick(loop);
+    f.advance();
+    card.status = { name: column, updatedAt: f.iso() };
+    const events = await f.tick(loop);
+    expect(object(card.content).assignees).toEqual({ nodes: [{ login: "worker" }] });
+    expect(object(card.progress).text).toBe("");
+    await f.ack(loop, events);
+    expect((await f.tick(loop)).filter((event) => event.kind !== "next")).toEqual([]);
+  }
+);
+
+test.each(["Backlog", "Ready"])(
+  "a journalled move to %s retains its deliberate turn",
+  async (column) => {
+    const f = setup();
+    const card = f.card(6, "In review");
+    card.progress = { text: "👤❓" };
+    object(card.content).assignees = { nodes: [{ login: "owner" }] };
+    f.cards = [card];
+    const loop = f.loop();
+    await f.tick(loop);
+    f.advance();
+    card.status = { name: column, updatedAt: f.iso() };
+    writeFileSync(
+      join(f.dir, "writes.jsonl"),
+      `${JSON.stringify({ at: f.iso(), kind: "board", repo: "example/project", number: 6, itemId: card.id, field: "Status", value: column })}\n`
+    );
+    expect(await f.tick(loop)).toEqual([]);
+    expect(object(card.progress).text).toBe("👤❓");
+    expect(object(card.content).assignees).toEqual({ nodes: [{ login: "owner" }] });
+  }
+);
+
+test("a failed queue cleanup retries the move rather than acknowledging stale turn state", async () => {
+  const f = setup();
+  const card = f.card(6, "In review");
+  card.progress = { text: "👤❓" };
+  object(card.content).assignees = { nodes: [{ login: "owner" }] };
+  f.cards = [card];
+  const loop = f.loop();
+  await f.tick(loop);
+  f.advance();
+  card.status = { name: "Backlog", updatedAt: f.iso() };
+  f.failSet = true;
+  expect(await f.tick(loop)).toEqual([]);
+  expect(object(card.progress).text).toBe("👤❓");
+  expect(object(card.content).assignees).toEqual({ nodes: [{ login: "owner" }] });
+  expect(f.reports.join("\n")).toContain("scripted Progress write failure");
+  f.failSet = false;
+  const events = await f.tick(loop);
+  expect(events.map((event) => event.kind)).toEqual(["board"]);
+  expect(object(card.progress).text).toBeNull();
+  expect(object(card.content).assignees).toEqual({ nodes: [] });
+  await f.ack(loop, events);
+  expect(await f.tick(loop)).toEqual([]);
+});
+
 test("a discarded snapshot does not swallow the later real move to a third column", async () => {
   const f = setup();
   f.cards = [f.card(24, "In review", "PullRequest")];

@@ -2571,6 +2571,17 @@ export class EventLoop {
       remember();
       return true;
     }
+    // A person's move back to the queue cancels the previous turn. Keep worker
+    // assignments, and use journalled writes so cleanup is not an owner reply.
+    if (card.column === "Backlog" || card.column === "Ready") {
+      if (card.progress) {
+        await this.host.board.set({ itemId: card.id, field: "Progress", value: null });
+        card.progress = "";
+      }
+      const next = turnAssignees(this.host.filter.people, card.repo, card.assignees, null);
+      await setTurn(this.host.github, card.repo, card.number, card.assignees, next);
+      card.assignees = next;
+    }
     const url = this.threadUrl(card.repo, card.number, card.kind);
     const preview = this.previewText(card.person, card.title);
     if (!old) {

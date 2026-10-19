@@ -32,6 +32,12 @@ stale owner mirrors; see [protocol transitions](protocol.md). Use `board set` on
 explicit housekeeping with validated Progress, not as a substitute for the
 [tracked owner-question commands](orchestrator-guide.md).
 
+When you move a card back to Backlog or Ready, the watcher treats it as nobody's
+move yet: it clears the entire Progress field and removes owner/orchestrator
+assignees, preserving worker assignments. The original board move still notifies
+the orchestrator; cleanup does not generate an owner-completion notification.
+Other destination columns and journalled gateway moves keep their existing handling.
+
 `board status` lists cards whose open/closed state disagrees with Status. Use
 `board status --fix` to move closed cards to Done and open cards out of Done to
 Backlog, clearing stale Progress as it reconciles each card. Closing an issue also
