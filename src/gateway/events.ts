@@ -339,6 +339,7 @@ export class EventLoop {
   private readonly cycleOwnMoves = new Set<string>();
   private inprogress: { number: number; branch: string; working: boolean }[] = [];
   private taskIssues = new Map<number, number[]>();
+  private pendingMergedIssues = new Set<number>();
   private heldTasks = new Map<number, string>();
   private prCostCards = new Map<number, string>();
   private observedPrs: PrInfo[] = [];
@@ -1311,6 +1312,7 @@ export class EventLoop {
   private async pollPulls(): Promise<void> {
     this.observedPrs = [];
     this.taskIssues.clear();
+    this.pendingMergedIssues.clear();
     this.heldTasks.clear();
     const items = await this.restPages(
       (page) => `/repos/${this.own}/pulls?state=open&per_page=100&page=${page}`,
@@ -1590,6 +1592,22 @@ export class EventLoop {
       ? object(JSON.parse(readFileSync(mergeFile, "utf8")))
       : {};
     const complete = Array.isArray(followUp.done) && followUp.done.includes("follow-up");
+    const mergeTime = Date.parse(str(data.merged_at));
+    const journalActive =
+      existsSync(mergeFile) &&
+      !complete &&
+      this.host.deps.now() - statSync(mergeFile).mtimeMs < BUTTON_RETRY_MS;
+    // A recent checkpoint counts as a running follow-up. An interrupted journal
+    // ages out; a missing journal still gets ten minutes from the merge itself.
+    const followUpPending =
+      !complete &&
+      (journalActive ||
+        (Number.isFinite(mergeTime) && this.host.deps.now() - mergeTime < BUTTON_RETRY_MS));
+    if (data.merged === true && person !== undefined && !legacy && followUpPending) {
+      for (const issue of taskIssueNumbers(str(data.body)) ?? []) {
+        this.pendingMergedIssues.add(issue);
+      }
+    }
     const self = count(object(data.merged_by).id) === this.meId;
     const matched = this.writes.matches(
       { kind: "merged", repo: this.own, number },
@@ -1604,7 +1622,6 @@ export class EventLoop {
     if (data.merged === true) {
       // Never run follow-up from the watcher. A sibling's same-account merge is
       // still work unless this session recorded it AND recovery is complete.
-      const mergeTime = Date.parse(str(data.merged_at));
       const attempted = Number(this.readMarker(`merge-attempt-${number}`)) * 1000;
       if (this.host.deps.now() - attempted < BUTTON_RETRY_MS) {
         return;
@@ -1612,18 +1629,7 @@ export class EventLoop {
       if (self && !complete && notified) {
         return;
       }
-      const journalActive =
-        existsSync(mergeFile) &&
-        !complete &&
-        this.host.deps.now() - statSync(mergeFile).mtimeMs < BUTTON_RETRY_MS;
-      // A recent checkpoint counts as a running follow-up. An interrupted journal
-      // ages out; a missing journal still gets ten minutes from the merge itself.
-      if (
-        self &&
-        !complete &&
-        (journalActive ||
-          (Number.isFinite(mergeTime) && this.host.deps.now() - mergeTime < BUTTON_RETRY_MS))
-      ) {
+      if (self && followUpPending) {
         return;
       }
       const at = Math.floor(this.host.deps.now() / 1000);
@@ -2587,7 +2593,8 @@ export class EventLoop {
       this.isOwn(card.repo) &&
       card.kind === "ISSUE" &&
       !card.scopePending &&
-      [...this.taskIssues.values()].some((issues) => issues.includes(card.number));
+      ([...this.taskIssues.values()].some((issues) => issues.includes(card.number)) ||
+        this.pendingMergedIssues.has(card.number));
     const role =
       state === "owner-review" || state === "owner-question"
         ? linkedIssue
