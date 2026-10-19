@@ -42,8 +42,10 @@ Every `people.yaml` entry now requires `login`, numeric `id`, `type` (`User` or
 nonempty `events` and `appIds` arrays. All template numbers are placeholders: the
 owner must replace them with verified identities and application IDs. There is no
 default trusted application, and missing pins fail configuration validation.
-`vmethod check` reports invalid pins with source line numbers. Do not let agents
-change their own trust list.
+`vmethod check` reports invalid pins with source line numbers, and it errors on an
+`orchestrator` pin without a `repos` binding or a configured repository that no
+orchestrator binds (the role is per repository; see [Security](security.md)). Do not
+let agents change their own trust list.
 
 Author/editor login, numeric ID and type must agree. Bot author/editor login comparisons normalize REST's
 trailing `[bot]` suffix to match GraphQL's suffixless spelling; numeric IDs and
