@@ -18,7 +18,8 @@ export function turnAssignees(
     const managed = new Set(people.filter(manages).map((p) => p.login.toLowerCase()));
     return current.filter((login) => !managed.has(login.toLowerCase()));
   }
-  const candidates = people.filter((p) => p.role === role && manages(p));
+  // Workers act globally (one worker account); only management roles are bound.
+  const candidates = people.filter((p) => p.role === role && (role === "worker" || manages(p)));
   if (candidates.length !== 1) {
     throw new Error(`Expected exactly one ${role} for ${repo}`);
   }
