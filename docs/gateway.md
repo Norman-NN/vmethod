@@ -561,6 +561,9 @@ of the field's `updatedAt`: `creator` is the first writer, not the latest actor.
 An unmatched board move is reported without attributing an actor. Changed board
 values are re-read before reporting; a stale listing is discarded on stderr only,
 without advancing its previous-column baseline or producing NEXT/LAUNCH from it.
+A card baseline is pruned only after its item has been absent from 3 consecutive
+successful board polls, tracked in a per-item absence counter; a failed or partial
+poll never counts, and a card one listing omits is never reported as new.
 
 Keep write commands and watch on the same scope. For explicit number scopes, set
 the existing `WATCH_ONLY` or `WATCH_SKIP` environment selector on **both** processes

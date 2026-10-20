@@ -29,6 +29,17 @@ import { scopeIssue, scopeMove, scopeConnection } from "./scope-fixture.js";
 export function proc(start = 42): string {
   return `1 (worker (with spaces)) S ${Array(18).fill("0").join(" ")} ${start} 0`;
 }
+
+/** WatchBoard page cursors: null requests the first page, then the served endCursor. */
+function pageCursor(cursor: unknown): string | null {
+  if (cursor === null) {
+    return null;
+  }
+  if (typeof cursor !== "string" || !/^\d+$/.test(cursor)) {
+    throw new Error(`Invalid WatchBoard cursor ${String(cursor)}`);
+  }
+  return cursor;
+}
 export const user = (index = 1) => ({
   login: people[index].login,
   id: people[index].id,
@@ -98,6 +109,8 @@ export class WatchFake {
   assignmentEvents: ObjectData[] = [];
   closingPrs: Record<number, ObjectData[][]> = {};
   boardSnapshot: ObjectData[] | null = null;
+  /** Scripted WatchBoard pagination; each entry is one page's nodes, or null to fail that page. */
+  boardPages: (ObjectData[] | null)[] | null = null;
   boardTimeline: Record<string, ObjectData[][]> = {};
   scopeComments: ObjectData[] = [];
   scopeTimeline: ObjectData[] | null = null;
@@ -443,23 +456,58 @@ export class WatchFake {
           ) {
             return this.unknown(url);
           }
-          expect(payload.variables).toEqual({ owner: "example", number: 5, cursor: null });
-          response = this.queryError
-            ? { errors: [{ message: "scripted invalid query" }] }
-            : {
-                data: {
-                  organization: {
-                    projectV2: {
-                      id: "project",
-                      readme: this.readme,
-                      items: {
-                        nodes: this.boardSnapshot ?? this.cards,
-                        pageInfo: { hasNextPage: false },
+          if (this.boardPages) {
+            // Scripted pagination: each entry serves one page's nodes; a null
+            // entry fails that page's request like a transport error.
+            expect(payload.variables).toEqual({
+              owner: "example",
+              number: 5,
+              cursor: pageCursor(payload.variables.cursor),
+            });
+            const index = Number(payload.variables.cursor);
+            const page = this.boardPages[index];
+            if (page === undefined) {
+              return this.unknown(url);
+            }
+            if (page === null) {
+              throw new Error("scripted board page failure");
+            }
+            response = {
+              data: {
+                organization: {
+                  projectV2: {
+                    id: "project",
+                    readme: this.readme,
+                    items: {
+                      nodes: page,
+                      pageInfo: {
+                        hasNextPage: index + 1 < this.boardPages.length,
+                        endCursor: String(index + 1),
                       },
                     },
                   },
                 },
-              };
+              },
+            };
+          } else {
+            expect(payload.variables).toEqual({ owner: "example", number: 5, cursor: null });
+            response = this.queryError
+              ? { errors: [{ message: "scripted invalid query" }] }
+              : {
+                  data: {
+                    organization: {
+                      projectV2: {
+                        id: "project",
+                        readme: this.readme,
+                        items: {
+                          nodes: this.boardSnapshot ?? this.cards,
+                          pageInfo: { hasNextPage: false },
+                        },
+                      },
+                    },
+                  },
+                };
+          }
         } else {
           if ((this.enableWrites || route.endsWith("/assignees")) && init?.method !== "GET") {
             const body = object(JSON.parse(String(init?.body ?? "{}")));

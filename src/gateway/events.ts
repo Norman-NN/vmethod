@@ -54,6 +54,8 @@ const MARKER_MARGIN_MS = 2 * 60_000;
 const MIGRATION_WINDOW_MS = 60 * 60_000;
 const HOLD_MAX_AGE_MS = 120_000;
 const GRADE_SETTLE_MS = 60_000;
+/** A board baseline is pruned only after this many consecutive successful polls missed it. */
+const BOARD_ABSENT_POLLS = 3;
 const POLL_COST = 2;
 const PAGE_LIMIT = 20;
 const PREVIEW_LIMIT = 120;
@@ -2409,6 +2411,30 @@ export class EventLoop {
     await this.clearStaleOwnerMirrors(currentCards);
     this.watchOrchestratorTurns(currentCards);
     this.writeMarker("unestimated.json", JSON.stringify(nextUnestimated));
+    for (const name of readdirSync(this.dir)) {
+      if (name.startsWith("theirs-") && !theirs.has(name)) {
+        remove(join(this.dir, name));
+      }
+    }
+    await this.watchNext(ready, approved);
+    // Last step of the poll: absence counters and pruning move only when the
+    // whole board poll succeeded, never after a failed or partial one.
+    this.pruneBoardBaselines(present);
+  }
+
+  /**
+   * Prune a card baseline (and its `.who` mirror) only after its item missed
+   * `BOARD_ABSENT_POLLS` consecutive successful polls, tracked per item in
+   * `board-absences.json`. A single listing can omit existing items for a while,
+   * so an absent-from-one-poll baseline must survive: while it does, a
+   * reappearing card with an unchanged column emits nothing. Being the last step
+   * of `pollBoard`, this never runs for a failed or partial poll; reappearance
+   * drops the counter.
+   */
+  private pruneBoardBaselines(present: Set<string>): void {
+    const absences = object(safeJson(this.readMarker("board-absences.json")));
+    const nextAbsences: Record<string, number> = {};
+    const absent = new Set<string>();
     for (const name of readdirSync(join(this.dir, "board"))) {
       if (
         (!/^PVTI_/.test(name) && !/\.who$/.test(name)) ||
@@ -2416,14 +2442,18 @@ export class EventLoop {
       ) {
         continue;
       }
-      remove(join(this.dir, "board", name));
+      absent.add(name.replace(/\.who$/, ""));
     }
-    for (const name of readdirSync(this.dir)) {
-      if (name.startsWith("theirs-") && !theirs.has(name)) {
-        remove(join(this.dir, name));
+    for (const id of absent) {
+      const missed = (count(absences[id]) ?? 0) + 1;
+      if (missed >= BOARD_ABSENT_POLLS) {
+        remove(join(this.dir, "board", id));
+        remove(join(this.dir, "board", `${id}.who`));
+        continue;
       }
+      nextAbsences[id] = missed;
     }
-    await this.watchNext(ready, approved);
+    this.writeMarker("board-absences.json", JSON.stringify(nextAbsences));
   }
 
   /** Backstop unanswered worker protocol at five minutes; other turns settle for thirty. */
