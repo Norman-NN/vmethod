@@ -98,6 +98,8 @@ export interface LoopHost {
   workerSend?: (pr: number, text: string) => Promise<string | void>;
   resolveConflicts?: (pr: number) => Promise<string>;
   conflictPending?: (pr: number) => boolean;
+  /** True while a dispatched conflict fixer owns the card; worker moves must not revive it. */
+  conflictFixing?: (pr: number) => boolean;
   board: Pick<BoardService, "set">;
   digest: Digest;
 }
@@ -1517,7 +1519,9 @@ export class EventLoop {
     const oldHead = this.readMarker(`head-${pr.number}`);
     if (oldHead !== pr.sha) {
       if (oldHead) {
-        this.queueProgress(pr.number, { state: "working", if: revivedProgressStates });
+        if (!this.host.conflictFixing?.(pr.number)) {
+          this.queueProgress(pr.number, { state: "working", if: revivedProgressStates });
+        }
         this.touchActivity(pr.number, new Date(this.host.deps.now()).toISOString());
       }
       atomicWrite(join(this.dir, `head-${pr.number}`), `${pr.sha}\n`);
@@ -1532,6 +1536,17 @@ export class EventLoop {
       );
     }
     this.observedPrs.push(pr);
+  }
+
+  /** Terminal resolutions supersede every card move queued during the conflicted turn. */
+  private settleConflicts(pr: PrInfo, result: string): void {
+    if (result.startsWith("PENDING")) {
+      return;
+    }
+    this.produceOnce(`conflict-result-${pr.number}-${pr.sha}`, "conflict-resolution", result);
+    if (/^(?:RESOLVED|MERGED|BLOCKED)\b/.test(result)) {
+      remove(join(this.dir, `pending-progress-${pr.number}`));
+    }
   }
 
   private async reconcileConflicts(pr: PrInfo, url: string): Promise<void> {
@@ -1556,10 +1571,7 @@ export class EventLoop {
         !this.marked(`conflict-dispatched-${pr.number}-${pr.sha}`)
       ) {
         this.mark(`conflict-dispatched-${pr.number}-${pr.sha}`);
-        const result = await this.host.resolveConflicts(pr.number);
-        if (!result.startsWith("PENDING")) {
-          this.produceOnce(`conflict-result-${pr.number}-${pr.sha}`, "conflict-resolution", result);
-        }
+        this.settleConflicts(pr, await this.host.resolveConflicts(pr.number));
       }
     } else if (pr.mergeable === "MERGEABLE" && this.marked(`conflict-${pr.number}`)) {
       remove(join(this.dir, `conflict-${pr.number}`));
@@ -1571,16 +1583,10 @@ export class EventLoop {
       !this.marked(`base-dispatched-${pr.number}-${pr.sha}-${pr.baseSha}`)
     ) {
       this.mark(`base-dispatched-${pr.number}-${pr.sha}-${pr.baseSha}`);
-      const result = await this.host.resolveConflicts(pr.number);
-      if (!result.startsWith("PENDING")) {
-        this.produceOnce(`conflict-result-${pr.number}-${pr.sha}`, "conflict-resolution", result);
-      }
+      this.settleConflicts(pr, await this.host.resolveConflicts(pr.number));
     }
     if (this.host.conflictPending?.(pr.number)) {
-      const result = await this.host.resolveConflicts!(pr.number);
-      if (!result.startsWith("PENDING")) {
-        this.produceOnce(`conflict-result-${pr.number}-${pr.sha}`, "conflict-resolution", result);
-      }
+      this.settleConflicts(pr, await this.host.resolveConflicts!(pr.number));
     }
   }
 
@@ -1990,7 +1996,9 @@ export class EventLoop {
     }
     if (taskPr && person.role === "worker") {
       this.touchActivity(number, created);
-      this.queueProgress(number, { state: "working", if: revivedProgressStates });
+      if (!this.host.conflictFixing?.(number)) {
+        this.queueProgress(number, { state: "working", if: revivedProgressStates });
+      }
     }
     let subject = this.subjectPreviews.get(`${repo.toLowerCase()}#${number}`);
     if (this.preview && !subject) {
@@ -2015,14 +2023,17 @@ export class EventLoop {
         )
       ) {
         this.touchActivity(number, created);
-        if (workerTag[1] === "READY") {
-          this.queueProgress(number, {
-            status: "In review",
-            state: "ready",
-            ...(round ? { round: count(round[1]) } : {}),
-          });
-        } else {
-          this.queueProgress(number, { state: workerTag[1].toLowerCase() });
+        // A dispatched fixer's protocol turn must not move the resolution's card.
+        if (!this.host.conflictFixing?.(number)) {
+          if (workerTag[1] === "READY") {
+            this.queueProgress(number, {
+              status: "In review",
+              state: "ready",
+              ...(round ? { round: count(round[1]) } : {}),
+            });
+          } else {
+            this.queueProgress(number, { state: workerTag[1].toLowerCase() });
+          }
         }
       }
       return;
@@ -2030,7 +2041,9 @@ export class EventLoop {
     if (!edited && /^\[worker\]/.test(firstLine) && person.role === "worker" && !workerTag) {
       this.touchActivity(number, created);
       if (taskPr) {
-        this.queueProgress(number, { state: "working", if: revivedProgressStates });
+        if (!this.host.conflictFixing?.(number)) {
+          this.queueProgress(number, { state: "working", if: revivedProgressStates });
+        }
         this.quietOnce(
           `c-${key(url)}`,
           `NOTE PR #${number} (${this.branchOf(number)}): worker note from ${login} (${person.role})${preview} ${url}`
