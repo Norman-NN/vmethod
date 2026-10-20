@@ -56,6 +56,8 @@ const HOLD_MAX_AGE_MS = 120_000;
 const GRADE_SETTLE_MS = 60_000;
 /** A board baseline is pruned only after this many consecutive successful polls missed it. */
 const BOARD_ABSENT_POLLS = 3;
+/** A board baseline is pruned only once its absence window spans at least this long. */
+const BOARD_ABSENT_MS = 24 * 60 * 60_000;
 const POLL_COST = 2;
 const PAGE_LIMIT = 20;
 const PREVIEW_LIMIT = 120;
@@ -2423,17 +2425,19 @@ export class EventLoop {
   }
 
   /**
-   * Prune a card baseline (and its `.who` mirror) only after its item missed
-   * `BOARD_ABSENT_POLLS` consecutive successful polls, tracked per item in
-   * `board-absences.json`. A single listing can omit existing items for a while,
-   * so an absent-from-one-poll baseline must survive: while it does, a
-   * reappearing card with an unchanged column emits nothing. Being the last step
-   * of `pollBoard`, this never runs for a failed or partial poll; reappearance
-   * drops the counter.
+   * Prune a card baseline (and its `.who` mirror) only after its item has been
+   * absent from every successful poll for `BOARD_ABSENT_MS` and from at least
+   * `BOARD_ABSENT_POLLS` of them, tracked per item in `board-absences.json` as
+   * the first-absent timestamp plus the poll count. A single listing can omit
+   * existing items for a while, so an absent-from-one-poll baseline must
+   * survive: while it does, a reappearing card with an unchanged column emits
+   * nothing. Being the last step of `pollBoard`, this never runs for a failed
+   * or partial poll; reappearance resets both the window and the count.
    */
   private pruneBoardBaselines(present: Set<string>): void {
     const absences = object(safeJson(this.readMarker("board-absences.json")));
-    const nextAbsences: Record<string, number> = {};
+    const nextAbsences: Record<string, { first: number; count: number }> = {};
+    const now = this.host.deps.now();
     const absent = new Set<string>();
     for (const name of readdirSync(join(this.dir, "board"))) {
       if (
@@ -2445,13 +2449,22 @@ export class EventLoop {
       absent.add(name.replace(/\.who$/, ""));
     }
     for (const id of absent) {
-      const missed = (count(absences[id]) ?? 0) + 1;
-      if (missed >= BOARD_ABSENT_POLLS) {
+      const previous = object(absences[id]);
+      const recordedFirst = previous.first;
+      const recordedCount = count(previous.count);
+      const valid =
+        typeof recordedFirst === "number" &&
+        Number.isFinite(recordedFirst) &&
+        recordedFirst <= now &&
+        recordedCount !== null;
+      const missed = (valid ? recordedCount : 0) + 1;
+      const firstAt = valid ? recordedFirst : now;
+      if (missed >= BOARD_ABSENT_POLLS && now - firstAt >= BOARD_ABSENT_MS) {
         remove(join(this.dir, "board", id));
         remove(join(this.dir, "board", `${id}.who`));
         continue;
       }
-      nextAbsences[id] = missed;
+      nextAbsences[id] = { first: firstAt, count: missed };
     }
     this.writeMarker("board-absences.json", JSON.stringify(nextAbsences));
   }

@@ -559,7 +559,9 @@ test("a card missing from one listing and present in the next emits nothing and 
   expect(await f.once(loop)).toEqual([]);
   expect(readFileSync(join(f.dir, "board", "PVTI_6"), "utf8")).toBe("In review\n");
   expect(readFileSync(join(f.dir, "board", "PVTI_6.who"), "utf8")).toBe("owner\n");
-  expect(JSON.parse(f.marker("board-absences.json"))).toEqual({ PVTI_6: 1 });
+  expect(JSON.parse(f.marker("board-absences.json"))).toEqual({
+    PVTI_6: { first: f.clock, count: 1 },
+  });
   f.advance();
   f.boardSnapshot = null;
   const events = await f.once(loop);
@@ -570,21 +572,51 @@ test("a card missing from one listing and present in the next emits nothing and 
   expect(f.reports).toEqual([]);
 });
 
-test("a card absent for 3 successful polls is pruned and reported as new when it reappears", async () => {
+test("a card is pruned after 24 hours and 3 absent polls, and reappearance resets the window", async () => {
   const f = setup();
   f.cards = [f.card(6, "In review")];
   object(f.cards[0].content).assignees = { nodes: [{ login: "owner" }] };
   const loop = f.loop();
   await f.once(loop);
   f.boardSnapshot = [];
-  for (const absences of [1, 2]) {
-    f.advance();
-    expect(await f.once(loop)).toEqual([]);
-    expect(readFileSync(join(f.dir, "board", "PVTI_6"), "utf8")).toBe("In review\n");
-    expect(readFileSync(join(f.dir, "board", "PVTI_6.who"), "utf8")).toBe("owner\n");
-    expect(JSON.parse(f.marker("board-absences.json"))).toEqual({ PVTI_6: absences });
-  }
   f.advance();
+  expect(await f.once(loop)).toEqual([]);
+  const first = f.clock;
+  expect(JSON.parse(f.marker("board-absences.json"))).toEqual({
+    PVTI_6: { first, count: 1 },
+  });
+  f.advance();
+  expect(await f.once(loop)).toEqual([]);
+  expect(JSON.parse(f.marker("board-absences.json"))).toEqual({
+    PVTI_6: { first, count: 2 },
+  });
+  // Three successful polls without the item are not enough within 24 hours.
+  f.advance();
+  expect(await f.once(loop)).toEqual([]);
+  expect(readFileSync(join(f.dir, "board", "PVTI_6"), "utf8")).toBe("In review\n");
+  expect(readFileSync(join(f.dir, "board", "PVTI_6.who"), "utf8")).toBe("owner\n");
+  expect(JSON.parse(f.marker("board-absences.json"))).toEqual({
+    PVTI_6: { first, count: 3 },
+  });
+  // Reappearance resets the window and the count.
+  f.advance();
+  f.boardSnapshot = null;
+  expect(await f.once(loop)).toEqual([]);
+  expect(JSON.parse(f.marker("board-absences.json"))).toEqual({});
+  // A fresh absence window starts now, not at the earlier first-absent time.
+  f.advance();
+  f.boardSnapshot = [];
+  expect(await f.once(loop)).toEqual([]);
+  const restart = f.clock;
+  expect(JSON.parse(f.marker("board-absences.json"))).toEqual({
+    PVTI_6: { first: restart, count: 1 },
+  });
+  f.advance();
+  expect(await f.once(loop)).toEqual([]);
+  expect(JSON.parse(f.marker("board-absences.json"))).toEqual({
+    PVTI_6: { first: restart, count: 2 },
+  });
+  f.advance(24 * 60 * 60_000);
   expect(await f.once(loop)).toEqual([]);
   expect(existsSync(join(f.dir, "board", "PVTI_6"))).toBe(false);
   expect(existsSync(join(f.dir, "board", "PVTI_6.who"))).toBe(false);
