@@ -1652,7 +1652,7 @@ export class EventLoop {
         continue;
       }
       this.touchActivity(pr.number, created);
-      this.rememberWorkerProtocol(pr.number, comment);
+      this.rememberWorkerProtocol(pr.number, comment, this.own);
       if (this.isSelf(comment)) {
         const first = str(comment.body).split(/\r?\n/)[0];
         this.rememberWorkerPrompt(pr.number, first, created, str(comment.html_url));
@@ -1933,7 +1933,8 @@ export class EventLoop {
     const edited = created !== str(comment.updated_at) ? " (edited: verify editor)" : "";
     const taskPr = own && this.marked(`open-${number}`);
     if (taskPr) {
-      this.rememberWorkerProtocol(number, comment);
+      // Task PRs always belong to the configured repository; the role is per repo (#186).
+      this.rememberWorkerProtocol(number, comment, repo);
     }
     const selfWrite =
       this.isSelf(comment) &&
@@ -1978,7 +1979,13 @@ export class EventLoop {
       if (selfWrite) {
         return;
       }
-      person ??= { login: this.me ?? login, id: this.meId!, type: "User", role: "orchestrator" };
+      person ??= {
+        login: this.me ?? login,
+        id: this.meId!,
+        type: "User",
+        role: "orchestrator",
+        repos: [this.own],
+      };
     }
     if (!person) {
       return;
@@ -2432,7 +2439,9 @@ export class EventLoop {
         (login) =>
           login.toLowerCase() === this.me?.toLowerCase() ||
           this.host.filter.people.some(
-            (person) => person.role === "orchestrator" && person.login === login
+            (person) =>
+              this.host.filter.roleIn(person, card.repo) === "orchestrator" &&
+              person.login === login
           )
       );
       if (
@@ -2879,9 +2888,12 @@ export class EventLoop {
       latest !== Date.parse(card.columnAt) ||
       move.some((event) => {
         const person = this.host.filter.identity(event.actor);
+        // The role is per repository (#186): a peer orchestrator's move is a collaborator's.
+        const authoritative =
+          !!person &&
+          ["owner", "collaborator"].includes(this.host.filter.roleIn(person, card.repo));
         return (
-          !person ||
-          !["owner", "collaborator"].includes(person.role) ||
+          !authoritative ||
           person.type !== "User" ||
           event.status !== card.column ||
           !event.previousStatus ||
@@ -2902,7 +2914,8 @@ export class EventLoop {
         event.__typename === "AssignedEvent" &&
         this.host.filter.people.some(
           (person) =>
-            ["owner", "orchestrator"].includes(person.role) &&
+            (person.role === "owner" ||
+              this.host.filter.roleIn(person, card.repo) === "orchestrator") &&
             person.login.toLowerCase() === str(object(event.assignee).login).toLowerCase()
         ) &&
         !(time(event) < latest)
@@ -3244,13 +3257,17 @@ export class EventLoop {
   }
 
   /** Persist the newest verified worker reply tag, independently of activity/CI. */
-  private rememberWorkerProtocol(number: number, comment: ObjectData): void {
+  private rememberWorkerProtocol(number: number, comment: ObjectData, repo: string): void {
     const at = str(comment.created_at);
     if (!at) {
       return;
     }
     const person = this.host.filter.identity(restActor(comment.user));
-    const role = this.isSelf(comment) ? "orchestrator" : person?.role;
+    const role = this.isSelf(comment)
+      ? "orchestrator"
+      : person
+        ? this.host.filter.roleIn(person, repo)
+        : undefined;
     if (at !== str(comment.updated_at)) {
       return;
     }

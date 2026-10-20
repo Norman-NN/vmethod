@@ -42,8 +42,10 @@ Every `people.yaml` entry now requires `login`, numeric `id`, `type` (`User` or
 nonempty `events` and `appIds` arrays. All template numbers are placeholders: the
 owner must replace them with verified identities and application IDs. There is no
 default trusted application, and missing pins fail configuration validation.
-`vmethod check` reports invalid pins with source line numbers. Do not let agents
-change their own trust list.
+`vmethod check` reports invalid pins with source line numbers, and it errors on an
+`orchestrator` pin without a `repos` binding or a configured repository that no
+orchestrator binds (the role is per repository; see [Security](security.md)). Do not
+let agents change their own trust list.
 
 Author/editor login, numeric ID and type must agree. Bot author/editor login comparisons normalize REST's
 trailing `[bot]` suffix to match GraphQL's suffixless spelling; numeric IDs and
@@ -434,8 +436,9 @@ the state directory. A failed notice write leaves it unseen.
 
 The server watches the own repository's task PRs and board, plus issues, PRs,
 comments and assignments in `vmethod.repo` (default `vworlds/vmethod`; `off` disables
-it). Only pinned identities pass the people filter; peers' orchestrator comments
-wake too. Own comments are silent only when their numeric actor ID and this
+it). Only pinned identities pass the people filter; a peer project's orchestrator
+wakes on our threads too, delivered and labelled `(collaborator)`, never as
+authority. Own comments are silent only when their numeric actor ID and this
 session's gateway write journal match.
 System check runs update structured red-CI state, never expose free text.
 

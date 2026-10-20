@@ -2,10 +2,12 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { getConfig, loadYaml } from "./config.js";
+import type { Config } from "./config.js";
 import permissionTemplate from "../templates/claude-settings.json" with { type: "json" };
 import packageMetadata from "../package.json" with { type: "json" };
 import { gitIdentityVariables } from "./gateway/git.js";
 import { claudeCredentialFindings } from "./gateway/identity.js";
+import type { Person } from "./gateway/people.js";
 
 const mermaidPin = packageMetadata.peerDependencies.mermaid;
 const secretPattern =
@@ -39,10 +41,12 @@ export function check(
     }
   }
   let missing = false;
+  let vmethodValue: Config | undefined;
   for (const kind of ["vmethod", "people", "models"] as const) {
     try {
       const value = kind === "vmethod" ? getConfig(root, env) : loadYaml(root, kind);
       if (kind === "vmethod") {
+        vmethodValue = value as Config;
         const secrets = secretPaths(value);
         for (const path of secrets) {
           messages.push(`Secret-looking config value at ${path} (redacted)`);
@@ -57,12 +61,33 @@ export function check(
         }
       }
       if (kind === "people") {
-        const people = value as { id: number; login: string }[];
+        const people = value as Person[];
         if (
           new Set(people.map((person) => person.id)).size !== people.length ||
           new Set(people.map((person) => person.login.toLowerCase())).size !== people.length
         ) {
           messages.push("people.yaml: duplicate id or login");
+        }
+        // The orchestrator role is per repository (#186): without an explicit
+        // binding the account is a collaborator everywhere, so an upgrade that
+        // silently loses its authority must fail here.
+        for (const person of people) {
+          if (person.role === "orchestrator" && !person.repos?.length) {
+            messages.push(
+              `people.yaml: orchestrator ${person.login} has no repos binding; add repos: [<owner>/<repo>]`
+            );
+          }
+        }
+        const repo = vmethodValue?.repo;
+        const bound =
+          repo !== undefined &&
+          people.some((person) =>
+            person.repos?.some((listed) => listed.toLowerCase() === String(repo).toLowerCase())
+          );
+        if (repo !== undefined && !bound) {
+          messages.push(
+            `people.yaml: no orchestrator binding lists ${String(repo)}; add repos: [<owner>/<repo>]`
+          );
         }
       }
       if (kind === "models") {

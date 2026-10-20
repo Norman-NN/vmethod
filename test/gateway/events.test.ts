@@ -446,6 +446,24 @@ test("unassigned In review is reported, and unambiguous wrong assignments are re
   expect(object(object(f.cards[1].content).assignees).nodes).toEqual([{ login: "peer" }]);
 });
 
+test("a foreign peer's assignment never counts as this project's orchestrator turn", async () => {
+  const f = setup();
+  // issue #186: the peer project's orchestrator keeps its binding, not this turn.
+  f.watchPeople = [
+    ...people,
+    { login: "vecsmaster", id: 900, type: "User", role: "orchestrator", repos: ["example/other"] },
+  ];
+  f.cards = [f.card(6, "In review")];
+  f.cards[0].progress = { text: "🤖👍" };
+  object(f.cards[0].content).assignees = { nodes: [{ login: "vecsmaster" }] };
+  const events = await f.tick(f.loop());
+  expect(events.some((event) => event.kind === "orchestrator-turn")).toBe(false);
+  expect(events.filter((event) => event.kind === "board-violation")).toHaveLength(1);
+  // Only this repository's bound orchestrator holds the turn.
+  expect(object(object(f.cards[0].content).assignees).nodes).toEqual([{ login: "peer" }]);
+  expect(f.reports).toEqual([]);
+});
+
 test.each(["reply", "issue reply", "approval"])(
   "owner %s returns the PR and issue turn to the orchestrator",
   async (kind) => {

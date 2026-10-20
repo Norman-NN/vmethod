@@ -23,9 +23,11 @@ protocol tag alone is insufficient. Pin identities and refuse a login/id mismatc
 An edit by another person counts as that editor's input. Display names, commit
 authors and association badges do not grant authority.
 
-Every delivered event is labelled with its verified author and role. Another
-project's orchestrator is a collaborator for approval gates: it may request work or
-review, but cannot approve your specifications or deliveries. Peer-session relays
+Every delivered event is labelled with its verified author and role. The
+orchestrator role is per repository: a peer project's orchestrator is the
+collaborator it is in every repository its `repos` binding does not list — it may
+request work, ask and review, but it is never this project's orchestrator and
+cannot amend workers or approve your specifications or deliveries. Peer-session relays
 are also not owner authority; see [Security](security.md).
 
 An approving review must come from an owner id on the current head. Approval by a

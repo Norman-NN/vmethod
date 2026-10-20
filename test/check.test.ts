@@ -108,6 +108,51 @@ test("CODEOWNERS missing coverage warns without failing", () => {
   });
 });
 
+test("check fails loudly for an unbound orchestrator pin or a repository no orchestrator binds", () => {
+  const root = validProject();
+  expect(check(root)).toEqual({ code: 0, messages: [] });
+  const people = parse(readFileSync(join(root, "people.yaml"), "utf8")) as Record<
+    string,
+    unknown
+  >[];
+  // The template's orchestrator pin without its repository binding.
+  const unbound = people.map((person) => {
+    if (person.role !== "orchestrator") {
+      return person;
+    }
+    const { login, id, type, role } = person;
+    return {
+      login,
+      id,
+      type,
+      role,
+      ...(person.appIds ? { appIds: person.appIds } : {}),
+      ...(person.events ? { events: person.events } : {}),
+    };
+  });
+  writeFileSync(join(root, "people.yaml"), stringify(unbound));
+  expect(check(root).code).toBe(1);
+  expect(check(root).messages).toEqual([
+    "people.yaml: orchestrator example-orchestrator has no repos binding; add repos: [<owner>/<repo>]",
+    "people.yaml: no orchestrator binding lists example/project; add repos: [<owner>/<repo>]",
+  ]);
+  // A binding that misses the configured repository leaves only the repo error.
+  writeFileSync(
+    join(root, "people.yaml"),
+    stringify(
+      people.map((person) =>
+        person.role === "orchestrator" ? { ...person, repos: ["example/other"] } : person
+      )
+    )
+  );
+  expect(check(root).messages).toEqual([
+    "people.yaml: no orchestrator binding lists example/project; add repos: [<owner>/<repo>]",
+  ]);
+  // The owner-approved binding restores the check to green.
+  writeFileSync(join(root, "people.yaml"), stringify(people));
+  expect(check(root)).toEqual({ code: 0, messages: [] });
+});
+
 test("orchestrator check reports each missing git identity up front, workers do not need it", () => {
   const root = validProject();
   const missing = check(root, { VMETHOD_ROLE: "orchestrator" });

@@ -54,7 +54,9 @@ re-approval. Orchestrator board moves between parts do not revoke that approval.
   profile. It is an explicit exception, not a way to turn an investigation into
   an implementation task or to skip delivery approval.
 - An orchestrator-written issue with only trusted orchestrator comments (or no
-  comments) can use its owner's Approved move directly. A comment from anyone
+  comments) can use its owner's Approved move directly. Trust is per repository:
+  only comments by the repository's own bound orchestrator count, and a peer
+  project orchestrator is never trusted here. A comment from anyone
   else, including an unknown author or editor, voids this trivial shortcut; use
   SCOPE REVIEW instead. The orchestrator folds conclusions into the body, so its
   own OWNER QUESTION handover does not void the shortcut.

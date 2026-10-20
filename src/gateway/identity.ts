@@ -73,8 +73,11 @@ export async function checkOnline(
     try {
       const client = new GitHubClient({ ...config, credentials: { githubToken: name } }, env, deps);
       const person = tokenIdentity(await tokenViewer(client), filter);
-      messages.push(`credentials.${key}: ${person.login} (${person.role})`);
-      if (person.role !== expected) {
+      // The orchestrator role is per repository (#186): a credential qualifies only
+      // when it belongs to this configuration's own repository's orchestrator.
+      const role = filter.roleIn(person, String(config.repo));
+      messages.push(`credentials.${key}: ${person.login} (${role})`);
+      if (role !== expected) {
         messages.push(
           `credentials.${key} must belong to an ${expected === "orchestrator" ? "orchestrator" : "worker"} identity`
         );

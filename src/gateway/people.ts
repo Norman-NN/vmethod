@@ -32,6 +32,19 @@ export class PeopleFilter {
     }
   }
 
+  /** The orchestrator role is per repository (#186): the owner-approved `repos`
+   * binding lists the repositories where the account is authoritative; in every
+   * other repository, including this project's, it acts as a collaborator (it may
+   * open issues and discuss, and stays an authorized learning submitter, but it is
+   * never this project's orchestrator). Other declared roles are global.
+   */
+  roleIn(person: Person, repo: string): Person["role"] {
+    return person.role === "orchestrator" &&
+      !person.repos?.some((bound) => bound.toLowerCase() === repo.toLowerCase())
+      ? "collaborator"
+      : person.role;
+  }
+
   identity(value: unknown, normalizeBotLogin = true): Person | undefined {
     const actor = object(value);
     if (
@@ -57,19 +70,19 @@ export class PeopleFilter {
     if (item.lastEditedAt != null) {
       person = this.identity(item.editor);
     }
+    const repository = String(object(item.repository).nameWithOwner ?? "");
     if (
       (owner.toLowerCase() !== this.org.toLowerCase() &&
-        !this.trustedRepos.some(
-          (repo) =>
-            repo.toLowerCase() === String(object(item.repository).nameWithOwner).toLowerCase()
-        )) ||
+        !this.trustedRepos.some((repo) => repo.toLowerCase() === repository.toLowerCase())) ||
       !person ||
       (person.role === "system" && !person.events?.includes(kind as "check_run"))
     ) {
       this.digest.drop(link);
       return undefined;
     }
-    return person;
+    // Authority is per repository: a peer orchestrator is delivered as a collaborator.
+    const role = this.roleIn(person, repository);
+    return role === person.role ? person : { ...person, role };
   }
 
   check(run: ObjectData, owner: string, link: string): Person | undefined {
