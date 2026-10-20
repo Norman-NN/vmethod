@@ -1,9 +1,9 @@
-# glm-flash
+# glm-flash model learnings
 
-_Distilled 2026-10-19 from vworlds/vmethod grades (learning PR 116). Small sample._
+Generated advice, never policy. Review against the cited delivery threads before committing.
 
-- **Evidence:**
-  - PR 187 (`open-task --from` and the lockfile check, 2 points): READY in one round, CI green, no review findings, $0.17.
-  - PR 155: the conflict-only resolution was correct, $0.014.
-- **Cost:** **about $0.06 per point**, the same as luna, but with no failed rounds so far.
-- **Use for:** small and medium, well-specified tasks (0.5–2 points). Owner-selected through the card's Model field on issue 172. Collect more data before generalising.
+- Consider a measured trial on small, well-specified CLI tasks. The annotated existing-branch delivery reported first-pass READY, green CI, and no review findings, but it included an initial Sol segment and partial cost coverage. [PR](https://github.com/vworlds/vmethod/pull/187)
+- Provide an explicit resolution for specification gaps and acceptance-mapped tests. After a Luna-to-GLM-Flash handoff, the model-default delivery reported coverage of empty reasons, malformed markers, persistence, and unchanged default paths; this does not make the whole delivery GLM-Flash-only. [PR](https://github.com/vworlds/vmethod/pull/191)
+- Review migration diagnostics and event attribution beyond happy-path acceptance. Separate deliveries needed revisions for silent configuration degradation and for a stale-wake guard that could discard an unanswered ANSWER. [PR](https://github.com/vworlds/vmethod/pull/196) [PR](https://github.com/vworlds/vmethod/pull/198)
+- When using GLM-Flash for structured annotation, test actual response formatting: a live response wrapped in a Markdown fence broke JSON decoding in the learning pipeline. [PR](https://github.com/vworlds/vmethod/pull/197)
+- Keep conflict-only assignments narrow and verify the resulting diff. One annotated conflict handoff preserved both tests; another escalated when the remerge diff extended beyond conflicted hunks. [PR](https://github.com/vworlds/vmethod/pull/155) [PR](https://github.com/vworlds/vmethod/pull/197)

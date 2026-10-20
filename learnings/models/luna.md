@@ -1,11 +1,9 @@
-# luna (codexbal/gpt-6-luna)
+# luna model learnings
 
-_Distilled 2026-10-19 from vworlds/vmethod grades (learning PR 116)._
+Generated advice, never policy. Review against the cited delivery threads before committing.
 
-- **Volume and cost (vmethod, single-model deliveries):** 16 deliveries, 16 points, $1.03, so **about $0.06 per point** and 1.4 rounds per delivery.
-- **Good at:** small, single-area tasks whose spec is complete in the issue body (PRs 102, 103, 104, 108, 113 and 151).
-- **Failure modes (8 escalations to sol):**
-  - ignores PR amendments, and builds rejected options when the scope lives in comments (PRs 104, 105, 109);
-  - reports its own red tests as BLOCKED (PRs 119, 124, 177, 188);
-  - asks needless "should I continue?" questions, or stops with work remaining (PRs 177, 191).
-- **Use for:** tasks of 0.5–1 point with the spec in the body. Escalate after the second stop, or after the first stop on red tests.
+- For bounded fixes, require explicit completion evidence as well as a pushed branch. Two deliveries merged with green CI, but the orchestrator noted that the worker had not posted READY. [PR](https://github.com/vworlds/vmethod/pull/102) [PR](https://github.com/vworlds/vmethod/pull/103)
+- Make required regression tests explicit and check them before accepting completion. A lock-wake delivery initially stopped with both required tests missing; another watcher delivery needed review to identify three missing test behaviors. [PR](https://github.com/vworlds/vmethod/pull/184) [PR](https://github.com/vworlds/vmethod/pull/92)
+- Review sanitizer examples and identity comparisons directly, even after green checks. Review caught a regex corrupting ordinary text and a case-sensitive comparison of GitHub logins. [PR](https://github.com/vworlds/vmethod/pull/113)
+- Distinguish integration or CI-observation problems from worker defects. Annotated pauses included an unrelated concurrent type clash and a stale CI verdict that did not describe the current head. [PR](https://github.com/vworlds/vmethod/pull/114) [PR](https://github.com/vworlds/vmethod/pull/178)
+- For incomplete-work stops, respond with concrete remaining acceptance work and consider a model handoff if progress remains stalled. The annotations document such stops and subsequent switches, but the mixed-model merged outcomes do not establish Luna's independent completion ability. [PR](https://github.com/vworlds/vmethod/pull/177) [PR](https://github.com/vworlds/vmethod/pull/188) [PR](https://github.com/vworlds/vmethod/pull/191)

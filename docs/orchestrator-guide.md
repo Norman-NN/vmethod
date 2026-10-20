@@ -316,8 +316,11 @@ claim. See [watch attribution and scope selection](gateway.md#watching-and-mutin
 
 ## Before a release
 
-1. Merge every open `learning` PR (they merge on the orchestrator's review) and distil
-   the evidence: run `learnings report`, then update the human summaries in
-   `learnings/models/<family>.md` and any new general lesson in `learnings/lessons.md`.
+1. Merge every open `learning` PR (they merge on the orchestrator's review), then distil
+   the evidence: `learnings annotate --since <last release>` and `learnings aggregate`
+   regenerate `learnings/models/<family>.md` and `by-domain.md` (see `docs/learnings.md`).
+   Spot-check a few annotations against their threads, review the page diff, and commit
+   both in a learning PR. `learnings report` gives the numbers; add any new general lesson
+   to `learnings/lessons.md`.
 2. Confirm dev is green and that no approved PR is waiting to merge.
 3. Publish the release candidate (the `Publish` workflow on `dev`) or the stable release (`master`).
