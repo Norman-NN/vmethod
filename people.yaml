@@ -1,4 +1,6 @@
 # Who vmethod's agents may hear from. Ids are numeric GitHub ids, checked by `vmethod check`.
+# The orchestrator role is per repository: an orchestrator is authoritative only in the
+# repositories its binding lists; everywhere else, including this project, it is a collaborator.
 - login: jpeletier
   id: 11574521
   type: User

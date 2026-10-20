@@ -184,3 +184,35 @@ test("merge-task carries a nonempty certification reason and preserves merge mod
   }
   expect(calls).toHaveLength(1);
 });
+
+test("open-task routes --model-override and refuses an empty reason before transport", async () => {
+  const calls: unknown[] = [];
+  const transport: Transport = {
+    call: async (operation, input, ctx) => {
+      calls.push({ operation, input, ctx });
+      return "ok" as never;
+    },
+  };
+  const env = { VMETHOD_ROLE: "orchestrator" };
+  await taskFlowVerb(
+    transport,
+    "open-task",
+    ["8", "--model", "sol", "--model-override", "bounded task"],
+    env
+  );
+  expect(calls).toEqual([
+    {
+      operation: "openTask",
+      input: { issue: "8", model: "sol", modelOverride: "bounded task" },
+      ctx: { role: "orchestrator" },
+    },
+  ]);
+  calls.length = 0;
+  for (const args of [
+    ["8", "--model", "sol", "--model-override"],
+    ["8", "--model", "sol", "--model-override", ""],
+  ]) {
+    await expect(taskFlowVerb(transport, "open-task", args, env)).rejects.toThrow();
+  }
+  expect(calls).toEqual([]);
+});

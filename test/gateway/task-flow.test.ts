@@ -21,6 +21,7 @@ import { taskFlowVerb } from "../../src/cli/task-flow.js";
 import type { Operations, Transport } from "../../src/gateway/transport.js";
 import { WorkerService } from "../../src/gateway/workers.js";
 import { bodyHash, scopeApproved } from "../../src/gateway/scope.js";
+import { taskModelOverride } from "../../src/gateway/task-flow-types.js";
 import { PeopleFilter } from "../../src/gateway/people.js";
 import { Digest } from "../../src/gateway/digest.js";
 import { scopeIssue, scopeComment, scopeMove } from "./scope-fixture.js";
@@ -82,6 +83,95 @@ test.each([
   f.done();
 });
 
+test.each([
+  {
+    case: "contradicting model",
+    input: { issue: "8", model: "sol" },
+    error:
+      'issue #8 has Model glm on its card; use it (omit --model) or override with --model-override "<reason>"',
+  },
+  {
+    case: "empty override reason",
+    input: { issue: "8", model: "sol", modelOverride: "  " },
+    error: "Invalid task text argument",
+  },
+  {
+    case: "multiline override reason",
+    input: { issue: "8", model: "sol", modelOverride: "first\nsecond" },
+    error: "--model-override requires --model and a single-line reason",
+  },
+  {
+    case: "override without model",
+    input: { issue: "8", modelOverride: "tier" },
+    error: "--model-override requires --model and a single-line reason",
+  },
+])(
+  "open-task refuses a contradicting model without a written reason: $case",
+  async ({ input, error }) => {
+    const f = fixture();
+    f.cards[0].values.Model = "glm";
+    await expect(f.flow().open(input)).rejects.toThrow(error);
+    expect(f.writes).toEqual([]);
+    f.done();
+  }
+);
+
+test("open-task override posts the issue note and records the marker override", async () => {
+  const f = fixture();
+  f.cards[0].values.Model = "glm";
+  await expect(
+    f.flow().open({ issue: "8", model: "sol", modelOverride: "needs expensive tier" })
+  ).resolves.toContain("27");
+  const note = f.writes.find((write) => write.path === "/repos/example/project/issues/8/comments");
+  expect(note?.body.body).toBe(
+    "[orchestrator] NOTE: model override: using sol instead of the card's glm — needs expensive tier"
+  );
+  const created = f.writes.find((write) => write.path === "/repos/example/project/pulls");
+  expect(String(created?.body.body)).toContain(
+    '"modelOverride":{"from":"glm","to":"sol","reason":"needs expensive tier"}'
+  );
+  f.done();
+});
+
+test.each([
+  { case: "matching --model", card: "glm", input: { issue: "8", model: "glm" }, family: "glm" },
+  { case: "absent --model", card: "glm", input: { issue: "8" }, family: "glm" },
+  { case: "no card Model", card: undefined, input: { issue: "8", model: "sol" }, family: "sol" },
+])("open-task without an override proceeds unchanged: $case", async ({ card, input, family }) => {
+  const f = fixture();
+  if (card) {
+    f.cards[0].values.Model = card;
+  }
+  await expect(f.flow().open(input)).resolves.toContain("27");
+  const created = f.writes.find((write) => write.path === "/repos/example/project/pulls");
+  expect(String(created?.body.body)).not.toContain("modelOverride");
+  expect(
+    f.writes.filter((write) => write.path === "/repos/example/project/issues/8/comments")
+  ).toEqual([]);
+  expect(f.touched).toContainEqual(
+    expect.objectContaining({ id: "pr", field: "Model", value: family })
+  );
+  f.done();
+});
+
+test("taskModelOverride reads only the structured marker and refuses malformed overrides", () => {
+  expect(taskModelOverride('<!-- vmethod-task {"issues":[8]} -->')).toBeUndefined();
+  expect(
+    taskModelOverride(
+      '<!-- vmethod-task {"issues":[8],"modelOverride":{"from":"glm","to":"sol","reason":"tier"}} -->'
+    )
+  ).toEqual({ from: "glm", to: "sol", reason: "tier" });
+  for (const body of [
+    '<!-- vmethod-task {"issues":[8],"modelOverride":{}} -->',
+    '<!-- vmethod-task {"issues":[8],"modelOverride":null} -->',
+    '<!-- vmethod-task {"issues":[8],"modelOverride":"wrong"} -->',
+    '<!-- vmethod-task {"issues":[8],"modelOverride":{"from":"glm","to":"sol","reason":"  "}} -->',
+    '<!-- vmethod-task {"issues":[8],"modelOverride":{"from":"glm","to":"sol"}} -->',
+  ]) {
+    expect(() => taskModelOverride(body)).toThrow("Invalid task model override");
+  }
+});
+
 test.each([false, true])("merge-task rechecks scope for part PRs (changed=%s)", async (changed) => {
   const f = fixture();
   f.set({ body: '<!-- vmethod-task {"issues":[8],"part":true} -->' });
@@ -124,10 +214,14 @@ test.each(
     let sibling: WatchFake | undefined;
     try {
       w.enableWrites = true;
-      w.watchPeople = [
-        ...w.watchPeople,
-        { login: "me", id: 999, type: "User", role: "orchestrator", repos: ["example/project"] },
-      ];
+      // Exactly one bound orchestrator per repository: "me" acts here, "peer" is foreign.
+      w.watchPeople = w.watchPeople
+        .map((person) =>
+          person.login === "peer" ? { ...person, repos: ["example/other"] } : person
+        )
+        .concat([
+          { login: "me", id: 999, type: "User", role: "orchestrator", repos: ["example/project"] },
+        ]);
       f.host.people = w.watchPeople;
       w.root = f.root;
       w.config = { ...f.config, board: w.config.board, vmethod: { repo: "off" } };
@@ -447,6 +541,8 @@ function fixture() {
     issueClosed = false,
     branchExists = true,
     checkoutHead = sha;
+  let assignees: string[] = [];
+  let boardValues: Record<string, string | number | null> = {};
   const comments: ObjectData[] = [];
   const cards: Card[] = [
     {
@@ -539,9 +635,14 @@ function fixture() {
         method === "GET" &&
         [issueNumber, 27].some((n) => path === `/repos/example/project/issues/${n}`)
       ) {
-        data = { assignees: [] };
+        data = { assignees: assignees.map((login) => ({ login })) };
       } else if (
         method === "POST" &&
+        /^\/repos\/example\/project\/issues\/(8|27)\/assignees$/.test(path)
+      ) {
+        data = {};
+      } else if (
+        method === "DELETE" &&
         /^\/repos\/example\/project\/issues\/(8|27)\/assignees$/.test(path)
       ) {
         data = {};
@@ -670,6 +771,16 @@ function fixture() {
         events.push(`board-add ${id}`);
         return id;
       },
+      item: async (id) => {
+        events.push(`board-item ${id}`);
+        return {
+          id,
+          repo: "example/project",
+          kind: "PullRequest",
+          assignees,
+          values: { ...boardValues },
+        };
+      },
       set: async (input) => {
         if (fail === "board" && input.value === "Done") {
           throw new Error("board failed");
@@ -750,6 +861,8 @@ function fixture() {
       issueClosed?: boolean;
       references?: ObjectData;
       isDraft?: boolean;
+      assignees?: string[];
+      boardValues?: Record<string, string | number | null>;
     }) => {
       approved = values.approved ?? approved;
       issueApproved = values.issueApproved ?? issueApproved;
@@ -768,6 +881,8 @@ function fixture() {
       issueClosed = values.issueClosed ?? issueClosed;
       references = values.references ?? references;
       isDraft = values.isDraft ?? isDraft;
+      assignees = values.assignees ?? assignees;
+      boardValues = values.boardValues ?? boardValues;
     },
     red: () => {
       checks = checks.map((c) => ({ ...c, conclusion: "failure" }));
@@ -2579,6 +2694,115 @@ test("independent conflict rejection names files and gives the blocked PR back t
   );
   expect(f.writes.some((write) => write.path.endsWith("/merge"))).toBe(false);
   expect(f.writes.some((write) => write.path.endsWith("/assignees"))).toBe(true);
+  f.done();
+});
+
+test("card prior captures the interrupted turn from the board and the PR", async () => {
+  const f = fixture();
+  f.set({ boardValues: { Status: "In review", Progress: "👤🔍" }, assignees: ["owner"] });
+  expect(await f.flow().cardPrior("27")).toEqual({
+    status: "In review",
+    progress: "👤🔍",
+    assignees: ["owner"],
+  });
+  f.done();
+});
+
+test("card conflict hands the turn to the fixing worker under 💥", async () => {
+  const f = fixture();
+  f.set({ assignees: ["owner"] });
+  await f.flow().cardConflict("27");
+  expect(f.touched).toContainEqual(
+    expect.objectContaining({ id: "pr", field: "Progress", value: "💥" })
+  );
+  expect(f.writes).toContainEqual({
+    path: "/repos/example/project/issues/27/assignees",
+    body: { assignees: ["worker"] },
+  });
+  f.done();
+});
+
+test("card restore returns the stored turn to the board and the PR", async () => {
+  const f = fixture();
+  f.set({ assignees: ["worker"] });
+  await f.flow().cardRestore("27", {
+    status: "In review",
+    progress: "👤🔍",
+    assignees: ["owner"],
+  });
+  expect(f.touched).toContainEqual(
+    expect.objectContaining({
+      id: "pr",
+      field: "Status",
+      value: "In review",
+      progress: "👤🔍",
+    })
+  );
+  expect(f.writes).toContainEqual({
+    path: "/repos/example/project/issues/27/assignees",
+    body: { assignees: ["owner"] },
+  });
+  f.done();
+});
+
+test.each(["cardConflict", "cardRestore"] as const)(
+  "board-disabled configuration still moves the %s assignees without board writes",
+  async (verb) => {
+    const f = fixture();
+    f.config.board = { ...object(f.config.board), enabled: false };
+    f.set({ assignees: verb === "cardRestore" ? ["worker"] : ["owner"] });
+    await f.flow()[verb]("27", {
+      status: "In review",
+      progress: "👤🔍",
+      assignees: ["owner"],
+    });
+    expect(f.touched).toEqual([]);
+    const assigneeWrites = f.writes
+      .filter((write) => write.path.endsWith("/assignees"))
+      .map((write) => [write.body.assignees, write.path.split("/").at(-2)]);
+    if (verb === "cardRestore") {
+      expect(assigneeWrites).toEqual([
+        [["worker"], "27"],
+        [["owner"], "27"],
+      ]);
+    } else {
+      expect(assigneeWrites).toEqual([
+        [["owner"], "27"],
+        [["worker"], "27"],
+      ]);
+    }
+    f.done();
+  }
+);
+
+test("card prior reads only the PR when the board is disabled", async () => {
+  const f = fixture();
+  f.config.board = { ...object(f.config.board), enabled: false };
+  f.set({ boardValues: { Status: "In review" }, assignees: ["owner"] });
+  expect(await f.flow().cardPrior("27")).toEqual({
+    status: null,
+    progress: null,
+    assignees: ["owner"],
+  });
+  f.done();
+});
+
+test("review owner clears queued wakes; other outcomes keep them", async () => {
+  const f = fixture();
+  const cleared: number[] = [];
+  f.deps.workers!.clearWake = async (pr) => {
+    cleared.push(pr);
+  };
+  const file = join(f.root, "review.md");
+  writeFileSync(file, "Owner decides.\n");
+  await f.flow().review({ ref: "27", outcome: "owner", file });
+  expect(cleared).toEqual([27]);
+  cleared.length = 0;
+  f.deps.workers!.clearWake = async () => {
+    throw new Error("must not clear on other outcomes");
+  };
+  await f.flow().review({ ref: "27", outcome: "answer", file });
+  expect(cleared).toEqual([]);
   f.done();
 });
 

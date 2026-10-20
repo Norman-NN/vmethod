@@ -446,6 +446,24 @@ test("unassigned In review is reported, and unambiguous wrong assignments are re
   expect(object(object(f.cards[1].content).assignees).nodes).toEqual([{ login: "peer" }]);
 });
 
+test("a foreign peer's assignment never counts as this project's orchestrator turn", async () => {
+  const f = setup();
+  // issue #186: the peer project's orchestrator keeps its binding, not this turn.
+  f.watchPeople = [
+    ...people,
+    { login: "vecsmaster", id: 900, type: "User", role: "orchestrator", repos: ["example/other"] },
+  ];
+  f.cards = [f.card(6, "In review")];
+  f.cards[0].progress = { text: "🤖👍" };
+  object(f.cards[0].content).assignees = { nodes: [{ login: "vecsmaster" }] };
+  const events = await f.tick(f.loop());
+  expect(events.some((event) => event.kind === "orchestrator-turn")).toBe(false);
+  expect(events.filter((event) => event.kind === "board-violation")).toHaveLength(1);
+  // Only this repository's bound orchestrator holds the turn.
+  expect(object(object(f.cards[0].content).assignees).nodes).toEqual([{ login: "peer" }]);
+  expect(f.reports).toEqual([]);
+});
+
 test.each(["reply", "issue reply", "approval"])(
   "owner %s returns the PR and issue turn to the orchestrator",
   async (kind) => {
@@ -825,31 +843,47 @@ test.each(["auto-", "", "legacy"])(
   }
 );
 
-test("a worker idle without reply sends one check-in per stop and again after recovery", async () => {
-  const f = setup();
-  f.task();
-  f.worktree();
-  f.staleWorker = { reason: "idle without reply", active: false, updated: f.clock };
-  const loop = f.loop();
-  const first = await f.once(loop);
-  expect(first).toEqual([]);
-  expect(f.workerSends).toHaveLength(1);
-  for (let i = 0; i < 6; i++) {
-    expect(await f.once(loop)).toEqual([]);
+test.each([true, false])(
+  "a worker idle without reply sends one check-in per stop and again after recovery (timestamps=%s)",
+  async (timestamps) => {
+    const f = setup();
+    f.task();
+    f.worktree();
+    f.staleWorker = {
+      reason: "idle without reply",
+      active: false,
+      ...(timestamps ? { updated: f.clock } : {}),
+    };
+    const loop = f.loop();
+    const first = await f.once(loop);
+    expect(first).toEqual([]);
+    expect(f.workerSends).toHaveLength(1);
+    for (let i = 0; i < 6; i++) {
+      expect(await f.once(loop)).toEqual([]);
+    }
+    f.staleWorker = {
+      reason: "running",
+      active: true,
+      ...(timestamps ? { updated: f.clock } : {}),
+    };
+    for (let i = 0; i < 6; i++) {
+      expect(await f.once(loop)).toEqual([]);
+    }
+    f.staleWorker = {
+      reason: "idle without reply",
+      active: false,
+      ...(timestamps ? { updated: f.clock } : {}),
+    };
+    const stops = [];
+    for (let i = 0; i < 6; i++) {
+      stops.push(...(await f.once(loop)));
+    }
+    expect(stops).toEqual([]);
+    expect(f.workerSends).toHaveLength(2);
+    expect(new Set(f.workerMetrics.map((m) => m.event.id)).size).toBe(4);
+    expect(f.reports).toEqual([]);
   }
-  f.staleWorker = { reason: "running", active: true, updated: f.clock };
-  for (let i = 0; i < 6; i++) {
-    expect(await f.once(loop)).toEqual([]);
-  }
-  f.staleWorker = { reason: "idle without reply", active: false, updated: f.clock };
-  const stops = [];
-  for (let i = 0; i < 6; i++) {
-    stops.push(...(await f.once(loop)));
-  }
-  expect(stops).toEqual([]);
-  expect(f.workerSends).toHaveLength(2);
-  expect(f.reports).toEqual([]);
-});
+);
 
 test("an idle worker with no protocol comment gets two check-ins then an alert", async () => {
   const f = setup();
@@ -872,6 +906,9 @@ test("an idle worker with no protocol comment gets two check-ins then an alert",
     "[orchestrator] CHECK-IN: your turn ended without a status comment on the PR. Post exactly one of READY, QUESTION, BLOCKED or DESIGN on PR #24 with `vmethod pr-comment`. If you are not done, finish only the remaining acceptance steps first, adding no new scope. If you are unsure or stuck, post QUESTION or BLOCKED and stop."
   );
   expect(events.filter((event) => event.line.includes("stopped without reply"))).toHaveLength(1);
+  expect(f.workerMetrics.filter((m) => m.event.type === "stop")).toHaveLength(3);
+  expect(f.workerMetrics.filter((m) => m.event.type === "checkin")).toHaveLength(2);
+  expect(new Set(f.workerMetrics.map((m) => m.event.id)).size).toBe(5);
 });
 
 test("a new orchestrator review prompt resets the check-in count", async () => {
@@ -2062,6 +2099,85 @@ test("REST conflicts are once per head SHA and red CI is Progress only", async (
   }
   expect(wakes.filter((e) => e.kind === "conflict")).toHaveLength(1);
   expect(object(f.cards[0].progress).text).toContain("🔴");
+});
+
+test("a dispatched fixer keeps the conflict card against its own activity and protocol turns", async () => {
+  const f = setup();
+  f.task();
+  f.conflictFixing = () => true;
+  object(f.cards[0].progress).text = "💥";
+  const loop = f.loop();
+  let events = await f.tick(loop);
+  await f.ack(loop, events);
+  expect(f.writes).toEqual([]);
+  f.advance();
+  f.comment("[worker] resolving the conflicted hunks now", 1);
+  object(f.pulls[0].head).sha = "c".repeat(40);
+  events = await f.tick(loop);
+  await f.ack(loop, events);
+  expect(f.writes).toEqual([]);
+  f.advance();
+  f.comment("[worker] READY FOR REVIEW (round 1)", 1);
+  events = await f.tick(loop);
+  expect(events.some((event) => event.kind === "ready")).toBe(true);
+  expect(f.writes).toEqual([]);
+  expect(object(f.cards[0].progress).text).toBe("💥");
+  await f.ack(loop, events);
+  f.done();
+});
+
+test("worker activity outside a dispatched fixer still revives the conflict card", async () => {
+  const f = setup();
+  f.task();
+  object(f.cards[0].progress).text = "💥";
+  const loop = f.loop();
+  let events = await f.tick(loop);
+  await f.ack(loop, events);
+  f.advance();
+  f.comment("[worker] back on the task", 1);
+  events = await f.tick(loop);
+  await f.ack(loop, events);
+  expect(f.writes).toContainEqual({
+    itemId: "PVTI_24",
+    field: "Progress",
+    value: "🤖🔨",
+  });
+  f.done();
+});
+
+test.each([
+  "RESOLVED #24 (step 1)",
+  "MERGED #24 (conflict-only, approval carried)",
+  "BLOCKED #24: conflict escalated (remerge diff is not limited to conflicted hunks)",
+])("a terminal conflict result %s supersedes the queued card move", async (result) => {
+  const f = setup();
+  f.task();
+  f.mergeable = false;
+  f.resolveConflicts = vi.fn(async () => result);
+  mkdirSync(f.dir, { recursive: true });
+  writeFileSync(join(f.dir, "pending-progress-24"), JSON.stringify({ state: "working" }));
+  const loop = f.loop();
+  const events = await f.tick(loop);
+  expect(
+    events.filter((event) => event.kind === "conflict-resolution").map((event) => event.line)
+  ).toEqual([result]);
+  expect(existsSync(join(f.dir, "pending-progress-24"))).toBe(false);
+  expect(f.writes.filter((write) => write.field === "Progress")).toEqual([]);
+  await f.ack(loop, events);
+  f.done();
+});
+
+test("a pending resolution result keeps its queued conflict card move", async () => {
+  const f = setup();
+  f.task();
+  f.mergeable = false;
+  f.resolveConflicts = vi.fn(async () => "PENDING #24: conflict fixer dispatched (step 2)");
+  const loop = f.loop();
+  const events = await f.tick(loop);
+  expect(events.filter((event) => event.kind === "conflict-resolution")).toEqual([]);
+  expect(f.writes).toContainEqual({ itemId: "PVTI_24", field: "Progress", value: "💥 🔁2️⃣" });
+  await f.ack(loop, events);
+  f.done();
 });
 
 test.each([{ issues: [] }, { issues: [6] }])(

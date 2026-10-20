@@ -6,22 +6,19 @@ export function turnAssignees(
   people: Person[],
   repo: string,
   current: string[],
-  role: "owner" | "orchestrator" | null
+  role: "owner" | "orchestrator" | "worker" | null
 ): string[] {
+  // The orchestrator role is per repository (#186): only an orchestrator whose
+  // owner-approved binding lists this repository can hold or hold over its turn.
+  const manages = (p: Person) =>
+    p.role === "owner" ||
+    (p.role === "orchestrator" &&
+      !!p.repos?.some((bound) => bound.toLowerCase() === repo.toLowerCase()));
   if (role === null) {
-    const managed = new Set(
-      people
-        .filter((p) => ["owner", "orchestrator"].includes(p.role))
-        .map((p) => p.login.toLowerCase())
-    );
+    const managed = new Set(people.filter(manages).map((p) => p.login.toLowerCase()));
     return current.filter((login) => !managed.has(login.toLowerCase()));
   }
-  let candidates = people.filter(
-    (p) => p.role === role && (role !== "orchestrator" || !p.repos || p.repos.includes(repo))
-  );
-  if (role === "orchestrator" && candidates.some((p) => p.repos?.includes(repo))) {
-    candidates = candidates.filter((p) => p.repos?.includes(repo));
-  }
+  const candidates = people.filter((p) => p.role === role && manages(p));
   if (candidates.length !== 1) {
     throw new Error(`Expected exactly one ${role} for ${repo}`);
   }

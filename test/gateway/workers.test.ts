@@ -1,5 +1,6 @@
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   readFileSync,
   renameSync,
@@ -216,6 +217,128 @@ const start: Request[] = [
   },
   { path: "/api/session/ses_fake", data: { id: "ses_fake", title: "project#31" } },
 ];
+test("grade emits delivery and segment event metrics without qualitative notes and validates switch categories", async () => {
+  const f = fixture([...start], true);
+  await f.service.command(["start", "31"]);
+  const time = (seconds: number) => new Date(seconds * 1000).toISOString();
+  const event = { id: "stop-1", at: time(1), type: "stop" as const };
+  await f.service.recordMetric(31, event);
+  await f.service.recordMetric(31, event);
+  await f.service.recordMetric(31, { id: "checkin-1", at: time(1), type: "checkin" });
+  f.meta.state = "CLOSED";
+  f.meta.merged = true;
+  f.meta.closedAt = time(20);
+  f.meta.headOid = "c".repeat(40);
+  f.meta.diff = { files: 3, additions: 20, deletions: 4 };
+  f.meta.comments = [
+    { role: "orchestrator", body: "[orchestrator] REVIEW round 1", date: time(2) },
+    { role: "worker", body: "[worker] BLOCKED", date: time(4) },
+    { role: "orchestrator", body: "[orchestrator] ANSWER", date: time(6) },
+    { role: "worker", body: "[worker] QUESTION", date: time(12) },
+    { role: "orchestrator", body: "[orchestrator] OWNER REVIEW", date: time(14) },
+    { role: "owner", body: "accepted", date: time(18) },
+    { role: "collaborator", body: "[orchestrator] REVIEW round 999", date: time(19) },
+  ];
+  const saved = f.record();
+  saved.finalized = true;
+  saved.segments = [
+    {
+      ...saved.segments[0],
+      pointsOpen: 8,
+      pointsFinal: 13,
+      startOid: "a".repeat(40),
+      endOid: "b".repeat(40),
+      usage: { tokens: { input: 100, output: 10, cached: 50 } },
+      usd: 0.1,
+      requests: { m1: { tokens: { input: 100, output: 10, cached: 50 }, usd: 0.1 } },
+      compactionIds: ["compact-1"],
+    },
+    {
+      family: "sol",
+      model: "fake/sol",
+      rounds: [1],
+      why: "Repeated silent stops",
+      switchReason: "stopped-twice",
+      pointsOpen: 13,
+      at: time(10),
+      startOid: "b".repeat(40),
+      usage: { tokens: { input: 200, output: 20, cached: 60 } },
+      usd: 0.2,
+      requests: { m2: { tokens: { input: 200, output: 20, cached: 60 }, usd: 0.2 } },
+      compactionIds: [],
+    },
+  ];
+  const file = join(f.root, "state/vmethod/example-state/workers/31.json");
+  writeFileSync(file, JSON.stringify(saved));
+  f.hooks.diffStats = vi.fn(async () => ({ files: 1, additions: 10, deletions: 2 }));
+  await f.service.grade(31, 5);
+  const log = readFileSync(join(f.root, ".vmethod/model-log.jsonl"), "utf8");
+  const value = JSON.parse(log);
+  expect(value.tokens).toEqual({ input: 300, output: 30, cached: 110 });
+  expect(value.usd).toBeCloseTo(0.3);
+  expect(value.metrics).toMatchObject({
+    reviews: { changes: 1, answer: 1 },
+    blocked: 1,
+    questions: 1,
+    escalations: 1,
+    checkins: 1,
+    stopsWithoutStatus: 1,
+    workingMs: 10000,
+    ownerWaitMs: 4000,
+    peakContext: 260,
+    compactions: 1,
+    diff: f.meta.diff,
+  });
+  expect(value.segments[0].metrics).toMatchObject({
+    workingMs: 8000,
+    questions: 0,
+    stopsWithoutStatus: 1,
+    peakContext: 150,
+    compactions: 1,
+  });
+  expect(value.segments[0]).toMatchObject({
+    points_open: 8,
+    points_final: 13,
+    outcome: "switched",
+  });
+  expect(value.segments[1]).toMatchObject({ points_open: 13, points_final: 5, outcome: "merged" });
+  expect(value.segments[1]).toMatchObject({
+    switchReason: "stopped-twice",
+    usd: 0.2,
+    metrics: {
+      workingMs: 2000,
+      ownerWaitMs: 4000,
+      questions: 1,
+      stopsWithoutStatus: 0,
+      peakContext: 260,
+      compactions: 0,
+      diff: { files: 1, additions: 10, deletions: 2 },
+    },
+  });
+  expect(value.notes).toBe("");
+  expect(value.rounds).toBe(1);
+  expect(value.findings).toEqual([]);
+  expect(value.round_causes).toEqual([]);
+  expect([value.points_open, value.points_final, value.outcome]).toEqual([8, 5, "merged"]);
+  expect(f.hooks.diffStats).toHaveBeenCalledWith(31, "a".repeat(40), "b".repeat(40));
+  await f.service.grade(31, 5);
+  expect(readFileSync(join(f.root, ".vmethod/model-log.jsonl"), "utf8")).toBe(log);
+  saved.segments[1].switchReason = "uncontrolled-text";
+  writeFileSync(file, JSON.stringify(saved));
+  await expect(f.service.grade(31, 5)).rejects.toThrow("Invalid model-log record");
+  f.done();
+});
+
+test("model switch refuses a reason outside the fixed list before contacting the backend", async () => {
+  const f = fixture([...start]);
+  await f.service.command(["start", "31"]);
+  await expect(f.service.command(["model", "31", "sol", "--reason", "anything"])).rejects.toThrow(
+    "Invalid switch reason"
+  );
+  expect(f.record().segments).toHaveLength(1);
+  f.done();
+});
+
 test("worker start sends inline authority, task values and the non-negotiable checklist, not task text", async () => {
   const f = fixture([...start]);
   await f.service.command(["start", "31"]);
@@ -243,6 +366,22 @@ test("worker start sends inline authority, task values and the non-negotiable ch
   expect(prompt).not.toContain(f.meta.body);
   expect(prompt).not.toContain("secret-password");
   f.done();
+});
+
+test("worker start grades the task marker's model override as the first segment reason", async () => {
+  const f = fixture([...start]);
+  f.meta.body =
+    '<!-- vmethod-task {"issues":[9],"modelOverride":{"from":"glm","to":"sol","reason":"needs expensive tier"}} -->';
+  await f.service.command(["start", "31"]);
+  expect(f.record().segments).toHaveLength(1);
+  expect(f.record().segments[0].why).toBe("override: needs expensive tier");
+  f.done();
+});
+
+test("worker start refuses a malformed marker override instead of logging a silent start", async () => {
+  const f = fixture([...start]);
+  f.meta.body = '<!-- vmethod-task {"issues":[9],"modelOverride":{"from":"glm"}} -->';
+  await expect(f.service.command(["start", "31"])).rejects.toThrow("Invalid task model override");
 });
 
 test("backend-changing model switches create a fresh context and resend onboarding in both directions", async () => {
@@ -331,18 +470,23 @@ test("conflict turn switches the existing session to the cheapest family and res
   expect(await f.service.resolveConflict(31, "dev", ["conflict.txt"])).toBe(2);
   expect(f.record().model.family).toBe("glm");
   expect(f.record().conflictModel.family).toBe("sol");
-  await f.service.resume(31, "Read the PR for normal review work");
-  expect(f.record().model.family).toBe("sol");
-  expect(f.record().conflictModel).toBeUndefined();
   expect(f.hooks.modelComment).toHaveBeenNthCalledWith(
     1,
     31,
-    "[orchestrator] NOTE: model switched to glm (conflict-only resolution)"
+    "[orchestrator] NOTE: model switched to glm (conflict-only resolution); reason: conflict-only"
   );
   expect(f.hooks.modelComment).toHaveBeenNthCalledWith(
     2,
     31,
-    "[orchestrator] NOTE: model switched to sol (resume normal work after conflict)"
+    "[orchestrator] NOTE: resolving a conflict with dev (step 2, glm)"
+  );
+  await f.service.resume(31, "Read the PR for normal review work");
+  expect(f.record().model.family).toBe("sol");
+  expect(f.record().conflictModel).toBeUndefined();
+  expect(f.hooks.modelComment).toHaveBeenNthCalledWith(
+    3,
+    31,
+    "[orchestrator] NOTE: model switched to sol (resume normal work after conflict); reason: conflict-only"
   );
   f.done();
 });
@@ -387,7 +531,16 @@ test("a review notification cannot restore sol during an active cheapest-list-pr
   expect(await f.service.resume(31, "[orchestrator] ANSWER is on your PR")).toBe("queued for #31");
   expect(f.record().model.family).toBe("glm-flash");
   expect(f.record().conflictModel.family).toBe("sol");
-  expect(f.hooks.modelComment).toHaveBeenCalledTimes(1);
+  expect(f.hooks.modelComment).toHaveBeenNthCalledWith(
+    1,
+    31,
+    "[orchestrator] NOTE: model switched to glm-flash (conflict-only resolution); reason: conflict-only"
+  );
+  expect(f.hooks.modelComment).toHaveBeenNthCalledWith(
+    2,
+    31,
+    "[orchestrator] NOTE: resolving a conflict with dev (step 2, glm-flash)"
+  );
   await f.service.watchStatus(31);
   expect(f.record().model.family).toBe("sol");
   expect(f.record().conflictModel).toBeUndefined();
@@ -423,6 +576,41 @@ test("session-less conflict starts a fixed generic fixer even for a non-draft di
   expect(f.prompts[0]).toContain(
     "Produce exactly one merge commit resolving the conflict; make no other commits or edits (no changelog fragments, no formatting fixes); if CI fails for any other reason, post [worker] BLOCKED."
   );
+  expect(f.hooks.modelComment).toHaveBeenNthCalledWith(
+    1,
+    31,
+    "[orchestrator] NOTE: resolving a conflict with dev (step 3, glm)"
+  );
+  f.done();
+});
+
+test("a failed dispatch note never blocks the dispatch", async () => {
+  const f = fixture(
+    start.map((request) =>
+      request.body
+        ? {
+            ...request,
+            body: {
+              text: expect.stringContaining("You are a generic conflict fixer"),
+              delivery: "steer",
+            },
+          }
+        : request
+    ),
+    true
+  );
+  f.meta.draft = false;
+  f.meta.issue = undefined;
+  f.meta.pointsOpen = undefined;
+  f.hooks.modelComment = vi.fn(async () => {
+    throw new Error("github down");
+  });
+  expect(await f.service.resolveConflict(31, "dev", ["conflict.txt"])).toBe(3);
+  expect(f.record().model.family).toBe("glm");
+  expect(f.deps.report).toHaveBeenCalledWith(
+    expect.stringContaining("dispatch note could not be posted")
+  );
+  expect(f.prompts[0]).toContain("CONFLICT: merge origin/dev");
   f.done();
 });
 
@@ -468,6 +656,237 @@ test.each(["idle drain", "stop"])(
     f.done();
   }
 );
+
+const staleTimes = ["2026-01-01T00:01:00Z", "2026-01-01T00:02:00Z", "2026-01-01T00:03:00Z"];
+function staleComments(): TaskMetadata["comments"] {
+  return [
+    { body: "[orchestrator] ANSWER\n\nthe answer text", role: "orchestrator", date: staleTimes[0] },
+    { body: "[worker] READY FOR REVIEW (round 1)", role: "worker", date: staleTimes[1] },
+    {
+      body: "[orchestrator] REVIEW round 2\n\nthe review text",
+      role: "orchestrator",
+      date: staleTimes[2],
+    },
+  ];
+}
+
+test("an idle drain drops wakes older than the latest reply, while a conflict wake is delivered", async () => {
+  const answerWake =
+    "[orchestrator] ANSWER is on your PR; read it with vmethod read pr 31 and act.";
+  const reviewWake =
+    "[orchestrator] REVIEW round 2 is on your PR; read it with vmethod read pr 31 and act.";
+  const conflictLine =
+    "CONFLICT: merge origin/dev, resolve keeping both sides' behaviour, push, wait-checks, READY";
+  const switchTo = (id: string): Request[] => [
+    {
+      path: "/api/session/ses_fake/model",
+      method: "POST",
+      body: { model: { providerID: "fake", id } },
+    },
+    { path: "/api/session/ses_fake", method: "PATCH", body: { title: "project#31" } },
+  ];
+  const busy = measuredStatus().map((request) =>
+    request.path === "/api/session/active" ? { ...request, data: { ses_fake: {} } } : request
+  );
+  const f = fixture(
+    [
+      ...start,
+      ...busy,
+      ...busy,
+      ...busy,
+      ...measuredStatus(),
+      ...switchTo("glm"),
+      {
+        path: "/api/session/ses_fake/prompt",
+        method: "POST",
+        body: { text: conflictLine, delivery: "queue" },
+      },
+      ...measuredStatus(),
+      ...switchTo("sol"),
+      {
+        path: "/api/session/ses_fake/prompt",
+        method: "POST",
+        body: { text: reviewWake, delivery: "queue" },
+      },
+    ],
+    true
+  );
+  f.meta.model = "sol";
+  f.meta.comments = staleComments();
+  await f.service.command(["start", "31", "--owner-approved"]);
+  expect(await f.service.resume(31, answerWake)).toBe("queued for #31");
+  expect(await f.service.resume(31, reviewWake)).toBe("queued for #31");
+  expect(f.record().pendingWake).toEqual([answerWake, reviewWake]);
+  expect(await f.service.resolveConflict(31, "dev", ["conflict.txt"])).toBe(2);
+  expect(f.record().pendingConflict).toMatchObject({ base: "dev", model: { family: "glm" } });
+  // First idle poll: the conflict fixer wake wins the turn and is delivered after the reply.
+  await f.service.watchStatus(31);
+  expect(f.prompts.at(-1)).toBe(conflictLine);
+  expect(f.record().pendingWake).toEqual([answerWake, reviewWake]);
+  expect(f.deps.report).not.toHaveBeenCalledWith("stale wake dropped for #31");
+  // Second idle poll: the conflict turn is done; the stale ANSWER is dropped and the
+  // wake newer than the READY reply is still delivered.
+  await f.service.watchStatus(31);
+  expect(f.prompts.at(-1)).toBe(reviewWake);
+  expect(f.prompts).not.toContain(answerWake);
+  expect(f.record().pendingWake).toBeUndefined();
+  expect(f.record().model.family).toBe("sol");
+  expect(f.deps.report).toHaveBeenCalledWith("stale wake dropped for #31");
+  f.done();
+});
+
+test("a CHECK-IN wake without a triggering comment survives a newer protocol reply", async () => {
+  const checkIn = "[orchestrator] CHECK-IN: your turn ended without a status comment on the PR.";
+  const f = fixture(
+    [
+      ...start,
+      ...measuredStatus().map((request) =>
+        request.path === "/api/session/active" ? { ...request, data: { ses_fake: {} } } : request
+      ),
+      ...measuredStatus(),
+      {
+        path: "/api/session/ses_fake/prompt",
+        method: "POST",
+        body: { text: checkIn, delivery: "queue" },
+      },
+    ],
+    true
+  );
+  f.meta.comments = staleComments();
+  await f.service.command(["start", "31"]);
+  expect(await f.service.resume(31, checkIn)).toBe("queued for #31");
+  expect(f.record().pendingWake).toEqual([checkIn]);
+  await f.service.watchStatus(31);
+  expect(f.prompts.at(-1)).toBe(checkIn);
+  expect(f.record().pendingWake).toBeUndefined();
+  expect(f.deps.report).not.toHaveBeenCalledWith("stale wake dropped for #31");
+  f.done();
+});
+
+test("fixer replies do not make queued wakes stale: the queued ANSWER is delivered", async () => {
+  const answerWake =
+    "[orchestrator] ANSWER is on your PR; read it with vmethod read pr 31 and act.";
+  const reviewWake =
+    "[orchestrator] REVIEW round 2 is on your PR; read it with vmethod read pr 31 and act.";
+  const conflictLine =
+    "CONFLICT: merge origin/dev, resolve keeping both sides' behaviour, push, wait-checks, READY";
+  const times = [
+    "2026-01-01T00:00:00Z",
+    "2026-01-01T00:01:00Z",
+    "2026-01-01T00:02:00Z",
+    "2026-01-01T00:03:00Z",
+    "2026-01-01T00:04:00Z",
+  ];
+  const switchTo = (id: string): Request[] => [
+    {
+      path: "/api/session/ses_fake/model",
+      method: "POST",
+      body: { model: { providerID: "fake", id } },
+    },
+    { path: "/api/session/ses_fake", method: "PATCH", body: { title: "project#31" } },
+  ];
+  const busy = measuredStatus().map((request) =>
+    request.path === "/api/session/active" ? { ...request, data: { ses_fake: {} } } : request
+  );
+  const f = fixture(
+    [
+      ...start,
+      ...busy,
+      ...busy,
+      ...measuredStatus(),
+      ...switchTo("glm"),
+      {
+        path: "/api/session/ses_fake/prompt",
+        method: "POST",
+        body: { text: conflictLine, delivery: "queue" },
+      },
+      ...measuredStatus(),
+      ...switchTo("sol"),
+      {
+        path: "/api/session/ses_fake/prompt",
+        method: "POST",
+        body: { text: answerWake, delivery: "queue" },
+      },
+      ...busy,
+      ...measuredStatus(),
+    ],
+    true
+  );
+  f.meta.model = "sol";
+  f.meta.comments = [
+    { body: "[orchestrator] ANSWER\n\nthe answer text", role: "orchestrator", date: times[0] },
+  ];
+  // Gateway notes land on the thread when posted, so the fake mirrors them into metadata.
+  let posted = 0;
+  f.hooks.modelComment = vi.fn(async (_pr: number, body: string) => {
+    f.meta.comments.push({
+      body,
+      role: "orchestrator",
+      date: posted++ === 0 ? times[1] : "2026-01-01T00:01:30Z",
+    });
+  });
+  await f.service.command(["start", "31", "--owner-approved"]);
+  expect(await f.service.resume(31, answerWake)).toBe("queued for #31");
+  expect(await f.service.resolveConflict(31, "dev", ["conflict.txt"])).toBe(2);
+  expect(
+    f.meta.comments.some((comment) =>
+      comment.body.startsWith("[orchestrator] NOTE: resolving a conflict")
+    )
+  ).toBe(true);
+  // The dispatched fixer's turn runs, completes and posts its own protocol reply.
+  await f.service.watchStatus(31);
+  expect(f.prompts.at(-1)).toBe(conflictLine);
+  f.meta.comments.push({
+    body: "[worker] READY FOR REVIEW (round 1)",
+    role: "worker",
+    date: times[2],
+  });
+  expect(f.record().pendingWake).toEqual([answerWake]);
+  // At the idle drain the unanswered ANSWER survives the fixer's READY.
+  await f.service.watchStatus(31);
+  expect(f.prompts.at(-1)).toBe(answerWake);
+  expect(f.record().pendingWake).toBeUndefined();
+  expect(f.deps.report).not.toHaveBeenCalledWith("stale wake dropped for #31");
+  // Once the orchestrator turns again, a later task reply still drops its wake.
+  f.meta.comments.push({
+    body: "[orchestrator] REVIEW round 2\n\nthe review text",
+    role: "orchestrator",
+    date: times[3],
+  });
+  expect(await f.service.resume(31, reviewWake)).toBe("queued for #31");
+  f.meta.comments.push({
+    body: "[worker] READY FOR REVIEW (round 2)",
+    role: "worker",
+    date: times[4],
+  });
+  await f.service.watchStatus(31);
+  expect(f.prompts.at(-1)).toBe(answerWake);
+  expect(f.record().pendingWake).toBeUndefined();
+  expect(f.deps.report).toHaveBeenCalledWith("stale wake dropped for #31");
+  f.done();
+});
+
+test("clearWake drops the queued record wake and any persisted wake file", async () => {
+  const f = fixture(
+    [
+      ...start,
+      ...measuredStatus().map((request) =>
+        request.path === "/api/session/active" ? { ...request, data: { ses_fake: {} } } : request
+      ),
+    ],
+    true
+  );
+  await f.service.command(["start", "31"]);
+  expect(await f.service.resume(31, "Read the new review")).toBe("queued for #31");
+  expect(f.record().pendingWake).toEqual(["Read the new review"]);
+  const wakeFile = join(f.root, "state/vmethod/example-state/workers/31.wake");
+  writeFileSync(wakeFile, "persisted wake\n", { mode: 0o600 });
+  await f.service.clearWake(31);
+  expect(f.record().pendingWake).toBeUndefined();
+  expect(existsSync(wakeFile)).toBe(false);
+  await f.service.clearWake(31);
+  f.done();
+});
 test("resume takes the current PR Model and preserves same-backend context without onboarding again", async () => {
   const f = fixture(
     [
@@ -491,6 +910,11 @@ test("resume takes the current PR Model and preserves same-backend context witho
   await f.service.command(["start", "31"]);
   f.meta.model = "sol";
   await f.service.resume(31, "Read the PR");
+  expect(f.hooks.modelComment).toHaveBeenCalledWith(
+    31,
+    "[orchestrator] NOTE: model switched to sol (PR Model changed on resume); reason: owner-hint"
+  );
+  expect(f.record().segments.at(-1).switchReason).toBe("owner-hint");
   expect(f.record().model.family).toBe("sol");
   expect(f.record().id).toBe("ses_fake");
   expect(f.prompts.filter((text) => text.includes("You are a worker"))).toHaveLength(1);
@@ -818,7 +1242,7 @@ test("model switch snapshots cumulative baseline and grades each family's delta"
   await f.service.command(["model", "31", "sol", "--owner-approved"]);
   expect(f.hooks.modelComment).toHaveBeenCalledExactlyOnceWith(
     31,
-    "[orchestrator] NOTE: model switched to sol (owner-request)"
+    "[orchestrator] NOTE: model switched to sol (owner-request); reason: orchestrator-judgement"
   );
   f.meta.state = "MERGED";
   await f.service.grade(31, 5);
@@ -1969,7 +2393,7 @@ test("model gate refuses before mutation; switch keeps id and grade writes issue
   await f.service.command(["model", "31", "sol", "--owner-approved", "--why", "quota"]);
   expect(f.hooks.modelComment).toHaveBeenCalledExactlyOnceWith(
     31,
-    "[orchestrator] NOTE: model switched to sol (quota)"
+    "[orchestrator] NOTE: model switched to sol (quota); reason: quota"
   );
   expect(f.record().id).toBe("ses_fake");
   expect(f.hooks.setModel).toHaveBeenLastCalledWith(31, "sol");

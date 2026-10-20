@@ -42,8 +42,10 @@ Every `people.yaml` entry now requires `login`, numeric `id`, `type` (`User` or
 nonempty `events` and `appIds` arrays. All template numbers are placeholders: the
 owner must replace them with verified identities and application IDs. There is no
 default trusted application, and missing pins fail configuration validation.
-`vmethod check` reports invalid pins with source line numbers. Do not let agents
-change their own trust list.
+`vmethod check` reports invalid pins with source line numbers, and it errors on an
+`orchestrator` pin without a `repos` binding or a configured repository that no
+orchestrator binds (the role is per repository; see [Security](security.md)). Do not
+let agents change their own trust list.
 
 Author/editor login, numeric ID and type must agree. Bot author/editor login comparisons normalize REST's
 trailing `[bot]` suffix to match GraphQL's suffixless spelling; numeric IDs and
@@ -60,7 +62,9 @@ Names, titles, protocol tags and commit metadata confer no authority.
 
 Learning operations use the same transport: `learnings(LearningInput) → string`
 and central CI's `learningCheck({ref, label?}) → string`. Read/show/report are
-available to workers; submit and label writes require orchestrator context.
+available to workers; submit, annotate, aggregate and label writes require orchestrator context.
+Annotation and aggregation use the gateway's OpenCode client with tool-denied
+sessions; neither launches a task worker. See the [generation commands](learnings.md#annotate-threads-and-regenerate-advice).
 Submission additionally verifies the token viewer against central numeric identity
 and explicit `repos` bindings. See [shared learnings](learnings.md).
 
@@ -237,7 +241,7 @@ worker stop <pr> [--cleanup]
 worker reopen <pr>
 worker wait <pr> [seconds]
 worker permit <pr> [once|always|reject]
-worker model <pr> <family> [--owner-approved] [--why reason]
+worker model <pr> <family> [--owner-approved] [--reason category] [--why details]
 worker models
 worker health
 suggest-model <issue>
@@ -360,7 +364,8 @@ queue delivery; default sends steer the active turn. Claude defaults refuse busy
 turns; queue waits for idle, and now interrupts before resuming. `wait` defaults
 to 600 seconds; permission waits are not completion. `permit` without a decision
 lists pending requests. Same-backend model changes preserve the session id, synchronize the
-PR's Model card, and add a segment with `--why` (default `owner-request`). Each
+PR's Model card, and add a segment with a fixed `--reason` category plus `--why`
+details (default `owner-request`). See [exact telemetry](learnings.md#exact-grade-telemetry). Each
 switch posts `[orchestrator] NOTE: model switched to <family> (<why>)` on the PR
 without changing Progress; follow with `review <pr> answer <file>` to hand back
 the turn. Selecting the unchanged model only synchronizes Model and the session
@@ -431,8 +436,9 @@ the state directory. A failed notice write leaves it unseen.
 
 The server watches the own repository's task PRs and board, plus issues, PRs,
 comments and assignments in `vmethod.repo` (default `vworlds/vmethod`; `off` disables
-it). Only pinned identities pass the people filter; peers' orchestrator comments
-wake too. Own comments are silent only when their numeric actor ID and this
+it). Only pinned identities pass the people filter; a peer project's orchestrator
+wakes on our threads too, delivered and labelled `(collaborator)`, never as
+authority. Own comments are silent only when their numeric actor ID and this
 session's gateway write journal match.
 System check runs update structured red-CI state, never expose free text.
 
@@ -687,7 +693,7 @@ produce repeated drops; the counts are observations, not unique contributions.
 
 These commands require `VMETHOD_ROLE=orchestrator`:
 
-- `open-task <issue> [--direct "<title>"] [--unapproved "<reason>"] [--hold] [--part] [--model <family>] [--from <branch>] [--owner-approved]`
+- `open-task <issue> [--direct "<title>"] [--unapproved "<reason>"] [--hold] [--part] [--model <family>] [--model-override "<reason>"] [--from <branch>] [--owner-approved]`
   creates a conforming-title draft from the task template and issue specification.
   The header is `# Task: <title> (issue #N)` and `<!-- points_open: N -->`
   freezes the issue's opening Estimate for grading; it is never copied onto the PR card.
@@ -703,6 +709,11 @@ These commands require `VMETHOD_ROLE=orchestrator`:
   becomes `fix:`; prose/nonconforming titles receive `feat:` without broadening
   the accepted delivery-title types. `--part` requires an issue and records
   `# Task: <title> (part of issue #N)` plus `"part":true` in the structured marker.
+  The issue card's Model is the owner's hint: omitting `--model` uses it, and
+  launching on a different family is refused unless `--model-override` carries a
+  single-line reason, which is then posted as a model-override note on the issue
+  and kept in the structured marker so grading records it as the delivery's
+  opening segment reason.
   Partial PRs have only vmethod's structured relation: no native closing link,
   added timeline reference or board linked-PR entry. A partial delivery leaves the
   issue and its card unchanged during merge follow-up. For multi-PR issues, use
@@ -776,7 +787,17 @@ These commands require `VMETHOD_ROLE=orchestrator`:
 The other headings are `ANSWER` and `GO`. Free-form review text stays on the PR.
 Idle workers resume immediately. Busy or permission-waiting workers persist the
 notification and return `queued for #n`; the worker-status poll delivers queued
-lines once the turn ends, without steering. No recorded/reachable session returns
+lines once the turn ends, without steering. A queued notification whose
+`[orchestrator]` comment is already older than the worker's latest protocol reply
+is dropped at that poll with a `stale wake dropped for #n` report instead of
+restarting the worker for an answered turn. Replies the dispatched conflict
+fixer posted for its resolution (between its dispatch NOTE and the next
+orchestrator turn comment) belong to the resolution, never to the task, and do
+not count, so a queued wake for an unanswered ANSWER is still delivered even
+when the fixer has posted its own READY or BLOCKED. `review owner` hands the turn to the
+owner and clears every queued wake for that PR. Conflict-fixer wakes do not use
+this queue: the resolver dispatches them directly, so they are never dropped as
+stale. No recorded/reachable session returns
 `no worker session for #n; nothing sent` rather than failing the posted review.
 Without worker control, these commands still post and update the board. Workers
 end their turn after a status comment; they do not poll for review replies.
@@ -810,12 +831,27 @@ or board transitions; only genuine conflicts beyond the limits are escalated.
    list rate on the same backend (family name breaks ties). A busy turn queues the
    switch until idle. Normal review resumption restores the original model only
    after the conflict turn becomes idle; an ANSWER/REVIEW notification received
-   while it runs is queued, not allowed to switch it back early. Both
+   while it runs is queued, not allowed to switch it back early, and it follows
+   the stale-wake rule under [Task-flow commands](#task-flow-commands) at the
+   drain. Both
    switches retain usage baselines and post the normal model NOTE.
 3. Otherwise a generic fixer starts in the PR's guarded linked worktree on the
    cheapest ungated, priced family. Its fixed prompt limits edits to conflicted
    hunks, requires any installed merge-scope verify hook and CI, forbids merging, and requires
    `[worker] BLOCKED` with conflicting files when it cannot comply.
+
+A step-2 or step-3 dispatch turns the card over to the fixer: Progress shows 💥
+and the assigned worker holds the assignee. The interrupted card turn (Status,
+Progress and assignees) is stored with the resolution record. On RESOLVED the
+card returns to that stored turn; on BLOCKED the escalation hands the PR to the
+orchestrator with 🤖🚫 instead. While the dispatched fixer runs, its own comments
+and commits keep that card instead of reviving it, so the resolution stays
+visible where people look; a terminal resolution also supersedes the conflicted
+turn's queued card moves. Each dispatch posts one audit line,
+`[orchestrator] NOTE: resolving a conflict with <base> (step <n>, <model>)`,
+so the fixer's activity is explained on the PR thread; a card write that fails is
+reported and the record remains, but reconciliation never repeats the dispatch
+or the note.
 
 The gateway independently checks the two merge parents, every remerge-diff path
 and the full-context textual patch. Changes outside conflict-marker regions,

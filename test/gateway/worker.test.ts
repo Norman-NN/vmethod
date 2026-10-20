@@ -6,12 +6,25 @@ import { createGateway } from "../../src/gateway/server.js";
 import type { Dependencies } from "../../src/gateway/client.js";
 import {
   actor,
-  workerFixtureServer as fixtureServer,
+  fixtureServer as orchestratorFixture,
   graph,
   hostile,
   item,
+  people,
   sha,
+  workerFixtureServer as fixtureServer,
 } from "./helpers.js";
+import type { Person } from "../../src/gateway/people.js";
+
+/** A peer project's orchestrator, pinned in people.yaml plus its GraphQL actor shape. */
+const vecsmaster: Person = {
+  login: "vecsmaster",
+  id: 900,
+  type: "User",
+  role: "orchestrator",
+  repos: ["example/other"],
+};
+const vecsmasterActor = { login: "vecsmaster", databaseId: 900, __typename: "User" };
 
 const ctx = { role: "worker", taskPr: 3 } as const;
 const task = (overrides = {}) =>
@@ -332,5 +345,36 @@ test("read-pr delivers the prompt, comments and reviews through filtered labelle
   expect(output).toContain("from worker (worker)");
   expect(output).toContain("from peer (orchestrator)");
   expect(output).toContain("[orchestrator] REVIEW");
+  f.done();
+});
+
+test("read-pr labels a peer project's orchestrator comment as a collaborator, never an amendment", async () => {
+  const answer = item({
+    id: "peer-answer",
+    author: vecsmasterActor,
+    body: "[orchestrator] ANSWER\n\nPeer answer.",
+  });
+  const f = orchestratorFixture(
+    [
+      task(),
+      graph({ node: item({ title: "Task", body: "Prompt" }) }),
+      comments([meta(answer)]),
+      graph({ node: answer }),
+      task(),
+      graph({ node: item({ reviews: { nodes: [], pageInfo: { hasNextPage: false } } }) }),
+    ],
+    actor(2),
+    [...people, vecsmaster]
+  );
+  const output = await workerVerb(
+    f.gateway,
+    f.root,
+    "read-pr",
+    ["3"],
+    {},
+    { exec: f.deps.exec, report: f.deps.report }
+  );
+  expect(output).toContain("from vecsmaster (collaborator)");
+  expect(output).not.toContain("from vecsmaster (orchestrator)");
   f.done();
 });

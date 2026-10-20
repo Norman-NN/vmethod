@@ -24,7 +24,10 @@ Adopt the pinned package in one reviewed change without copying shared methodolo
       `learningsPrivacy` before any submission. Keep concrete paths, hosts, commands
       and domain rules local. Port behavioral differences into reviewed project hooks.
 - [ ] Have the owner verify `people.yaml` logins, numeric ids, roles and permitted
-      system events. Configure real model ids, backend kinds and gates in
+      system events, and give each `role: orchestrator` entry `repos:` bindings
+      (the role is per repository; `vmethod check` errors on an unbound
+      orchestrator or a repository no orchestrator binds). Configure real model
+      ids, backend kinds and gates in
       `models.yaml`; match board families. `init` converts a root `models.tsv` once,
       preserving the original and gates. Other local registries need explicit relocation.
 - [ ] Rename old environment prefixes to `VMETHOD_*`. Use the

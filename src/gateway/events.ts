@@ -96,8 +96,11 @@ export interface LoopHost {
   github: GitHubClient;
   workerStatus: (pr: number) => Promise<WorkerSessionStatus>;
   workerSend?: (pr: number, text: string) => Promise<string | void>;
+  workerMetric?: (pr: number, event: import("../learning-metrics.js").MetricEvent) => Promise<void>;
   resolveConflicts?: (pr: number) => Promise<string>;
   conflictPending?: (pr: number) => boolean;
+  /** True while a dispatched conflict fixer owns the card; worker moves must not revive it. */
+  conflictFixing?: (pr: number) => boolean;
   board: Pick<BoardService, "set">;
   digest: Digest;
 }
@@ -1517,7 +1520,9 @@ export class EventLoop {
     const oldHead = this.readMarker(`head-${pr.number}`);
     if (oldHead !== pr.sha) {
       if (oldHead) {
-        this.queueProgress(pr.number, { state: "working", if: revivedProgressStates });
+        if (!this.host.conflictFixing?.(pr.number)) {
+          this.queueProgress(pr.number, { state: "working", if: revivedProgressStates });
+        }
         this.touchActivity(pr.number, new Date(this.host.deps.now()).toISOString());
       }
       atomicWrite(join(this.dir, `head-${pr.number}`), `${pr.sha}\n`);
@@ -1532,6 +1537,17 @@ export class EventLoop {
       );
     }
     this.observedPrs.push(pr);
+  }
+
+  /** Terminal resolutions supersede every card move queued during the conflicted turn. */
+  private settleConflicts(pr: PrInfo, result: string): void {
+    if (result.startsWith("PENDING")) {
+      return;
+    }
+    this.produceOnce(`conflict-result-${pr.number}-${pr.sha}`, "conflict-resolution", result);
+    if (/^(?:RESOLVED|MERGED|BLOCKED)\b/.test(result)) {
+      remove(join(this.dir, `pending-progress-${pr.number}`));
+    }
   }
 
   private async reconcileConflicts(pr: PrInfo, url: string): Promise<void> {
@@ -1556,10 +1572,7 @@ export class EventLoop {
         !this.marked(`conflict-dispatched-${pr.number}-${pr.sha}`)
       ) {
         this.mark(`conflict-dispatched-${pr.number}-${pr.sha}`);
-        const result = await this.host.resolveConflicts(pr.number);
-        if (!result.startsWith("PENDING")) {
-          this.produceOnce(`conflict-result-${pr.number}-${pr.sha}`, "conflict-resolution", result);
-        }
+        this.settleConflicts(pr, await this.host.resolveConflicts(pr.number));
       }
     } else if (pr.mergeable === "MERGEABLE" && this.marked(`conflict-${pr.number}`)) {
       remove(join(this.dir, `conflict-${pr.number}`));
@@ -1571,16 +1584,10 @@ export class EventLoop {
       !this.marked(`base-dispatched-${pr.number}-${pr.sha}-${pr.baseSha}`)
     ) {
       this.mark(`base-dispatched-${pr.number}-${pr.sha}-${pr.baseSha}`);
-      const result = await this.host.resolveConflicts(pr.number);
-      if (!result.startsWith("PENDING")) {
-        this.produceOnce(`conflict-result-${pr.number}-${pr.sha}`, "conflict-resolution", result);
-      }
+      this.settleConflicts(pr, await this.host.resolveConflicts(pr.number));
     }
     if (this.host.conflictPending?.(pr.number)) {
-      const result = await this.host.resolveConflicts!(pr.number);
-      if (!result.startsWith("PENDING")) {
-        this.produceOnce(`conflict-result-${pr.number}-${pr.sha}`, "conflict-resolution", result);
-      }
+      this.settleConflicts(pr, await this.host.resolveConflicts!(pr.number));
     }
   }
 
@@ -1645,7 +1652,7 @@ export class EventLoop {
         continue;
       }
       this.touchActivity(pr.number, created);
-      this.rememberWorkerProtocol(pr.number, comment);
+      this.rememberWorkerProtocol(pr.number, comment, this.own);
       if (this.isSelf(comment)) {
         const first = str(comment.body).split(/\r?\n/)[0];
         this.rememberWorkerPrompt(pr.number, first, created, str(comment.html_url));
@@ -1926,7 +1933,8 @@ export class EventLoop {
     const edited = created !== str(comment.updated_at) ? " (edited: verify editor)" : "";
     const taskPr = own && this.marked(`open-${number}`);
     if (taskPr) {
-      this.rememberWorkerProtocol(number, comment);
+      // Task PRs always belong to the configured repository; the role is per repo (#186).
+      this.rememberWorkerProtocol(number, comment, repo);
     }
     const selfWrite =
       this.isSelf(comment) &&
@@ -1971,7 +1979,13 @@ export class EventLoop {
       if (selfWrite) {
         return;
       }
-      person ??= { login: this.me ?? login, id: this.meId!, type: "User", role: "orchestrator" };
+      person ??= {
+        login: this.me ?? login,
+        id: this.meId!,
+        type: "User",
+        role: "orchestrator",
+        repos: [this.own],
+      };
     }
     if (!person) {
       return;
@@ -1990,7 +2004,9 @@ export class EventLoop {
     }
     if (taskPr && person.role === "worker") {
       this.touchActivity(number, created);
-      this.queueProgress(number, { state: "working", if: revivedProgressStates });
+      if (!this.host.conflictFixing?.(number)) {
+        this.queueProgress(number, { state: "working", if: revivedProgressStates });
+      }
     }
     let subject = this.subjectPreviews.get(`${repo.toLowerCase()}#${number}`);
     if (this.preview && !subject) {
@@ -2015,14 +2031,17 @@ export class EventLoop {
         )
       ) {
         this.touchActivity(number, created);
-        if (workerTag[1] === "READY") {
-          this.queueProgress(number, {
-            status: "In review",
-            state: "ready",
-            ...(round ? { round: count(round[1]) } : {}),
-          });
-        } else {
-          this.queueProgress(number, { state: workerTag[1].toLowerCase() });
+        // A dispatched fixer's protocol turn must not move the resolution's card.
+        if (!this.host.conflictFixing?.(number)) {
+          if (workerTag[1] === "READY") {
+            this.queueProgress(number, {
+              status: "In review",
+              state: "ready",
+              ...(round ? { round: count(round[1]) } : {}),
+            });
+          } else {
+            this.queueProgress(number, { state: workerTag[1].toLowerCase() });
+          }
         }
       }
       return;
@@ -2030,7 +2049,9 @@ export class EventLoop {
     if (!edited && /^\[worker\]/.test(firstLine) && person.role === "worker" && !workerTag) {
       this.touchActivity(number, created);
       if (taskPr) {
-        this.queueProgress(number, { state: "working", if: revivedProgressStates });
+        if (!this.host.conflictFixing?.(number)) {
+          this.queueProgress(number, { state: "working", if: revivedProgressStates });
+        }
         this.quietOnce(
           `c-${key(url)}`,
           `NOTE PR #${number} (${this.branchOf(number)}): worker note from ${login} (${person.role})${preview} ${url}`
@@ -2418,7 +2439,9 @@ export class EventLoop {
         (login) =>
           login.toLowerCase() === this.me?.toLowerCase() ||
           this.host.filter.people.some(
-            (person) => person.role === "orchestrator" && person.login === login
+            (person) =>
+              this.host.filter.roleIn(person, card.repo) === "orchestrator" &&
+              person.login === login
           )
       );
       if (
@@ -2865,9 +2888,12 @@ export class EventLoop {
       latest !== Date.parse(card.columnAt) ||
       move.some((event) => {
         const person = this.host.filter.identity(event.actor);
+        // The role is per repository (#186): a peer orchestrator's move is a collaborator's.
+        const authoritative =
+          !!person &&
+          ["owner", "collaborator"].includes(this.host.filter.roleIn(person, card.repo));
         return (
-          !person ||
-          !["owner", "collaborator"].includes(person.role) ||
+          !authoritative ||
           person.type !== "User" ||
           event.status !== card.column ||
           !event.previousStatus ||
@@ -2888,7 +2914,8 @@ export class EventLoop {
         event.__typename === "AssignedEvent" &&
         this.host.filter.people.some(
           (person) =>
-            ["owner", "orchestrator"].includes(person.role) &&
+            (person.role === "owner" ||
+              this.host.filter.roleIn(person, card.repo) === "orchestrator") &&
             person.login.toLowerCase() === str(object(event.assignee).login).toLowerCase()
         ) &&
         !(time(event) < latest)
@@ -3230,13 +3257,17 @@ export class EventLoop {
   }
 
   /** Persist the newest verified worker reply tag, independently of activity/CI. */
-  private rememberWorkerProtocol(number: number, comment: ObjectData): void {
+  private rememberWorkerProtocol(number: number, comment: ObjectData, repo: string): void {
     const at = str(comment.created_at);
     if (!at) {
       return;
     }
     const person = this.host.filter.identity(restActor(comment.user));
-    const role = this.isSelf(comment) ? "orchestrator" : person?.role;
+    const role = this.isSelf(comment)
+      ? "orchestrator"
+      : person
+        ? this.host.filter.roleIn(person, repo)
+        : undefined;
     if (at !== str(comment.updated_at)) {
       return;
     }
@@ -3387,6 +3418,18 @@ export class EventLoop {
       if (stop === previous) {
         continue;
       }
+      // A backend without updated timestamps can return the same idle key after recovery.
+      // Persist a transition sequence before handing events off, so crash retries reuse ids.
+      const metricMarker = `worker-metric-${pr.number}`;
+      const metric = object(safeJson(this.readMarker(metricMarker)));
+      const priorSequence = Number(metric.sequence ?? 0);
+      if (!Number.isSafeInteger(priorSequence) || priorSequence < 0) {
+        throw new Error(`Invalid worker metric sequence for #${pr.number}`);
+      }
+      const sequence =
+        metric.stop === stop && metric.previous === previous ? priorSequence : priorSequence + 1;
+      this.writeMarker(metricMarker, JSON.stringify({ stop, previous, sequence }));
+      const metricId = `${key(this.dir)}-${pr.number}-${sequence}`;
       if (status.state === "permission") {
         if (
           this.emit(
@@ -3414,6 +3457,8 @@ export class EventLoop {
           });
         }
       } else if (status.state === "idle") {
+        const at = new Date(this.host.deps.now()).toISOString();
+        await this.host.workerMetric?.(pr.number, { id: `stop-${metricId}`, at, type: "stop" });
         const prompt = object(safeJson(this.readMarker(`worker-prompt-${pr.number}`)));
         const round = str(prompt.id) || "unknown";
         const count = Number(this.readMarker(`worker-checkin-${pr.number}-${key(round)}`) || 0);
@@ -3423,6 +3468,11 @@ export class EventLoop {
             `[orchestrator] CHECK-IN: your turn ended without a status comment on the PR. Post exactly one of READY, QUESTION, BLOCKED or DESIGN on PR #${pr.number} with \`vmethod pr-comment\`. If you are not done, finish only the remaining acceptance steps first, adding no new scope. If you are unsure or stuck, post QUESTION or BLOCKED and stop.`
           );
           this.writeMarker(`worker-checkin-${pr.number}-${key(round)}`, String(count + 1));
+          await this.host.workerMetric?.(pr.number, {
+            id: `checkin-${metricId}`,
+            at,
+            type: "checkin",
+          });
         } else {
           this.emit(
             `w-${pr.number}@${this.host.deps.now()}`,

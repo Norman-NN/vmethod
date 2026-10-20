@@ -58,6 +58,7 @@ import { ChecksService } from "./checks.js";
 import { VerificationService } from "./verify.js";
 import { reference } from "./refs.js";
 import { LearningsService } from "./learnings.js";
+import { LearningAnnotations, type LearningBundle } from "./learning-annotations.js";
 import { checkLearningPr } from "./learning-check.js";
 import { backfillCosts } from "./cost-backfill.js";
 import type { Price, PriceTier } from "../cost.js";
@@ -82,24 +83,27 @@ class GatewayServer {
       this.env.GITHUB_ACTIONS === "true" &&
       ctx.taskPr === undefined;
     const person = tokenIdentity(viewer, this.filter, actionsLearningCheck);
+    // Authority is per repository (#186): a peer project's orchestrator holds no
+    // gateway orchestration role for this configuration's repository.
+    const role = this.filter.roleIn(person, String(this.config.repo));
     // The CI-only learning validator retains its pinned-base registry and write gates.
     // Neither an environment flag alone nor a system identity grants any other verb.
     if (person.role === "system" && actionsLearningCheck) {
       return true;
     }
-    if (person.role !== "orchestrator" && person.role !== "worker") {
+    if (role !== "orchestrator" && role !== "worker") {
       throw new Error(
-        `Gateway token refused: ${person.login} (${person.role}) is not an orchestrator or worker identity`
+        `Gateway token refused: ${person.login} (${role}) is not an orchestrator or worker identity`
       );
     }
-    if (ctx.taskPr !== undefined && person.role !== "worker") {
+    if (ctx.taskPr !== undefined && role !== "worker") {
       throw new Error(
         `worker session holds a non-worker token (${person.login}); fix the worker environment`
       );
     }
-    if (ctx.role === "orchestrator" && person.role !== "orchestrator") {
+    if (ctx.role === "orchestrator" && role !== "orchestrator") {
       throw new Error(
-        `VMETHOD_ROLE=orchestrator refused: token belongs to ${person.login} (${person.role})`
+        `VMETHOD_ROLE=orchestrator refused: token belongs to ${person.login} (${role})`
       );
     }
     return false;
@@ -194,6 +198,25 @@ class GatewayServer {
       submitLearnings: () => this.learningService().command({ action: "submit" }),
       workerIdentity: () => this.workerIdentity(),
       issue: (issue) => this.workerIssue(issue),
+      diffStats: async (_pr, base, head) => {
+        if (![base, head].every((sha) => /^[a-f0-9]{40}$/i.test(sha))) {
+          throw new Error("Invalid diff boundary SHA");
+        }
+        if (base === head) {
+          return { files: 0, additions: 0, deletions: 0 };
+        }
+        const result = object(
+          await this.github.rest(`/repos/${String(this.config.repo)}/compare/${base}...${head}`)
+        );
+        if (!Array.isArray(result.files) || result.files.length >= 300) {
+          return null;
+        }
+        return {
+          files: result.files.length,
+          additions: result.files.reduce((n, f) => n + Number(object(f).additions), 0),
+          deletions: result.files.reduce((n, f) => n + Number(object(f).deletions), 0),
+        };
+      },
     }));
   }
 
@@ -333,7 +356,76 @@ class GatewayServer {
     const family = suggestion.split(":", 1)[0];
     return `${suggestion}\n${await this.learningService().show(family)}`;
   };
-  learnings: Handlers["learnings"] = async (input) => this.learningService().command(input);
+  learnings: Handlers["learnings"] = async (input) => {
+    if (input.action === "annotate" || input.action === "aggregate") {
+      return new LearningAnnotations(
+        this.root,
+        this.config,
+        this.env,
+        this.deps,
+        () => this.learningService().records(),
+        (pr) => this.learningBundle(pr)
+      ).command(input);
+    }
+    return this.learningService().command(input);
+  };
+
+  private async learningBundle(pr: number): Promise<LearningBundle> {
+    const meta = await this.workerMetadata(pr);
+    if (!meta.issue || meta.state === "OPEN" || !meta.closedAt) {
+      throw new Error("Annotation requires a closed task PR with one linked issue");
+    }
+    const issue = await this.richThread(meta.issue, "issue");
+    const comments = [...meta.comments];
+    // Grade lives on the issue; include owner and orchestrator evidence there as well.
+    for (const entry of await this.collection(String(issue.id), "Issue", "comments")) {
+      if (
+        !this.filter.accept(
+          entry,
+          repoOf(entry).owner,
+          `https://github.com/${String(this.config.repo)}/issues/${meta.issue}`
+        )
+      ) {
+        continue;
+      }
+      const c = await this.node(String(entry.id), "body createdAt url", "IssueComment");
+      const author = this.filter.accept(
+        c,
+        repoOf(c).owner,
+        `https://github.com/${String(this.config.repo)}/issues/${meta.issue}`
+      );
+      if (!author || this.filter.identity(c.author)?.role !== author.role) {
+        continue;
+      }
+      if (
+        typeof c.body !== "string" ||
+        typeof c.url !== "string" ||
+        !Number.isFinite(Date.parse(String(c.createdAt)))
+      ) {
+        throw new Error("Incomplete annotation comment");
+      }
+      if (/^\[orchestrator\] GRADE\b/.test(c.body) && !c.body.includes(`Graded PR #${pr}:`)) {
+        continue;
+      }
+      comments.push({
+        body: c.body,
+        role: this.learningRole(author),
+        date: String(c.createdAt),
+        url: c.url,
+      });
+    }
+    return {
+      repo: String(this.config.repo),
+      pr,
+      closedAt: meta.closedAt,
+      issue: {
+        body: String(issue.body),
+        url: `https://github.com/${String(this.config.repo)}/issues/${meta.issue}`,
+      },
+      comments,
+      diff: meta.diff ?? null,
+    };
+  }
   learningCheck: Handlers["learningCheck"] = async ({ ref, label }) => {
     if (String(this.config.repo).toLowerCase() !== "vworlds/vmethod") {
       throw new Error("Learning PR checks run only in the central repository");
@@ -343,6 +435,15 @@ class GatewayServer {
 
   private learningService(): LearningsService {
     return new LearningsService(this.root, this.config, this.env, this.deps, () => this.github);
+  }
+  private learningRole(person: Person): string {
+    if (person.role !== "orchestrator") {
+      return person.role;
+    }
+    const [login] = turnAssignees(this.filter.people, String(this.config.repo), [], "orchestrator");
+    return person.login.toLowerCase() === login.toLowerCase()
+      ? "orchestrator"
+      : "peer-orchestrator";
   }
   workerAccess: Handlers["workerAccess"] = async ({ directory }, ctx) => {
     if (ctx.role === "worker") {
@@ -394,7 +495,7 @@ class GatewayServer {
       throw new Error("No accepted task thread");
     }
     const type = kind === "pr" ? "PullRequest" : "Issue";
-    const fields = `title body state ${kind === "pr" ? "isDraft merged headRefName closingIssuesReferences(first: 100) { nodes { number repository { nameWithOwner } } pageInfo { hasNextPage } }" : "labels(first: 100) { nodes { name } } blockedBy(first: 100) { nodes { state } pageInfo { hasNextPage } }"} projectItems(first: 100) { nodes { id isArchived project { number owner { ... on Organization { login } ... on User { login } } } fieldValues(first: 100) { nodes { ... on ProjectV2ItemFieldTextValue { text field { ... on ProjectV2Field { name } } } ... on ProjectV2ItemFieldNumberValue { number field { ... on ProjectV2Field { name } } } ... on ProjectV2ItemFieldSingleSelectValue { name field { ... on ProjectV2SingleSelectField { name } } } } pageInfo { hasNextPage } } } pageInfo { hasNextPage } }`;
+    const fields = `title body state ${kind === "pr" ? "isDraft merged closedAt headRefOid baseRefOid changedFiles additions deletions headRefName closingIssuesReferences(first: 100) { nodes { number repository { nameWithOwner } } pageInfo { hasNextPage } }" : "labels(first: 100) { nodes { name } } blockedBy(first: 100) { nodes { state } pageInfo { hasNextPage } }"} projectItems(first: 100) { nodes { id isArchived project { number owner { ... on Organization { login } ... on User { login } } } fieldValues(first: 100) { nodes { ... on ProjectV2ItemFieldTextValue { text field { ... on ProjectV2Field { name } } } ... on ProjectV2ItemFieldNumberValue { number field { ... on ProjectV2Field { name } } } ... on ProjectV2ItemFieldSingleSelectValue { name field { ... on ProjectV2SingleSelectField { name } } } } pageInfo { hasNextPage } } } pageInfo { hasNextPage } }`;
     const result = await this.node(String(item.id), fields, type);
     if (!this.filter.accept(result, repoOf(result).owner, link)) {
       throw new Error("Task identity changed during read");
@@ -499,7 +600,7 @@ class GatewayServer {
       ) {
         continue;
       }
-      const comment = await this.node(String(meta.id), "body createdAt", "IssueComment");
+      const comment = await this.node(String(meta.id), "body createdAt url", "IssueComment");
       const author = this.filter.accept(
         comment,
         repoOf(comment).owner,
@@ -510,7 +611,12 @@ class GatewayServer {
       }
       const date = String(comment.lastEditedAt ?? comment.createdAt);
       if (Number.isFinite(Date.parse(date)) && typeof comment.body === "string") {
-        comments.push({ body: comment.body, role: author.role, date });
+        comments.push({
+          body: comment.body,
+          role: this.learningRole(author),
+          date,
+          url: typeof comment.url === "string" ? comment.url : undefined,
+        });
       }
     }
     const snapshot =
@@ -534,6 +640,18 @@ class GatewayServer {
       model: typeof model === "string" ? model : undefined,
       kind,
       merged: item.merged === true,
+      closedAt: typeof item.closedAt === "string" ? item.closedAt : undefined,
+      headOid: typeof item.headRefOid === "string" ? item.headRefOid : undefined,
+      baseOid: typeof item.baseRefOid === "string" ? item.baseRefOid : undefined,
+      diff: [item.changedFiles, item.additions, item.deletions].every(
+        (n) => Number.isSafeInteger(n) && Number(n) >= 0
+      )
+        ? {
+            files: Number(item.changedFiles),
+            additions: Number(item.additions),
+            deletions: Number(item.deletions),
+          }
+        : null,
       comments,
     };
   }
@@ -604,8 +722,10 @@ class GatewayServer {
           github: this.github,
           workerStatus: (pr) => this.workers.watchStatus(pr),
           workerSend: (pr, text) => this.workers.resume(pr, text),
+          workerMetric: (pr, event) => this.workers.recordMetric(pr, event),
           resolveConflicts: (pr) => this.conflicts.resolve(pr),
           conflictPending: (pr) => this.conflicts.pending(pr),
+          conflictFixing: (pr) => this.conflicts.fixing(pr),
           board: { set: (input) => this.board.set(input) },
           digest: this.digest,
         },
@@ -665,6 +785,9 @@ class GatewayServer {
       merge: async (pr, reason, head) => {
         await this.flow.merge(String(pr), false, reason, head);
       },
+      cardPrior: (pr) => this.flow.cardPrior(String(pr)),
+      cardConflict: (pr) => this.flow.cardConflict(String(pr)),
+      cardRestore: (pr, prior) => this.flow.cardRestore(String(pr), prior),
     });
   }
 
@@ -890,6 +1013,7 @@ class GatewayServer {
         stop: (pr) => this.workers.command(["stop", String(pr)]),
         close: (pr) => this.workers.closeSession(pr),
         resume: (pr, prompt) => this.workers.resume(pr, prompt),
+        clearWake: (pr) => this.workers.clearWake(pr),
       },
     };
     return new TaskFlow(this.root, this.env, this.config, deps, {
@@ -1282,7 +1406,9 @@ class GatewayServer {
       (!String(card.values.Progress ?? "").startsWith("🧭") &&
         !card.assignees.some((login) =>
           this.filter.people.some(
-            (person) => person.role === "orchestrator" && person.login === login
+            (person) =>
+              this.filter.roleIn(person, String(this.config.repo)) === "orchestrator" &&
+              person.login === login
           )
         ))
     ) {
@@ -1604,7 +1730,8 @@ class GatewayServer {
           boardNumber: Number(object(this.config.board).number),
           historical: historical !== undefined,
         },
-        this.filter
+        this.filter,
+        String(this.config.repo)
       ) === true
     ) {
       const current = await this.thread(ref, "pr");
@@ -1675,7 +1802,8 @@ class GatewayServer {
         boardNumber: Number(object(this.config.board).number),
         historical: historical !== undefined,
       },
-      this.filter
+      this.filter,
+      String(this.config.repo)
     );
   }
 }
@@ -1772,7 +1900,9 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
   return inProcess(handlers, async (operation, input, ctx) => {
     if (
       (operation === "learnings" &&
-        (input as Operations["learnings"]["input"]).action === "submit" &&
+        ["submit", "annotate", "aggregate"].includes(
+          (input as Operations["learnings"]["input"]).action
+        ) &&
         ctx?.role !== "orchestrator") ||
       (operation === "learningCheck" &&
         (input as Operations["learningCheck"]["input"]).label &&

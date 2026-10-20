@@ -36,7 +36,11 @@ export function isIssueOwnerApproved(
   return latest.every((event) => filter.identity(event.actor)?.role === "owner");
 }
 
-export function isOwnerApproved(pr: ApprovalPR, filter: PeopleFilter): boolean | "unknown" {
+export function isOwnerApproved(
+  pr: ApprovalPR,
+  filter: PeopleFilter,
+  repo: string
+): boolean | "unknown" {
   if (!/^[a-f\d]{40}$/i.test(pr.headRefOid)) {
     return "unknown";
   }
@@ -57,8 +61,10 @@ export function isOwnerApproved(pr: ApprovalPR, filter: PeopleFilter): boolean |
       const author = filter.identity(comment.author);
       const editor = comment.lastEditedAt == null ? author : filter.identity(comment.editor);
       return (
-        author?.role === "orchestrator" &&
-        editor?.role === "orchestrator" &&
+        !!author &&
+        filter.roleIn(author, repo) === "orchestrator" &&
+        !!editor &&
+        filter.roleIn(editor, repo) === "orchestrator" &&
         typeof comment.body === "string" &&
         /^\[orchestrator\] OWNER REVIEW(?:\s|$)/.test(comment.body.split(/\r?\n/, 1)[0]) &&
         new RegExp(`(?<![a-zA-Z0-9])${pr.headRefOid}(?![a-zA-Z0-9])`, "i").test(comment.body)
@@ -138,8 +144,10 @@ export function isOwnerApproved(pr: ApprovalPR, filter: PeopleFilter): boolean |
     const author = filter.identity(comment.author);
     const editor = comment.lastEditedAt == null ? author : filter.identity(comment.editor);
     if (
-      author?.role !== "orchestrator" ||
-      editor?.role !== "orchestrator" ||
+      !author ||
+      filter.roleIn(author, repo) !== "orchestrator" ||
+      !editor ||
+      filter.roleIn(editor, repo) !== "orchestrator" ||
       typeof comment.body !== "string"
     ) {
       return false;

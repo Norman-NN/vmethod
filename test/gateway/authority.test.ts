@@ -277,3 +277,17 @@ test("task-scoped sessions accept worker credentials and preserve own-task guard
   );
   f.done();
 }, 15000);
+
+test("a peer project's orchestrator token holds no gateway role for this repository", async () => {
+  const viewer = { login: "vecsmaster", databaseId: 900, __typename: "User" };
+  const f = fixture(viewer, {}, [
+    ...people,
+    { login: "vecsmaster", id: 900, type: "User", role: "orchestrator", repos: ["example/other"] },
+  ]);
+  await expect(
+    f.gateway.call("read", { kind: "pr", ref: "3" }, { role: "orchestrator" })
+  ).rejects.toThrow(
+    "Gateway token refused: vecsmaster (collaborator) is not an orchestrator or worker identity"
+  );
+  f.done();
+}, 15000);
