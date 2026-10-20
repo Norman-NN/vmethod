@@ -548,6 +548,111 @@ test("a closed Done card reappearing in Backlog is returned to Done without a du
   expect(f.reports).toEqual([]);
 });
 
+test("a card missing from one listing and present in the next emits nothing and keeps its baseline", async () => {
+  const f = setup();
+  f.cards = [f.card(6, "In review")];
+  object(f.cards[0].content).assignees = { nodes: [{ login: "owner" }] };
+  const loop = f.loop();
+  await f.once(loop);
+  f.advance();
+  f.boardSnapshot = [];
+  expect(await f.once(loop)).toEqual([]);
+  expect(readFileSync(join(f.dir, "board", "PVTI_6"), "utf8")).toBe("In review\n");
+  expect(readFileSync(join(f.dir, "board", "PVTI_6.who"), "utf8")).toBe("owner\n");
+  expect(JSON.parse(f.marker("board-absences.json"))).toEqual({
+    PVTI_6: { first: f.clock, count: 1 },
+  });
+  f.advance();
+  f.boardSnapshot = null;
+  const events = await f.once(loop);
+  expect(events.filter((event) => event.kind === "board")).toEqual([]);
+  expect(readFileSync(join(f.dir, "board", "PVTI_6"), "utf8")).toBe("In review\n");
+  expect(readFileSync(join(f.dir, "board", "PVTI_6.who"), "utf8")).toBe("owner\n");
+  expect(JSON.parse(f.marker("board-absences.json"))).toEqual({});
+  expect(f.reports).toEqual([]);
+});
+
+test("a card is pruned after 24 hours and 3 absent polls, and reappearance resets the window", async () => {
+  const f = setup();
+  f.cards = [f.card(6, "In review")];
+  object(f.cards[0].content).assignees = { nodes: [{ login: "owner" }] };
+  const loop = f.loop();
+  await f.once(loop);
+  f.boardSnapshot = [];
+  f.advance();
+  expect(await f.once(loop)).toEqual([]);
+  const first = f.clock;
+  expect(JSON.parse(f.marker("board-absences.json"))).toEqual({
+    PVTI_6: { first, count: 1 },
+  });
+  f.advance();
+  expect(await f.once(loop)).toEqual([]);
+  expect(JSON.parse(f.marker("board-absences.json"))).toEqual({
+    PVTI_6: { first, count: 2 },
+  });
+  // Three successful polls without the item are not enough within 24 hours.
+  f.advance();
+  expect(await f.once(loop)).toEqual([]);
+  expect(readFileSync(join(f.dir, "board", "PVTI_6"), "utf8")).toBe("In review\n");
+  expect(readFileSync(join(f.dir, "board", "PVTI_6.who"), "utf8")).toBe("owner\n");
+  expect(JSON.parse(f.marker("board-absences.json"))).toEqual({
+    PVTI_6: { first, count: 3 },
+  });
+  // Reappearance resets the window and the count.
+  f.advance();
+  f.boardSnapshot = null;
+  expect(await f.once(loop)).toEqual([]);
+  expect(JSON.parse(f.marker("board-absences.json"))).toEqual({});
+  // A fresh absence window starts now, not at the earlier first-absent time.
+  f.advance();
+  f.boardSnapshot = [];
+  expect(await f.once(loop)).toEqual([]);
+  const restart = f.clock;
+  expect(JSON.parse(f.marker("board-absences.json"))).toEqual({
+    PVTI_6: { first: restart, count: 1 },
+  });
+  f.advance();
+  expect(await f.once(loop)).toEqual([]);
+  expect(JSON.parse(f.marker("board-absences.json"))).toEqual({
+    PVTI_6: { first: restart, count: 2 },
+  });
+  f.advance(24 * 60 * 60_000);
+  expect(await f.once(loop)).toEqual([]);
+  expect(existsSync(join(f.dir, "board", "PVTI_6"))).toBe(false);
+  expect(existsSync(join(f.dir, "board", "PVTI_6.who"))).toBe(false);
+  expect(JSON.parse(f.marker("board-absences.json"))).toEqual({});
+  f.advance();
+  f.boardSnapshot = null;
+  const events = await f.once(loop);
+  expect(events.filter((event) => event.kind === "board").map((event) => event.line)).toEqual([
+    "BOARD #6 (ISSUE): new card → In review https://github.com/example/project/issues/6",
+  ]);
+  expect(readFileSync(join(f.dir, "board", "PVTI_6"), "utf8")).toBe("In review\n");
+  expect(f.reports).toEqual([]);
+});
+
+test("a network failure on board page 2 followed by a full read emits nothing", async () => {
+  const f = setup();
+  const inReview = f.card(6, "In review");
+  const backlog = f.card(7, "Backlog");
+  f.cards = [inReview, backlog];
+  f.boardPages = [[inReview], [backlog]];
+  const loop = f.loop();
+  await f.once(loop);
+  f.advance();
+  f.boardPages = [[inReview], null];
+  expect(await f.once(loop)).toEqual([]);
+  expect(f.reports.some((line) => line.includes("watcher: board failed:"))).toBe(true);
+  expect(JSON.parse(f.marker("board-absences.json"))).toEqual({});
+  f.advance();
+  f.boardPages = [[inReview], [backlog]];
+  const events = await f.once(loop);
+  expect(events.filter((event) => event.kind === "board")).toEqual([]);
+  expect(readFileSync(join(f.dir, "board", "PVTI_6"), "utf8")).toBe("In review\n");
+  expect(readFileSync(join(f.dir, "board", "PVTI_7"), "utf8")).toBe("Backlog\n");
+  expect(JSON.parse(f.marker("board-absences.json"))).toEqual({});
+});
+
 test.each(["NOT_PLANNED", "COMPLETED"])(
   "a peer request closed as %s reports the closure and remaining task, notifying only for not planned",
   async (reason) => {
