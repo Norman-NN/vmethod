@@ -313,3 +313,14 @@ session's writes from a sibling's: unmatched same-account assignments and merges
 are reported as another session's activity, not silently discarded. Board field
 creators do not identify the latest writer, so unmatched board moves make no actor
 claim. See [watch attribution and scope selection](gateway.md#watching-and-muting).
+
+## Before a release
+
+1. Merge every open `learning` PR (they merge on the orchestrator's review), then distil
+   the evidence: `learnings annotate --since <last release>` and `learnings aggregate`
+   regenerate `learnings/models/<family>.md` and `by-domain.md` (see `docs/learnings.md`).
+   Spot-check a few annotations against their threads, review the page diff, and commit
+   both in a learning PR. `learnings report` gives the numbers; add any new general lesson
+   to `learnings/lessons.md`.
+2. Confirm dev is green and that no approved PR is waiting to merge.
+3. Publish the release candidate (the `Publish` workflow on `dev`) or the stable release (`master`).
