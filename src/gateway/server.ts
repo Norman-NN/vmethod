@@ -1234,7 +1234,7 @@ class GatewayServer {
     const field = kind === "pr" ? "pullRequest" : kind === "issue" ? "issue" : "issueOrPullRequest";
     const fields =
       kind === "any"
-        ? `... on Issue { ${identityFields} } ... on PullRequest { ${identityFields} }`
+        ? `__typename ... on Issue { ${identityFields} } ... on PullRequest { ${identityFields} }`
         : `${identityFields} ${kind === "pr" ? "headRefOid headRefName baseRefName state headRepository { nameWithOwner }" : ""}`;
     const result = object(
       await this.github.graphql(

@@ -3,7 +3,16 @@ import { join } from "node:path";
 import { expect, test } from "vitest";
 import { createGateway } from "../../src/gateway/server.js";
 import { gatewayVerb } from "../../src/cli/gateway.js";
-import { actor, fixtureServer, graph, hostile, item, sha, workerFixtureServer } from "./helpers.js";
+import {
+  actor,
+  fixtureServer,
+  graph,
+  selectedGraph,
+  hostile,
+  item,
+  sha,
+  workerFixtureServer,
+} from "./helpers.js";
 import recordedBoard from "../fixtures/github/board-write-inputs.json" with { type: "json" };
 
 test.each(["owner", "worker", "unknown", "untrusted edit"])(
@@ -262,7 +271,7 @@ test.each(["discussion_r4363811103", "issuecomment-44"])(
     const body = "A reply with `$(touch OWNED)` as data.\n";
     const inline = anchor.startsWith("discussion_r");
     const fixture = workerFixtureServer([
-      graph({ repository: { issueOrPullRequest: item({ __typename: "PullRequest" }) } }),
+      selectedGraph({ repository: { issueOrPullRequest: item({ __typename: "PullRequest" }) } }),
       {
         path: inline
           ? "/repos/example/project/pulls/3/comments/4363811103/replies"
@@ -310,6 +319,26 @@ test.each([
     fixture.done();
   }
 );
+
+test("inline post refuses an Issue returned by the real union selection without writing", async () => {
+  const fixture = workerFixtureServer([
+    selectedGraph({ repository: { issueOrPullRequest: item({ __typename: "Issue" }) } }),
+  ]);
+  const file = join(fixture.root, "reply.md");
+  writeFileSync(file, "A reply.\n");
+  await expect(
+    fixture.transport.call(
+      "post",
+      {
+        ref: "3",
+        file,
+        replyTo: "https://github.com/example/project/pull/3#discussion_r4363811103",
+      },
+      { role: "worker", taskPr: 3 }
+    )
+  ).rejects.toThrow("Inline replies require a PR");
+  fixture.done();
+});
 
 test.each([
   "Fixes #3",
