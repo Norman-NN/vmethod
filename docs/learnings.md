@@ -158,24 +158,29 @@ retry. A failed PR is reported as `#<pr>: <error>`; the batch continues and fini
 with `N annotated, M failed (#a, #b)`, exiting non-zero when any PR failed. Published
 annotations are retained; a rerun skips those successes and retries the failed PRs.
 Successful non-empty runs report `N annotated, 0 failed`. Aggregation failures name
-the offending family or by-domain view when identifiable.
+the offending view: a failed view is reported as `<view>: <error>` (its family tag
+or `by-domain`), and the summary lists exactly the failed views.
 `--force` adds `notes-<pr>-v1-2.jsonl` (then `-3`, etc.); a future prompt version uses
 a new `vN` stem. Delivery JSONL and annotation JSONL remain separate formats.
 
 `aggregate [--model family]` reads all locally available delivery records and
-annotations, checks their delivery-record digests, and regenerates family pages and
-`learnings/models/by-domain.md`. Legacy handwritten grade judgements are excluded
-from model inputs; qualitative evidence comes from threads and their annotations.
-Every generated claim cites delivery PR URLs: family claims may cite only deliveries
+annotations, checks their delivery-record digests, and regenerates each family page
+and `learnings/models/by-domain.md` with one model call per view: a family call
+receives only that family's records and annotations, so it cannot cite another
+family's delivery. Legacy handwritten grade judgements are excluded from model
+inputs; qualitative evidence comes from threads and their annotations. Every
+generated claim cites delivery PR URLs: family claims may cite only deliveries
 containing that family, including comparative claims; domain claims may cite any
-supplied delivery. The prompt lists allowed URLs per family and for domains.
+supplied delivery. Each prompt lists only the calling view's allowed URLs.
 Comment/issue URLs are not allowed, even when present in annotation evidence.
-Rejected citations name the source URL and offending claim. Aggregation retries
+Rejected citations name the source URL and offending claim. Each view retries
 invalid JSON, schema or citation output once in a fresh session, without adding
-transport/provider retries. Failed attempts publish no views.
-All views are validated before any
-page is replaced. Review the diff before committing: generation never commits,
-pushes or opens a PR. Public `learnings submit` includes new immutable annotation
+transport/provider retries. A view fails alone; every other view is still
+validated, written and reported, and each view is validated before its page is
+replaced, so a failed view leaves its previous page untouched. Such a run ends
+with `N views generated, M failed (<views>)` and a non-zero exit when M > 0.
+Review the diff before
+committing: generation never commits, pushes or opens a PR. Public `learnings submit` includes new immutable annotation
 files in the existing add-only project submission; central family-page changes
 still require a separately reviewed learning PR.
 
