@@ -69,7 +69,8 @@ export class WriteJournal {
         (!event.itemId || entry.itemId === event.itemId) &&
         entry.field === event.field &&
         entry.value === event.value &&
-        (entry.kind === "comment" && (entry.commentId !== undefined || entry.nodeId !== undefined)
+        (["comment", "review-comment"].includes(entry.kind) &&
+        (entry.commentId !== undefined || entry.nodeId !== undefined)
           ? entry.commentId !== undefined && event.commentId !== undefined
             ? entry.commentId === event.commentId
             : entry.nodeId !== undefined && entry.nodeId === event.nodeId
@@ -121,6 +122,8 @@ export class WriteJournal {
       kind = "merged";
     } else if (suffix === "comments") {
       kind = "comment";
+    } else if (/^comments\/\d+\/replies$/.test(suffix ?? "")) {
+      kind = "review-comment";
     } else if (!item && /^(issues|pulls)$/.test(tail) && method === "POST") {
       kind = "created";
     } else if (object(body).state === "closed") {
@@ -142,7 +145,7 @@ export class WriteJournal {
         kind,
         repo,
         number,
-        ...(kind === "comment" && Number.isSafeInteger(result.id)
+        ...(["comment", "review-comment"].includes(kind) && Number.isSafeInteger(result.id)
           ? { commentId: Number(result.id) }
           : {}),
         ...(typeof result.node_id === "string" ? { nodeId: result.node_id } : {}),

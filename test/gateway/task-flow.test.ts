@@ -1071,37 +1071,40 @@ test.each(["QUESTION", "BLOCKED"] as const)(
   }
 );
 
-test("review ask --in-reply-to an owner comment hands the owner the turn without waking the worker", async () => {
-  const f = fixture();
-  const file = join(f.root, "question.md");
-  writeFileSync(file, "Which behavior should win?\n");
-  await f.flow().review({
-    ref: "27",
-    outcome: "ask",
-    file,
-    replyTo: "https://github.com/example/project/pull/27#issuecomment-5",
-  });
-  expect(
-    f.writes.find((write) => write.path === "/repos/example/project/issues/27/comments")
-  ).toEqual({
-    path: "/repos/example/project/issues/27/comments",
-    body: {
-      body: "[orchestrator] OWNER QUESTION\n\nin reply to https://github.com/example/project/pull/27#issuecomment-5\n\nWhich behavior should win?\n",
-    },
-  });
-  expect(f.touched).toContainEqual(expect.objectContaining({ id: "pr", progress: "👤❓" }));
-  expect(f.writes).toContainEqual({
-    path: "/repos/example/project/issues/27/assignees",
-    body: { assignees: ["owner"] },
-  });
-  expect(f.writes).not.toContainEqual({
-    path: "/repos/example/project/issues/8/assignees",
-    body: { assignees: ["owner"] },
-  });
-  expect(f.resumes).toEqual([]);
-  expect(f.events.some((event) => event.startsWith("reply-target"))).toBe(false);
-  f.done();
-});
+test.each(["issuecomment-5", "discussion_r4363811103"])(
+  "review ask --in-reply-to %s keeps its protocol in conversation and hands the owner the turn",
+  async (anchor) => {
+    const f = fixture();
+    const file = join(f.root, "question.md");
+    writeFileSync(file, "Which behavior should win?\n");
+    await f.flow().review({
+      ref: "27",
+      outcome: "ask",
+      file,
+      replyTo: `https://github.com/example/project/pull/27#${anchor}`,
+    });
+    expect(
+      f.writes.find((write) => write.path === "/repos/example/project/issues/27/comments")
+    ).toEqual({
+      path: "/repos/example/project/issues/27/comments",
+      body: {
+        body: `[orchestrator] OWNER QUESTION\n\nin reply to https://github.com/example/project/pull/27#${anchor}\n\nWhich behavior should win?\n`,
+      },
+    });
+    expect(f.touched).toContainEqual(expect.objectContaining({ id: "pr", progress: "👤❓" }));
+    expect(f.writes).toContainEqual({
+      path: "/repos/example/project/issues/27/assignees",
+      body: { assignees: ["owner"] },
+    });
+    expect(f.writes).not.toContainEqual({
+      path: "/repos/example/project/issues/8/assignees",
+      body: { assignees: ["owner"] },
+    });
+    expect(f.resumes).toEqual([]);
+    expect(f.events.some((event) => event.startsWith("reply-target"))).toBe(false);
+    f.done();
+  }
+);
 
 test.each(["changes", "answer"] as const)(
   "review %s works without worker control",

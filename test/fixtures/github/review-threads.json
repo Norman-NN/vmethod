@@ -1,0 +1,42 @@
+{
+  "pageInfo": {
+    "hasNextPage": false,
+    "endCursor": "Y3Vyc29yOnYyOpK0MjAyNi0xMC0yM1QyMDoxMjo1OVrOr8IpDw=="
+  },
+  "nodes": [
+    {
+      "id": "PRRT_kwDOVMIbYc6vwikP",
+      "isResolved": false,
+      "path": "changes/unreleased/213.md",
+      "line": 1,
+      "comments": {
+        "pageInfo": {
+          "hasNextPage": false,
+          "endCursor": "Y3Vyc29yOnYyOpK0MjAyNi0xMC0yM1QyMDoxMzowMVrPAAAAAQQaeio="
+        },
+        "nodes": [
+          {
+            "id": "PRRC_kwDOVMIbYc8AAAABBBp5Hw",
+            "databaseId": 4363811103,
+            "url": "https://github.com/example/project/pull/24#discussion_r4363811103",
+            "author": { "__typename": "User", "login": "owner", "databaseId": 101 },
+            "editor": null,
+            "lastEditedAt": null,
+            "body": "Fixture inline comment for #214.",
+            "createdAt": "2026-10-23T20:12:59Z"
+          },
+          {
+            "id": "PRRC_kwDOVMIbYc8AAAABBBp6Kg",
+            "databaseId": 4363811370,
+            "url": "https://github.com/example/project/pull/24#discussion_r4363811370",
+            "author": { "__typename": "User", "login": "owner", "databaseId": 101 },
+            "editor": null,
+            "lastEditedAt": null,
+            "body": "Fixture reply for #214.",
+            "createdAt": "2026-10-23T20:13:01Z"
+          }
+        ]
+      }
+    }
+  ]
+}
