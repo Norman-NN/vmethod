@@ -578,6 +578,18 @@ export class LearningAnnotations {
     }
     return model;
   }
+  /** Generation wait, configurable per project: large aggregate inputs outgrow a fixed 180 s. */
+  private timeoutSeconds(): number {
+    const seconds = this.config.learningsTimeoutSeconds;
+    if (seconds === undefined) {
+      return 900;
+    }
+    if (typeof seconds !== "number" || !Number.isSafeInteger(seconds) || seconds < 1) {
+      throw new Error("learningsTimeoutSeconds must be a positive integer");
+    }
+    return seconds;
+  }
+
   private async generate(
     input: AnnotationInput,
     prompt: string,
@@ -585,7 +597,8 @@ export class LearningAnnotations {
   ): Promise<unknown> {
     const slash = model.indexOf("/");
     const client = new OpencodeClient(this.env, this.deps.fetch, this.deps.now);
-    const deadline = this.deps.now() + 180000;
+    const seconds = this.timeoutSeconds();
+    const deadline = this.deps.now() + seconds * 1000;
     const response = object(
       object(
         await client.request(
@@ -607,7 +620,7 @@ export class LearningAnnotations {
     const path = `/api/session/${encodeURIComponent(response.id)}`;
     try {
       await client.request("POST", `${path}/prompt`, { text: prompt }, deadline);
-      for (let n = 0; n < 180 && this.deps.now() < deadline; n++) {
+      for (let n = 0; n <= seconds && this.deps.now() < deadline; n++) {
         const status = await client.status(this.root, response.id, deadline);
         if (
           status.reason === "permission-wait" ||
@@ -653,7 +666,7 @@ export class LearningAnnotations {
         }
         await this.deps.sleep(1000);
       }
-      throw new Error("Learning model timed out after 180 seconds");
+      throw new Error(`Learning model timed out after ${seconds} seconds`);
     } finally {
       // Abort only the session created by this operation, including after a timeout or invalid output.
       await client.request("POST", `${path}/interrupt`, {});

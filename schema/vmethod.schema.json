@@ -48,6 +48,7 @@
     },
     "learningsPrivacy": { "enum": ["public", "private"] },
     "learningsModel": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+    "learningsTimeoutSeconds": { "type": "integer", "minimum": 1, "default": 900 },
     "scope": {
       "type": "object",
       "additionalProperties": false,

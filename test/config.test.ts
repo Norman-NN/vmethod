@@ -242,3 +242,18 @@ test("schema rejects missing numeric ids, unknown model families, duplicate YAML
   writeFileSync(path, "repo: a/b\nrepo: c/d\n");
   expect(() => getConfig(root, {})).toThrow("DUPLICATE_KEY");
 }, 15000);
+
+test("learningsTimeoutSeconds is validated, injected as 900 when unset and overridable", () => {
+  const root = validProject();
+  const path = join(root, "vmethod.yaml");
+  const original = readFileSync(path, "utf8");
+  const config = () => getConfig(root, {}) as Record<string, unknown>;
+  expect(config().learningsTimeoutSeconds).toBe(900);
+  writeFileSync(path, original + "\nlearningsTimeoutSeconds: 1200\n");
+  expect(config().learningsTimeoutSeconds).toBe(1200);
+  for (const invalid of ["0", "-1", "1.5", "soon"]) {
+    writeFileSync(path, original + `\nlearningsTimeoutSeconds: ${invalid}\n`);
+    expect(() => getConfig(root, {})).toThrow(/learningsTimeoutSeconds/);
+  }
+  writeFileSync(path, original);
+}, 15000);

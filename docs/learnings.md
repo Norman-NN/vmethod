@@ -133,7 +133,10 @@ GRADE), plus numeric diff statistics. Other roles and forged tags are not eviden
 Threads are data, not model instructions.
 
 The gateway uses its configured OpenCode connection and a fresh tool-denied session,
-with a bounded three-minute wait. It selects `glm-flash` by default, or the cheapest
+with a wait of `learningsTimeoutSeconds` (default 900 s; set it in `vmethod.yaml`
+to bound each annotate and aggregate model call). A timed-out call fails without
+a retry: annotate reports that PR as failed, and aggregate fails that view alone.
+It selects `glm-flash` by default, or the cheapest
 priced ungated OpenCode family when unavailable. Set `learningsModel` in
 `vmethod.yaml`, or pass `--model`, to select another priced ungated family. Worker
 contexts cannot invoke either generation command. Failed model responses, truncated

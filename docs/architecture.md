@@ -102,7 +102,7 @@ no project prefixes: every orchestrator runs with a private environment, and con
 | Changelog | fragment directory (e.g. `architecture/unreleased/`), tag vocabulary |
 | State | `stateName`: watcher state directory name (vecs: `vecs`, SpaceRocks: `spacerocks`), so existing `once` / `graded` / `merged` markers and the lock survive adoption without replaying old events. The merged watcher reads both projects' marker names (vecs `graded-<n>`, SpaceRocks `grade-<n>`) |
 | Credentials | env var **names** only (GH token, SSH key, opencode server password). Never values |
-| Learnings | `learningsPrivacy`: `public` or `private` |
+| Learnings | `learningsPrivacy`: `public` or `private`; `learningsTimeoutSeconds` generation wait (default 900) |
 
 `models.yaml` stays a project file (today's `models.tsv`): provider/id, kind and `gate` (e.g.
 owner-gated models need `--owner-approved`, enforced by `open-task` and `start-worker`). Its family

@@ -448,7 +448,9 @@ test.each(["quota", "timeout"])(
     );
     expect(f.deps.report).toHaveBeenCalledWith(
       expect.stringContaining(
-        failure === "quota" ? "#31: Learning model failed: quota" : "#31: Learning model timed out"
+        failure === "quota"
+          ? "#31: Learning model failed: quota"
+          : "#31: Learning model timed out after 900 seconds"
       )
     );
     expect(f.prompts).toHaveLength(1);
@@ -457,6 +459,44 @@ test.each(["quota", "timeout"])(
     f.done();
   }
 );
+
+test("a configured learningsTimeoutSeconds bounds both generation commands and names its seconds", async () => {
+  const busy = (deps: Dependencies): void => {
+    const fetch = deps.fetch;
+    deps.fetch = async (input, init) => {
+      if (new URL(String(input)).pathname === "/api/session/active") {
+        // The session stays busy, like a large live aggregate input.
+        return Response.json({ data: { ses_recorded: { type: "running" } } });
+      }
+      return fetch(input, init);
+    };
+  };
+  const f = fixture();
+  f.config.learningsTimeoutSeconds = 2;
+  busy(f.deps);
+  await expect(f.service.command({ action: "annotate" })).rejects.toThrow(
+    "0 annotated, 1 failed (#31)"
+  );
+  expect(f.deps.report).toHaveBeenCalledWith("#31: Learning model timed out after 2 seconds");
+  expect(f.prompts).toHaveLength(1);
+  const g = fixture([31, 32]);
+  g.config.learningsTimeoutSeconds = 2;
+  g.records[1].segments = [{ family: "sol", model: "fake/sol", rounds: [1], why: "start" }];
+  // Session creation consumes a queued reply each, even while the status stays busy.
+  g.replies.splice(0, g.replies.length, generated(), generated(), generated());
+  busy(g.deps);
+  await expect(g.service.command({ action: "aggregate" })).rejects.toThrow(
+    "0 views generated, 3 failed (glm-flash, sol, by-domain)"
+  );
+  expect(g.deps.report).toHaveBeenCalledWith("sol: Learning model timed out after 2 seconds");
+  expect(g.deps.report).toHaveBeenCalledWith("by-domain: Learning model timed out after 2 seconds");
+  expect(g.prompts).toHaveLength(3);
+  // A timeout is not an InvalidLearningResponse, so no view or PR receives a retry.
+  expect(existsSync(join(f.directory, "notes-31-v1.jsonl"))).toBe(false);
+  expect(existsSync(join(g.root, "learnings/models/glm-flash.md"))).toBe(false);
+  f.done();
+  g.done();
+}, 30000);
 
 test("private generation strips titles, notes, issue and comment narratives before the model call", async () => {
   const f = fixture();
