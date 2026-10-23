@@ -61,6 +61,7 @@ const BOARD_ABSENT_MS = 24 * 60 * 60_000;
 const POLL_COST = 2;
 const PAGE_LIMIT = 20;
 const PREVIEW_LIMIT = 120;
+const reviewCommentFields = `id databaseId url author { ${actorFields} } editor { ${actorFields} } lastEditedAt body createdAt`;
 const RED_CI = ["FAILURE", "ERROR", "TIMED_OUT", "STARTUP_FAILURE", "ACTION_REQUIRED"];
 const ID = /^[A-Za-z0-9_.@#-]{1,160}$/;
 declare const __VERSION__: string;
@@ -115,6 +116,11 @@ interface PendingEvent {
   line: string;
   once: boolean;
   quiet?: string[];
+}
+
+interface InlineComment {
+  comment: ObjectData;
+  inline: { person: Person; id: number; location: string };
 }
 
 interface PrInfo {
@@ -199,6 +205,11 @@ function count(value: unknown): number | null {
 
 /** The owner may switch on a labelled preview of untrusted text; it is data, never authority. */
 export function sanitizePreview(text: string): string {
+  return sanitizeLine(text).slice(0, PREVIEW_LIMIT).trimEnd();
+}
+
+/** Keep path metadata on one terminal-safe line without truncating a file path. */
+function sanitizeLine(text: string): string {
   /* eslint-disable no-control-regex -- deliberately strip terminal control sequences */
   return text
     .replace(/\u{1B}\[[0-9;?]*[ -/]*[@-~]/gu, "")
@@ -208,9 +219,7 @@ export function sanitizePreview(text: string): string {
     .replace(/\p{Cf}/gu, "")
     .replace(/«/g, "‹")
     .replace(/»/g, "›")
-    .trim()
-    .slice(0, PREVIEW_LIMIT)
-    .trimEnd();
+    .trim();
   /* eslint-enable no-control-regex */
 }
 
@@ -334,8 +343,10 @@ export function listMutes(config: Config, env: NodeJS.ProcessEnv): string {
  * gateway client, filters every author through people.yaml, and hands the client
  * metadata-only wake-up lines. Events are acknowledged only after the client
  * printed them, so a kill between fetch and print loses nothing.
- * Scoped board closures reconcile Done/Progress/management turns silently. External
- * issue closures emit CLOSED unless covered by a merged PR; NOT PLANNED instead
+ * Scoped board closures reconcile Done/Progress/management turns silently.
+ * Own task PRs include submitted inline review comments, deduplicated by database ID;
+ * initially resolved threads are baselined without reporting their existing comments.
+ * External issue closures emit CLOSED unless covered by a merged PR; NOT PLANNED instead
  * asks the orchestrator to notify a verified peer-project requester.
  */
 export class EventLoop {
@@ -367,6 +378,7 @@ export class EventLoop {
   private readonly known = new Set<number>();
   private readonly cycleStale = new Set<number>();
   private readonly cycleOwnMoves = new Set<string>();
+  private cycleInlineComments: InlineComment[] = [];
   private inprogress: { number: number; branch: string; working: boolean }[] = [];
   private taskIssues = new Map<number, number[]>();
   private pendingMergedIssues = new Set<number>();
@@ -716,19 +728,26 @@ export class EventLoop {
    */
   private journaledCommentLine(line: string): boolean {
     const author =
-      /^COMMENT (\S+) from ([\w-]+) \(orchestrator\) \(this account, another session\)/.exec(line);
+      /^COMMENT (\S+)(?: .*?)? from ([\w-]+) \(orchestrator\) \(this account, another session\)/.exec(
+        line
+      );
     if (!author) {
       return false;
     }
     const match =
-      / https:\/\/github\.com\/([^/\s]+\/[^/\s]+)\/(?:pull|issues)\/(\d+)#issuecomment-(\d+)$/.exec(
+      / https:\/\/github\.com\/([^/\s]+\/[^/\s]+)\/(?:pull|issues)\/(\d+)#(issuecomment-|discussion_r)(\d+)$/.exec(
         line
       );
     return (
       !!match &&
       author[1] === this.ref(match[1], Number(match[2])) &&
       this.writes.matches(
-        { kind: "comment", repo: match[1], number: Number(match[2]), commentId: Number(match[3]) },
+        {
+          kind: match[3] === "discussion_r" ? "review-comment" : "comment",
+          repo: match[1],
+          number: Number(match[2]),
+          commentId: Number(match[4]),
+        },
         ""
       )
     );
@@ -1272,6 +1291,7 @@ export class EventLoop {
     this.cycle++;
     this.cycleStale.clear();
     this.cycleOwnMoves.clear();
+    this.cycleInlineComments = [];
     this.cycleWorkers.clear();
     let ok = true;
     if (this.me === null) {
@@ -1469,6 +1489,7 @@ export class EventLoop {
               : "UNKNOWN",
       };
       await this.processOpenPr(pr);
+      await this.pollReviewThreads(number);
       observedPrs.push(pr);
     }
     for (const name of readdirSync(this.dir)) {
@@ -1861,12 +1882,167 @@ export class EventLoop {
 
   // ---------------------------------------------------------------- comments
 
+  private async pollReviewThreads(number: number): Promise<void> {
+    const [owner, name] = this.own.split("/");
+    const threads: ObjectData[] = [];
+    let cursor: string | null = null;
+    for (let page = 0; page < PAGE_LIMIT; page++) {
+      const data = object(
+        await this.host.github.graphql(
+          `query WatchReviewThreads($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+        repository(owner: $owner, name: $name) { pullRequest(number: $number) {
+          reviewThreads(first: 100, after: $cursor) {
+            pageInfo { hasNextPage endCursor }
+            nodes { id isResolved path line comments(first: 100) {
+              pageInfo { hasNextPage endCursor } nodes { ${reviewCommentFields} }
+            } }
+          }
+        } }
+      }`,
+          { owner, name, number, cursor }
+        )
+      );
+      const connection = object(object(object(data.repository).pullRequest).reviewThreads);
+      cursor = this.reviewPage(connection, cursor);
+      threads.push(...this.list(connection.nodes));
+      if (cursor === null) {
+        break;
+      }
+    }
+    if (cursor !== null) {
+      throw new Error("Watcher review-thread pagination limit reached");
+    }
+    const observed: string[] = [];
+    const entries: { comment: ObjectData; thread: ObjectData; suppress: boolean }[] = [];
+    for (const thread of threads) {
+      if (
+        !str(thread.id) ||
+        typeof thread.isResolved !== "boolean" ||
+        typeof thread.path !== "string" ||
+        (thread.line !== null && count(thread.line) === null)
+      ) {
+        throw new Error("Invalid review-thread payload");
+      }
+      const comments = await this.reviewThreadComments(thread);
+      const seen = `rt-${key(str(thread.id))}`;
+      const suppress = thread.isResolved && !this.marked(seen);
+      observed.push(seen);
+      entries.push(...comments.map((comment) => ({ comment, thread, suppress })));
+    }
+    // Stage accepted replies; pollComments orders them together with conversation
+    // comments before applying turns, independently of thread connection order.
+    for (const { comment, thread, suppress } of entries) {
+      const id = count(comment.databaseId);
+      if (
+        id === null ||
+        !str(comment.createdAt) ||
+        !Number.isFinite(Date.parse(str(comment.createdAt)))
+      ) {
+        throw new Error("Invalid inline comment payload");
+      }
+      const commentKey = `rc-${id}`;
+      // Unlike cursor-window conversation markers, these IDs persist: the whole
+      // reviewThreads connection is read again on subsequent polls and restarts.
+      if (
+        suppress ||
+        Date.parse(str(comment.createdAt)) <= Date.parse(this.readMarker("listing-baseline"))
+      ) {
+        this.mark(commentKey);
+        continue;
+      }
+      if (this.marked(commentKey) || this.pending().some((event) => event.id === commentKey)) {
+        continue;
+      }
+      const url = `${this.threadUrl(this.own, number, "PR")}#discussion_r${id}`;
+      const person = this.host.filter.accept(
+        {
+          ...comment,
+          repository: {
+            nameWithOwner: this.own,
+            owner: { login: owner },
+          },
+        },
+        owner,
+        url
+      );
+      if (!person) {
+        continue;
+      }
+      this.cycleInlineComments.push({
+        comment: {
+          id,
+          node_id: comment.id,
+          html_url: url,
+          issue_url: `https://api.github.com/repos/${this.own}/issues/${number}`,
+          user: { id: person.id, login: person.login, type: person.type },
+          body: comment.body,
+          created_at: comment.createdAt,
+          updated_at: comment.lastEditedAt ?? comment.createdAt,
+        },
+        inline: {
+          person,
+          id,
+          location: `${sanitizeLine(str(thread.path))}:${String(thread.line)}`,
+        },
+      });
+    }
+    for (const seen of observed) {
+      this.mark(seen);
+    }
+  }
+
+  private async reviewThreadComments(thread: ObjectData): Promise<ObjectData[]> {
+    const comments: ObjectData[] = [];
+    let connection = object(thread.comments);
+    let previous: string | null = null;
+    for (let page = 0; page < PAGE_LIMIT; page++) {
+      const cursor = this.reviewPage(connection, previous);
+      comments.push(...this.list(connection.nodes));
+      if (cursor === null) {
+        return comments;
+      }
+      if (page + 1 === PAGE_LIMIT) {
+        break;
+      }
+      const data = object(
+        await this.host.github.graphql(
+          `query WatchReviewThreadComments($id: ID!, $cursor: String!) {
+        node(id: $id) { ... on PullRequestReviewThread { comments(first: 100, after: $cursor) {
+          pageInfo { hasNextPage endCursor } nodes { ${reviewCommentFields} }
+        } } }
+      }`,
+          { id: thread.id, cursor }
+        )
+      );
+      connection = object(object(data.node).comments);
+      previous = cursor;
+    }
+    throw new Error("Watcher inline-comment pagination limit reached");
+  }
+
+  private reviewPage(connection: ObjectData, previous: string | null): string | null {
+    const info = object(connection.pageInfo);
+    if (!Array.isArray(connection.nodes) || typeof info.hasNextPage !== "boolean") {
+      throw new Error("Invalid review-thread connection");
+    }
+    if (!info.hasNextPage) {
+      return null;
+    }
+    if (!str(info.endCursor) || info.endCursor === previous) {
+      throw new Error("Invalid review-thread cursor");
+    }
+    return str(info.endCursor);
+  }
+
   private async pollComments(): Promise<void> {
     const cursor = this.readCursor();
     const since = cursor
       ? new Date(Date.parse(cursor) - CURSOR_OVERLAP_MS).toISOString()
       : this.readMarker("listing-baseline") || new Date(this.host.deps.now()).toISOString();
     for (const repo of this.subscriptions) {
+      const incoming: { comment: ObjectData; inline?: InlineComment["inline"] }[] = this.isOwn(repo)
+        ? [...this.cycleInlineComments]
+        : [];
       const comments = await this.restPages(
         (page) =>
           `/repos/${repo}/issues/comments?since=${encodeURIComponent(since)}&sort=created&direction=asc&per_page=100&page=${page}`,
@@ -1880,7 +2056,13 @@ export class EventLoop {
           this.mark(`c-${key(str(comment.html_url))}`);
           continue;
         }
-        await this.processComment(repo, comment);
+        incoming.push({ comment });
+      }
+      // Conversation and inline comments share one chronological turn stream.
+      for (const { comment, inline } of incoming.sort(
+        (a, b) => Date.parse(str(a.comment.created_at)) - Date.parse(str(b.comment.created_at))
+      )) {
+        await this.processComment(repo, comment, inline);
       }
     }
   }
@@ -1890,7 +2072,11 @@ export class EventLoop {
     return id !== null && id === this.meId;
   }
 
-  private async processComment(repo: string, comment: ObjectData): Promise<void> {
+  private async processComment(
+    repo: string,
+    comment: ObjectData,
+    inline?: InlineComment["inline"]
+  ): Promise<void> {
     const number = count(str(comment.issue_url).split("/").at(-1));
     const url = str(comment.html_url);
     const body = str(comment.body);
@@ -1906,20 +2092,22 @@ export class EventLoop {
     if (own && !this.inScope(number)) {
       return;
     }
-    let person = this.host.filter.accept(
-      {
-        author: restActor(comment.user),
-        editor: null,
-        lastEditedAt: null,
-        repository: { nameWithOwner: repo, owner: { login: repo.split("/")[0] } },
-      },
-      repo.split("/")[0],
-      url
-    );
+    let person =
+      inline?.person ??
+      this.host.filter.accept(
+        {
+          author: restActor(comment.user),
+          editor: null,
+          lastEditedAt: null,
+          repository: { nameWithOwner: repo, owner: { login: repo.split("/")[0] } },
+        },
+        repo.split("/")[0],
+        url
+      );
     if (!person && !this.isSelf(comment)) {
       return;
     }
-    const commentKey = `c-${key(url)}`;
+    const commentKey = inline ? `rc-${inline.id}` : `c-${key(url)}`;
     if (
       !this.isSelf(comment) &&
       (this.marked(commentKey) || this.pending().some((event) => event.id === commentKey))
@@ -1934,7 +2122,12 @@ export class EventLoop {
       }
     }
     const firstLine = body.split(/\r?\n/)[0];
-    const edited = created !== str(comment.updated_at) ? " (edited: verify editor)" : "";
+    const edited =
+      created !== str(comment.updated_at)
+        ? inline
+          ? " (edited)"
+          : " (edited: verify editor)"
+        : "";
     const taskPr = own && this.marked(`open-${number}`);
     if (taskPr) {
       // Task PRs always belong to the configured repository; the role is per repo (#186).
@@ -1944,7 +2137,7 @@ export class EventLoop {
       this.isSelf(comment) &&
       this.writes.matches(
         {
-          kind: "comment",
+          kind: inline ? "review-comment" : "comment",
           repo,
           number,
           ...(count(comment.id) !== null ? { commentId: Number(comment.id) } : {}),
@@ -1960,7 +2153,7 @@ export class EventLoop {
       }
       // Separate from delivery acknowledgement: even journaled own comments
       // must apply Progress once, but never replay it over a later human move.
-      const progressKey = `c-${key(`progress:${url}`)}`;
+      const progressKey = inline ? `rc-progress-${inline.id}` : `c-${key(`progress:${url}`)}`;
       if (own && !this.marked(progressKey) && /^\[orchestrator\] (?:ANSWER|GO)\b/.test(firstLine)) {
         this.queueProgress(number, {
           state: taskPr ? "working" : null,
@@ -1994,7 +2187,12 @@ export class EventLoop {
     if (!person) {
       return;
     }
-    if (own && !edited && person.role === "owner" && !/^\[orchestrator\]/.test(firstLine)) {
+    if (
+      own &&
+      (!edited || inline) &&
+      person.role === "owner" &&
+      !/^\[orchestrator\]/.test(firstLine)
+    ) {
       let linked = false;
       for (const [pr, issues] of this.taskIssues) {
         if (issues.includes(number)) {
@@ -2021,6 +2219,7 @@ export class EventLoop {
       this.subjectPreviews.set(`${repo.toLowerCase()}#${number}`, subject);
     }
     const preview = edited ? "" : this.previewText(person, `${subject?.title ?? ""} ${firstLine}`);
+    const commentLine = `COMMENT ${this.ref(repo, number)}${inline ? ` ${inline.location}` : ""} from ${login} (${person.role})${this.isSelf(comment) ? " (this account, another session)" : ""}${edited}${preview} ${url}`;
     // REST cannot identify the editor. Wake for verification, never execute an edited tag.
     const workerTag = edited
       ? null
@@ -2029,9 +2228,11 @@ export class EventLoop {
     if (taskPr && person.role === "worker" && workerTag) {
       if (
         this.produceOnce(
-          `c-${key(url)}`,
-          workerTag[1].toLowerCase(),
-          `PR #${number} (${this.branchOf(number)}): worker ${workerTag[1]}${round ? ` (round ${round[1]})` : ""} from ${login} (${person.role})${preview} ${url}`
+          commentKey,
+          inline ? "comment" : workerTag[1].toLowerCase(),
+          inline
+            ? commentLine
+            : `PR #${number} (${this.branchOf(number)}): worker ${workerTag[1]}${round ? ` (round ${round[1]})` : ""} from ${login} (${person.role})${preview} ${url}`
         )
       ) {
         this.touchActivity(number, created);
@@ -2050,7 +2251,13 @@ export class EventLoop {
       }
       return;
     }
-    if (!edited && /^\[worker\]/.test(firstLine) && person.role === "worker" && !workerTag) {
+    if (
+      !inline &&
+      !edited &&
+      /^\[worker\]/.test(firstLine) &&
+      person.role === "worker" &&
+      !workerTag
+    ) {
       this.touchActivity(number, created);
       if (taskPr) {
         if (!this.host.conflictFixing?.(number)) {
@@ -2069,14 +2276,7 @@ export class EventLoop {
       return;
     }
     // Peer orchestrators wake on our threads too: a peer may ask, never approve.
-    if (
-      this.produceOnce(
-        `c-${key(url)}`,
-        "comment",
-        `COMMENT ${this.ref(repo, number)} from ${login} (${person.role})${this.isSelf(comment) ? " (this account, another session)" : ""}${edited}${preview} ${url}`
-      ) &&
-      taskPr
-    ) {
+    if (this.produceOnce(commentKey, "comment", commentLine) && taskPr) {
       this.touchActivity(number, created);
     }
   }

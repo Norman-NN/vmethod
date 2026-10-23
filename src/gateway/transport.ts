@@ -92,7 +92,8 @@ export interface Operations {
     };
     output: string;
   };
-  post: { input: { ref: string; file: string }; output: string };
+  /** Post exact file content; discussion_r reply URLs route to the inline thread. */
+  post: { input: { ref: string; file: string; replyTo?: string }; output: string };
   push: { input: { worktree: string; branch: string; commit?: string }; output: string };
   task: {
     input: { ref: string; fetch?: boolean };

@@ -2,7 +2,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect } from "vitest";
 import { stringify } from "yaml";
-import { parse, visit } from "graphql";
+import { Kind, parse, visit, type SelectionSetNode } from "graphql";
 import type { Dependencies } from "../../src/gateway/client.js";
 import { createGateway } from "../../src/gateway/server.js";
 import type { CallContext, Operations } from "../../src/gateway/transport.js";
@@ -240,4 +240,58 @@ export function graph(json: unknown): Request {
       }
     },
   };
+}
+
+/** Project a recorded response through the real query selection, so extra fixture
+ * fields (especially __typename on a union) cannot hide missing selections.
+ * Named fragments/directives are deliberately unsupported and fail loudly.
+ */
+export function selectedGraph(json: unknown): Request {
+  const request = graph(json);
+  const check = request.checkQuery!;
+  request.checkQuery = (query, variables) => {
+    check(query, variables);
+    const document = parse(query);
+    if (
+      document.definitions.length !== 1 ||
+      document.definitions[0].kind !== Kind.OPERATION_DEFINITION
+    ) {
+      throw new Error("Selection fixture requires one operation without named fragments");
+    }
+    request.json = { data: projectSelection(json, document.definitions[0].selectionSet) };
+  };
+  return request;
+}
+
+function projectSelection(value: unknown, selection: SelectionSetNode): unknown {
+  if (value == null) {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => projectSelection(entry, selection));
+  }
+  const source = object(value);
+  const result: ObjectData = {};
+  for (const field of selection.selections) {
+    if (field.directives?.length || field.kind === Kind.FRAGMENT_SPREAD) {
+      throw new Error("Selection fixture does not support directives or named fragments");
+    }
+    if (field.kind === Kind.INLINE_FRAGMENT) {
+      if (field.typeCondition && typeof source.__typename !== "string") {
+        throw new Error("Selection fixture needs a recorded __typename for inline fragments");
+      }
+      if (!field.typeCondition || field.typeCondition.name.value === source.__typename) {
+        Object.assign(result, projectSelection(source, field.selectionSet));
+      }
+    } else {
+      const name = field.alias?.value ?? field.name.value;
+      if (!Object.hasOwn(source, name)) {
+        throw new Error(`Selection fixture missing field ${name}`);
+      }
+      result[name] = field.selectionSet
+        ? projectSelection(source[name], field.selectionSet)
+        : source[name];
+    }
+  }
+  return result;
 }

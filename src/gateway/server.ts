@@ -1242,7 +1242,7 @@ class GatewayServer {
     const field = kind === "pr" ? "pullRequest" : kind === "issue" ? "issue" : "issueOrPullRequest";
     const fields =
       kind === "any"
-        ? `... on Issue { ${identityFields} } ... on PullRequest { ${identityFields} }`
+        ? `__typename ... on Issue { ${identityFields} } ... on PullRequest { ${identityFields} }`
         : `${identityFields} ${kind === "pr" ? "headRefOid headRefName baseRefName state headRepository { nameWithOwner }" : ""}`;
     const result = object(
       await this.github.graphql(
@@ -1463,9 +1463,36 @@ class GatewayServer {
     return output.join("\n\n") || "No accepted content";
   };
 
-  /** Post without changing the turn; warn on replies to an owner's PR question. */
-  post: Handlers["post"] = async ({ ref, file }, ctx) => {
+  /** Post exact Markdown without changing the turn. A same-PR discussion_r replyTo
+   * selects the inline reply endpoint; other valid comment URLs stay in conversation.
+   */
+  post: Handlers["post"] = async ({ ref, file, replyTo }, ctx) => {
     const target = reference(ref, this.config);
+    let inlineId: string | undefined;
+    if (replyTo !== undefined) {
+      const url = new URL(replyTo);
+      if (
+        url.origin !== "https://github.com" ||
+        url.search ||
+        url.username ||
+        url.password ||
+        ![
+          `/${target.repo}/pull/${target.number}`,
+          `/${target.repo}/issues/${target.number}`,
+        ].includes(url.pathname) ||
+        !/^#(?:issuecomment-|discussion_r)[1-9]\d*$/.test(url.hash)
+      ) {
+        throw new Error("Invalid reply URL");
+      }
+      inlineId = /^#discussion_r([1-9]\d*)$/.exec(url.hash)?.[1];
+      if (
+        inlineId &&
+        (!Number.isSafeInteger(Number(inlineId)) ||
+          url.pathname !== `/${target.repo}/pull/${target.number}`)
+      ) {
+        throw new Error("Invalid inline reply URL");
+      }
+    }
     const body = readFileSync(file, "utf8");
     await checkMarkdown(this.root, body);
     guardClosingKeywords(body);
@@ -1474,6 +1501,9 @@ class GatewayServer {
     if (!person) {
       throw new Error("Refusing to post on an unaccepted thread");
     }
+    if (inlineId && item.__typename !== "PullRequest") {
+      throw new Error("Inline replies require a PR");
+    }
     const warning =
       ctx.role === "orchestrator" &&
       target.repo === String(this.config.repo) &&
@@ -1481,7 +1511,10 @@ class GatewayServer {
       (await this.ownerReplyTurn(item, target.link))
         ? `\nWarning: this does not hand the turn back; use review ${target.number} owner`
         : "";
-    await this.github.rest(`/repos/${target.repo}/issues/${target.number}/comments`, "POST", {
+    const endpoint = inlineId
+      ? `/repos/${target.repo}/pulls/${target.number}/comments/${inlineId}/replies`
+      : `/repos/${target.repo}/issues/${target.number}/comments`;
+    await this.github.rest(endpoint, "POST", {
       body,
     });
     return `Posted to ${target.link}${warning}`;

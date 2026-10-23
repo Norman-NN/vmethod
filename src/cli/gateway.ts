@@ -208,10 +208,10 @@ async function existingVerb(
       return transport.call("read", { kind, ref, option } as ReadInput, ctx);
     }
     case "post":
-      if (args.length !== 2) {
-        throw new Error("Usage: vmethod post <ref> <file>");
+      if (args.length !== 2 && (args.length !== 4 || args[2] !== "--in-reply-to" || !args[3])) {
+        throw new Error("Usage: vmethod post <ref> <file> [--in-reply-to url]");
       }
-      return transport.call("post", { ref: args[0], file: args[1] }, ctx);
+      return transport.call("post", { ref: args[0], file: args[1], replyTo: args[3] }, ctx);
     case "gh-read":
       if (args.length !== 1) {
         throw new Error("Usage: vmethod gh-read <endpoint|file.graphql>");

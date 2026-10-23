@@ -73,12 +73,17 @@ and explicit `repos` bindings. See [shared learnings](learnings.md).
 - `vmethod read comment <id>` (numeric issue-comment ID in the configured repo)
 - `vmethod read checks <n>` (PR number)
 - `vmethod read registry <package>` (untrusted npm metadata)
-- `vmethod post <ref> <file>`
+- `vmethod post <ref> <file> [--in-reply-to <comment-url>]`
 
   Posts without changing the turn. On an own-repository PR in review, an
   orchestrator post warns if the card is on the orchestrator after an owner
   comment; use `review <pr> owner --in-reply-to <comment-url> <file>` to answer
   and hand it back (see the [orchestrator guide](orchestrator-guide.md)).
+  A same-PR `https://github.com/<org>/<repo>/pull/<n>#discussion_r<id>` target
+  posts the exact file content inside that inline review thread. An `issuecomment-`
+  target stays in the conversation. Reply URLs must match the target repository
+  and number. `review` verbs always post their protocol messages in the conversation,
+  even when their reply link points to an inline comment.
 
 - `vmethod gh-read <endpoint|file.graphql>`
 - `vmethod dropped [--since <ISO-date>]`
@@ -489,6 +494,18 @@ violation reporting for that cycle, so stale or missing links never produce a ve
 Known states repair assignments from the same board poll; ambiguous states are
 reported for manual review. Owner replies and current-head owner reviews return
 the turn to the orchestrator. See the [protocol transition table](protocol.md).
+
+Each own-repository task PR poll also reads submitted inline review threads and
+their paginated comments. Allowed comments emit
+`COMMENT #<pr> <path>:<line> from <login> (<role>) <url#discussion_r…>` once per
+comment database ID, including across restarts (`null` line means no current head
+line). Author/editor identity filtering and turn updates match conversation
+comments. Existing comments in a thread already resolved when first observed are
+suppressed, even if it later reopens; new comments on a known thread still report.
+The startup history baseline also applies. Foreign-repository review threads are
+not watched. Use [`post --in-reply-to`](#commands) to reply inline; resolving a
+thread is not supported.
+
 `ORCHESTRATOR TURN #n: waiting on you for 30+ min (<progress>)` reminds you after
 30 observed minutes on an orchestrator turn, then hourly until it ends. It uses
 the existing board poll, survives watcher restarts, and resets when the card leaves

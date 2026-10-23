@@ -3,7 +3,16 @@ import { join } from "node:path";
 import { expect, test } from "vitest";
 import { createGateway } from "../../src/gateway/server.js";
 import { gatewayVerb } from "../../src/cli/gateway.js";
-import { actor, fixtureServer, graph, hostile, item, sha, workerFixtureServer } from "./helpers.js";
+import {
+  actor,
+  fixtureServer,
+  graph,
+  selectedGraph,
+  hostile,
+  item,
+  sha,
+  workerFixtureServer,
+} from "./helpers.js";
 import recordedBoard from "../fixtures/github/board-write-inputs.json" with { type: "json" };
 
 test.each(["owner", "worker", "unknown", "untrusted edit"])(
@@ -255,6 +264,81 @@ test("post validates first, sends exact Markdown without footer, and supports a 
   ).toBe("Posted to https://github.com/example/project/issues/3");
   fixture.done();
 }, 15000);
+
+test.each(["discussion_r4363811103", "issuecomment-44"])(
+  "post --in-reply-to routes %s without changing the file content",
+  async (anchor) => {
+    const body = "A reply with `$(touch OWNED)` as data.\n";
+    const inline = anchor.startsWith("discussion_r");
+    const fixture = workerFixtureServer([
+      selectedGraph({ repository: { issueOrPullRequest: item({ __typename: "PullRequest" }) } }),
+      {
+        path: inline
+          ? "/repos/example/project/pulls/3/comments/4363811103/replies"
+          : "/repos/example/project/issues/3/comments",
+        body: { body },
+        // Projection of the REST reply supplied in PR 214's authenticated ANSWER.
+        json: { id: 4363811370, node_id: "PRRC_kwDOVMIbYc8AAAABBBp6Kg" },
+      },
+    ]);
+    const file = join(fixture.root, "reply.md");
+    writeFileSync(file, body);
+    expect(
+      await gatewayVerb(
+        fixture.transport,
+        "post",
+        ["3", file, "--in-reply-to", `https://github.com/example/project/pull/3#${anchor}`],
+        { VMETHOD_TASK_PR: "3" }
+      )
+    ).toBe("Posted to https://github.com/example/project/issues/3");
+    fixture.done();
+  },
+  15000
+);
+
+test.each([
+  "https://github.com/example/project/pull/4#discussion_r1",
+  "https://github.com/foreign/project/pull/3#discussion_r1",
+  "https://github.com/example/project/issues/3#discussion_r1",
+  "https://evil.invalid/example/project/pull/3#discussion_r1",
+  "https://github.com/example/project/pull/3?x=1#discussion_r1",
+  "https://user@github.com/example/project/pull/3#discussion_r1",
+  "https://github.com/example/project/pull/3#discussion_r0",
+  "https://github.com/example/project/pull/3#discussion_r9999999999999999999999",
+])(
+  "post refuses an invalid or cross-target reply URL before operation I/O: %s",
+  async (replyTo) => {
+    const fixture = workerFixtureServer([]);
+    await expect(
+      fixture.transport.call(
+        "post",
+        { ref: "3", file: "nonexistent", replyTo },
+        { role: "worker", taskPr: 3 }
+      )
+    ).rejects.toThrow(/reply URL/);
+    fixture.done();
+  }
+);
+
+test("inline post refuses an Issue returned by the real union selection without writing", async () => {
+  const fixture = workerFixtureServer([
+    selectedGraph({ repository: { issueOrPullRequest: item({ __typename: "Issue" }) } }),
+  ]);
+  const file = join(fixture.root, "reply.md");
+  writeFileSync(file, "A reply.\n");
+  await expect(
+    fixture.transport.call(
+      "post",
+      {
+        ref: "3",
+        file,
+        replyTo: "https://github.com/example/project/pull/3#discussion_r4363811103",
+      },
+      { role: "worker", taskPr: 3 }
+    )
+  ).rejects.toThrow("Inline replies require a PR");
+  fixture.done();
+});
 
 test.each([
   "Fixes #3",

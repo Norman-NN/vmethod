@@ -23,6 +23,7 @@ import { actor, people, sha } from "./helpers.js";
 import recordedActions from "../fixtures/github/watch-actions.json" with { type: "json" };
 import recordedBoard from "../fixtures/github/board-write-inputs.json" with { type: "json" };
 import recordedComment from "../fixtures/github/review-comment.json" with { type: "json" };
+import recordedThreads from "../fixtures/github/review-threads.json" with { type: "json" };
 import recordedOpencode from "../fixtures/opencode/watch-status.json" with { type: "json" };
 import { scopeIssue, scopeMove, scopeConnection } from "./scope-fixture.js";
 
@@ -71,6 +72,11 @@ export class WatchFake {
   pulls: ObjectData[] = [];
   issues: ObjectData[] = [];
   comments: Record<string, ObjectData[]> = { "example/project": [], "vworlds/vmethod": [] };
+  reviewThreads: ObjectData[] = [];
+  reviewThreadPages: ObjectData[][] | null = null;
+  reviewCommentPages: ObjectData[][] | null = null;
+  failReviewThreads = false;
+  reviewThreadReads: number[] = [];
   assigned: Record<string, ObjectData[]> = { "example/project": [], "vworlds/vmethod": [] };
   newItems: ObjectData[] = [];
   cards: ObjectData[] = [];
@@ -179,6 +185,41 @@ export class WatchFake {
           }
           const operation = parse(payload.query).definitions[0];
           expect(operation.kind).toBe(Kind.OPERATION_DEFINITION);
+          if (
+            operation.kind === Kind.OPERATION_DEFINITION &&
+            ["WatchReviewThreads", "WatchReviewThreadComments"].includes(
+              operation.name?.value ?? ""
+            )
+          ) {
+            if (this.failReviewThreads) {
+              throw new Error("scripted review-thread failure");
+            }
+            const comments = operation.name?.value === "WatchReviewThreadComments";
+            if (!comments) {
+              expect(payload.variables.owner).toBe("example");
+              expect(payload.variables.name).toBe("project");
+              this.reviewThreadReads.push(Number(payload.variables.number));
+            }
+            const pages = comments ? this.reviewCommentPages : this.reviewThreadPages;
+            const index = payload.variables.cursor === null ? 0 : Number(payload.variables.cursor);
+            const nodes = pages ? pages[index] : this.reviewThreads;
+            if (!nodes) {
+              return this.unknown(url);
+            }
+            const connection = {
+              ...recordedThreads,
+              nodes,
+              pageInfo: {
+                hasNextPage: pages ? index + 1 < pages.length : false,
+                endCursor: String(index + 1),
+              },
+            };
+            return Response.json({
+              data: comments
+                ? { node: { comments: connection } }
+                : { repository: { pullRequest: { reviewThreads: connection } } },
+            });
+          }
           if (
             operation.kind === Kind.OPERATION_DEFINITION &&
             operation.name?.value === "ScopeNodes"
