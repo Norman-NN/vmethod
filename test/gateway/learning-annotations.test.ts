@@ -200,12 +200,15 @@ test.each(["json", ""])(
   "aggregate accepts one object inside a single %j fence with surrounding whitespace",
   async (language) => {
     const f = fixture();
-    const response = {
-      families: [{ family: "glm-flash", claims: [claim("Useful for tooling.")] }],
-      domains: [{ domain: "tooling", claims: [claim("Evidence covers tooling.")] }],
-    };
-    f.replies[0] = ` \n\t\`\`\`${language}\n${JSON.stringify(response)}\n\`\`\` \n\t`;
-    expect(await f.service.command({ action: "aggregate" })).toContain("Generated 2");
+    const wrap = (value: unknown) =>
+      ` \n\t\`\`\`${language}\n${JSON.stringify(value)}\n\`\`\` \n\t`;
+    f.replies[0] = wrap({ claims: [claim("Useful for tooling.")] });
+    f.replies.push(
+      wrap({ domains: [{ domain: "tooling", claims: [claim("Evidence covers tooling.")] }] })
+    );
+    expect(await f.service.command({ action: "aggregate" })).toContain(
+      "2 views generated, 0 failed"
+    );
     expect(readFileSync(join(f.root, "learnings/models/glm-flash.md"), "utf8")).toContain(
       "Useful for tooling."
     );
@@ -241,15 +244,24 @@ for (const action of ["annotate", "aggregate"] as const) {
       const familyPage = join(modelDirectory, "glm-flash.md");
       writeFileSync(familyPage, "Previous reviewed advice.\n");
       const response =
+        action === "annotate" ? generated() : { claims: [claim("Useful for tooling.")] };
+      const wrapped = wrap(JSON.stringify(response));
+      f.replies[0] = wrapped;
+      if (action === "aggregate") {
+        // Each view runs its own call and single retry; none of the wrapped shapes validate.
+        f.replies.push(wrapped, wrapped, wrapped);
+      } else {
+        f.replies.push(f.replies[0]);
+      }
+      await expect(f.service.command({ action })).rejects.toThrow(
         action === "annotate"
-          ? generated()
-          : {
-              families: [{ family: "glm-flash", claims: [claim("Useful for tooling.")] }],
-              domains: [{ domain: "tooling", claims: [claim("Evidence covers tooling.")] }],
-            };
-      f.replies[0] = wrap(JSON.stringify(response));
-      f.replies.push(f.replies[0]);
-      await expect(f.service.command({ action })).rejects.toThrow();
+          ? "0 annotated, 1 failed (#31)"
+          : "0 views generated, 2 failed (glm-flash, by-domain)"
+      );
+      if (action === "aggregate") {
+        expect(f.deps.report).toHaveBeenCalledWith(expect.stringMatching(/^glm-flash: /));
+        expect(f.deps.report).toHaveBeenCalledWith(expect.stringMatching(/^by-domain: /));
+      }
       expect(existsSync(join(f.directory, "notes-31-v1.jsonl"))).toBe(false);
       expect(readFileSync(familyPage, "utf8")).toBe("Previous reviewed advice.\n");
       expect(existsSync(join(modelDirectory, "by-domain.md"))).toBe(false);
@@ -314,29 +326,24 @@ for (const action of ["annotate", "aggregate"] as const) {
     `${action}: invalid %s response retries once in a fresh session and succeeds`,
     async (kind) => {
       const f = fixture();
-      const aggregate = {
-        families: [{ family: "glm-flash", claims: [claim("Evidence.")] }],
-        domains: [{ domain: "tooling", claims: [claim("Evidence.")] }],
-      };
+      const familyValid = { claims: [claim("Evidence.")] };
+      const domainValid = { domains: [{ domain: "tooling", claims: [claim("Evidence.")] }] };
       const invalid =
         kind === "JSON"
           ? "{bad JSON}"
           : kind === "schema"
             ? action === "annotate"
               ? { ...generated(), impressions: [] }
-              : { ...aggregate, domains: [] }
+              : { domains: [] }
             : action === "annotate"
               ? { ...generated(), findings: [{ text: "unsupported", sources: [] }] }
-              : {
-                  ...aggregate,
-                  families: [
-                    {
-                      family: "glm-flash",
-                      claims: [{ text: "bad source", sources: [`${url(31)}#issuecomment-1`] }],
-                    },
-                  ],
-                };
-      f.replies.splice(0, 1, invalid, action === "annotate" ? generated() : aggregate);
+              : { claims: [{ text: "bad source", sources: [`${url(31)}#issuecomment-1`] }] };
+      if (action === "annotate") {
+        f.replies.splice(0, 1, invalid, generated());
+      } else {
+        // One call per view: the invalid view retries once, the other view succeeds on first ask.
+        f.replies.splice(0, f.replies.length, ...[invalid, familyValid, domainValid]);
+      }
       const fetch = f.deps.fetch;
       let sessions = 0;
       const interrupted: string[] = [];
@@ -355,16 +362,18 @@ for (const action of ["annotate", "aggregate"] as const) {
         return fetch(url, init);
       };
       const result = await f.service.command({ action });
-      expect(result).toContain(action === "annotate" ? "1 annotated, 0 failed" : "Generated 2");
-      expect(sessions).toBe(2);
-      expect(interrupted).toEqual([
-        "/api/session/ses_attempt1/interrupt",
-        "/api/session/ses_attempt2/interrupt",
-      ]);
+      expect(result).toContain(
+        action === "annotate" ? "1 annotated, 0 failed" : "2 views generated, 0 failed"
+      );
+      expect(sessions).toBe(action === "annotate" ? 2 : 3);
+      expect(interrupted).toHaveLength(action === "annotate" ? 2 : 3);
       if (action === "annotate") {
         expect(readdirSync(f.directory)).toEqual(["notes-31-v1.jsonl"]);
       } else {
         expect(readFileSync(join(f.root, "learnings/models/glm-flash.md"), "utf8")).toContain(
+          "Evidence."
+        );
+        expect(readFileSync(join(f.root, "learnings/models/by-domain.md"), "utf8")).toContain(
           "Evidence."
         );
       }
@@ -439,7 +448,9 @@ test.each(["quota", "timeout"])(
     );
     expect(f.deps.report).toHaveBeenCalledWith(
       expect.stringContaining(
-        failure === "quota" ? "#31: Learning model failed: quota" : "#31: Learning model timed out"
+        failure === "quota"
+          ? "#31: Learning model failed: quota"
+          : "#31: Learning model timed out after 900 seconds"
       )
     );
     expect(f.prompts).toHaveLength(1);
@@ -448,6 +459,44 @@ test.each(["quota", "timeout"])(
     f.done();
   }
 );
+
+test("a configured learningsTimeoutSeconds bounds both generation commands and names its seconds", async () => {
+  const busy = (deps: Dependencies): void => {
+    const fetch = deps.fetch;
+    deps.fetch = async (input, init) => {
+      if (new URL(String(input)).pathname === "/api/session/active") {
+        // The session stays busy, like a large live aggregate input.
+        return Response.json({ data: { ses_recorded: { type: "running" } } });
+      }
+      return fetch(input, init);
+    };
+  };
+  const f = fixture();
+  f.config.learningsTimeoutSeconds = 2;
+  busy(f.deps);
+  await expect(f.service.command({ action: "annotate" })).rejects.toThrow(
+    "0 annotated, 1 failed (#31)"
+  );
+  expect(f.deps.report).toHaveBeenCalledWith("#31: Learning model timed out after 2 seconds");
+  expect(f.prompts).toHaveLength(1);
+  const g = fixture([31, 32]);
+  g.config.learningsTimeoutSeconds = 2;
+  g.records[1].segments = [{ family: "sol", model: "fake/sol", rounds: [1], why: "start" }];
+  // Session creation consumes a queued reply each, even while the status stays busy.
+  g.replies.splice(0, g.replies.length, generated(), generated(), generated());
+  busy(g.deps);
+  await expect(g.service.command({ action: "aggregate" })).rejects.toThrow(
+    "0 views generated, 3 failed (glm-flash, sol, by-domain)"
+  );
+  expect(g.deps.report).toHaveBeenCalledWith("sol: Learning model timed out after 2 seconds");
+  expect(g.deps.report).toHaveBeenCalledWith("by-domain: Learning model timed out after 2 seconds");
+  expect(g.prompts).toHaveLength(3);
+  // A timeout is not an InvalidLearningResponse, so no view or PR receives a retry.
+  expect(existsSync(join(f.directory, "notes-31-v1.jsonl"))).toBe(false);
+  expect(existsSync(join(g.root, "learnings/models/glm-flash.md"))).toBe(false);
+  f.done();
+  g.done();
+}, 30000);
 
 test("private generation strips titles, notes, issue and comment narratives before the model call", async () => {
   const f = fixture();
@@ -464,65 +513,68 @@ test("private generation strips titles, notes, issue and comment narratives befo
   f.done();
 });
 
-test("aggregate validates all views before replacing any family page and requires PR citations", async () => {
-  const f = fixture();
-  await f.service.command({ action: "annotate" });
-  const file = join(f.root, "learnings/models/glm-flash.md");
-  writeFileSync(file, "original\n");
-  f.replies.push({
-    families: [{ family: "glm-flash", claims: [claim("Useful for tooling.")] }],
-    domains: [{ domain: "tooling", claims: [{ text: "unsupported", sources: [] }] }],
+test("aggregate contains failures per view: a family failing twice leaves the other views written", async () => {
+  const f = fixture([31, 32]);
+  f.records[1].segments = [{ family: "sol", model: "fake/sol", rounds: [1], why: "start" }];
+  const dir = join(f.root, "learnings/models");
+  mkdirSync(dir, { recursive: true });
+  const familyPage = join(dir, "glm-flash.md");
+  writeFileSync(familyPage, "reviewed advice\n");
+  // The glm-flash view twice cites a sol delivery, like luna did in PR 197's live run.
+  const crossFamily = { claims: [{ text: "A comparison.", sources: [url(32)] }] };
+  f.replies.splice(0, f.replies.length, crossFamily, crossFamily, {
+    claims: [claim("Sol evidence.", 32)],
   });
-  f.replies.push(f.replies[0]);
+  f.replies.push({
+    domains: [{ domain: "tooling", claims: [claim("Domain evidence.", 32)] }],
+  });
   await expect(f.service.command({ action: "aggregate" })).rejects.toThrow(
-    "by-domain: tooling, claim 1: Every annotation claim requires a supported citation"
+    "2 views generated, 1 failed (glm-flash)"
   );
-  expect(readFileSync(file, "utf8")).toBe("original\n");
-  f.replies.push({
-    families: [{ family: "glm-flash", claims: [claim("Useful for tooling.")] }],
-    domains: [{ domain: "tooling", claims: [claim("Evidence covers tooling.")] }],
-  });
-  expect(await f.service.command({ action: "aggregate" })).toContain("Generated 2");
-  expect(readFileSync(file, "utf8")).toContain(`[PR](${url(31)})`);
-  expect(readFileSync(join(f.root, "learnings/models/by-domain.md"), "utf8")).toContain(
-    "Evidence covers tooling"
+  expect(f.deps.report).toHaveBeenCalledWith(
+    `glm-flash: glm-flash model learnings, claim 1: unsupported source ${url(32)}`
   );
-  expect(f.prompts.at(-1)).toContain("recordDigest");
+  expect(readFileSync(familyPage, "utf8")).toBe("reviewed advice\n");
+  expect(readFileSync(join(dir, "sol.md"), "utf8")).toContain("Sol evidence.");
+  expect(readFileSync(join(dir, "by-domain.md"), "utf8")).toContain(`[PR](${url(32)})`);
+  expect(f.prompts).toHaveLength(4);
   f.done();
 }, 30000);
 
 test.each([url(32), `${url(31)}#issuecomment-1`, `https://github.com/${repo}/issues/9`])(
-  "aggregate refuses and names disallowed family source %s after one retry",
+  "aggregate family view refuses %s after its one retry and names the offending claim",
   async (source) => {
     const f = fixture([31, 32]);
     f.records[1].segments = [{ family: "sol", model: "fake/sol", rounds: [1], why: "start" }];
-    const response = {
-      families: [
-        { family: "glm-flash", claims: [{ text: "A comparison.", sources: [source] }] },
-        { family: "sol", claims: [claim("Sol evidence.", 32)] },
-      ],
-      domains: [{ domain: "tooling", claims: [claim("Domain evidence.", 32)] }],
-    };
-    f.replies.splice(0, f.replies.length, response, response);
-    const dir = join(f.root, "learnings/models");
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "glm-flash.md"), "reviewed advice\n");
+    const disallowed = { claims: [{ text: "A comparison.", sources: [source] }] };
+    f.replies.splice(
+      0,
+      f.replies.length,
+      disallowed,
+      disallowed,
+      { claims: [claim("Sol evidence.", 32)] },
+      { domains: [{ domain: "tooling", claims: [claim("Domain evidence.", 32)] }] }
+    );
     await expect(f.service.command({ action: "aggregate" })).rejects.toThrow(
-      `glm-flash model learnings, claim 1: unsupported source ${source}`
+      "2 views generated, 1 failed (glm-flash)"
     );
-    expect(f.prompts).toHaveLength(2);
-    expect(readFileSync(join(dir, "glm-flash.md"), "utf8")).toBe("reviewed advice\n");
-    expect(existsSync(join(dir, "sol.md"))).toBe(false);
-    expect(existsSync(join(dir, "by-domain.md"))).toBe(false);
-    expect(f.prompts[0]).toContain(
-      `"familyDeliveryPrUrls":{"glm-flash":["${url(31)}"],"sol":["${url(32)}"]}`
+    expect(f.deps.report).toHaveBeenCalledWith(
+      `glm-flash: glm-flash model learnings, claim 1: unsupported source ${source}`
     );
-    expect(f.prompts[0]).toContain(`"domainDeliveryPrUrls":["${url(31)}","${url(32)}"]`);
-    expect(f.prompts[0]).toContain(
-      "Each family claim must cite only exact delivery PR URLs from that family's records"
-    );
-    expect(f.prompts[0]).toContain("Domain claims may cite any delivery PR URL");
-    expect(f.prompts[0]).toContain("No comment URLs or issue URLs are allowed");
+    expect(f.prompts).toHaveLength(4);
+    // A family call sees only that family's deliveries and allowed URLs, so it cannot
+    // cite another family's PR; the shared views see everything.
+    expect(f.prompts[0]).toContain(`"family":"glm-flash"`);
+    expect(f.prompts[0]).toContain(`"familyDeliveryPrUrls":["${url(31)}"]`);
+    expect(f.prompts[0]).not.toContain(`${url(32)}`);
+    expect(f.prompts[0]).not.toContain(`issues/9`);
+    expect(f.prompts[0]).toContain("the view never cites another family's PR");
+    expect(f.prompts[2]).toContain(`"family":"sol"`);
+    expect(f.prompts[2]).toContain(`"familyDeliveryPrUrls":["${url(32)}"]`);
+    expect(f.prompts[2]).not.toContain(`${url(31)}`);
+    expect(f.prompts[3]).toContain(`"domainDeliveryPrUrls":["${url(31)}","${url(32)}"]`);
+    expect(f.prompts[3]).toContain("Domain claims may cite any delivery PR URL");
+    expect(f.prompts[3]).toContain("No comment URLs or issue URLs are allowed");
     f.done();
   }
 );
@@ -530,16 +582,21 @@ test.each([url(32), `${url(31)}#issuecomment-1`, `https://github.com/${repo}/iss
 test("domain claims may cite deliveries from any family, while family claims use their own records", async () => {
   const f = fixture([31, 32]);
   f.records[1].segments = [{ family: "sol", model: "fake/sol", rounds: [1], why: "start" }];
-  f.replies.splice(0, f.replies.length, {
-    families: [
-      { family: "glm-flash", claims: [claim("Flash evidence.")] },
-      { family: "sol", claims: [claim("Sol evidence.", 32)] },
-    ],
-    domains: [
-      { domain: "tooling", claims: [{ text: "Domain comparison.", sources: [url(31), url(32)] }] },
-    ],
-  });
-  expect(await f.service.command({ action: "aggregate" })).toContain("Generated 3");
+  f.replies.splice(
+    0,
+    f.replies.length,
+    { claims: [claim("Flash evidence.")] },
+    { claims: [claim("Sol evidence.", 32)] },
+    {
+      domains: [
+        {
+          domain: "tooling",
+          claims: [{ text: "Domain comparison.", sources: [url(31), url(32)] }],
+        },
+      ],
+    }
+  );
+  expect(await f.service.command({ action: "aggregate" })).toContain("3 views generated, 0 failed");
   const text = readFileSync(join(f.root, "learnings/models/by-domain.md"), "utf8");
   expect(text).toContain(`[PR](${url(31)})`);
   expect(text).toContain(`[PR](${url(32)})`);
@@ -553,39 +610,54 @@ test("aggregate does not add a retry for transport failures", async () => {
     attempts++;
     throw new Error("fixture transport failure");
   };
-  await expect(f.service.command({ action: "aggregate" })).rejects.toThrow("aggregate:");
-  expect(attempts).toBe(1);
+  await expect(f.service.command({ action: "aggregate" })).rejects.toThrow(
+    "0 views generated, 2 failed (glm-flash, by-domain)"
+  );
+  expect(attempts).toBe(2);
   expect(f.prompts).toEqual([]);
+  expect(f.deps.report).toHaveBeenCalledWith(
+    "glm-flash: opencode network request failed on POST /api/session"
+  );
+  expect(f.deps.report).toHaveBeenCalledWith(
+    "by-domain: opencode network request failed on POST /api/session"
+  );
 });
 
 test.each([
   [
     "family claim",
-    {
-      families: [{ family: "glm-flash", claims: [{ text: "unsupported", sources: [] }] }],
-      domains: [{ domain: "tooling", claims: [claim("Evidence.")] }],
-    },
-    "glm-flash model learnings, claim 1",
-  ],
-  [
-    "missing family",
-    { families: [], domains: [{ domain: "tooling", claims: [claim("Evidence.")] }] },
-    "omitted model families: glm-flash",
+    { claims: [{ text: "unsupported", sources: [] }] },
+    "glm-flash: glm-flash model learnings, claim 1: Every annotation claim requires a supported citation",
   ],
   [
     "invalid domain",
-    {
-      families: [{ family: "glm-flash", claims: [claim("Evidence.")] }],
-      domains: [{ domain: "INVALID", claims: [claim("Evidence.")] }],
-    },
-    "by-domain entry 1 (INVALID)",
+    { domains: [{ domain: "INVALID", claims: [claim("Evidence.")] }] },
+    "by-domain: by-domain entry 1 (INVALID): Invalid domain tag",
   ],
 ] as const)("aggregate identifies the offending %s", async (_name, response, message) => {
   const f = fixture();
-  f.replies[0] = response;
-  f.replies.push(response);
-  await expect(f.service.command({ action: "aggregate" })).rejects.toThrow(message);
-  expect(existsSync(join(f.root, "learnings/models/glm-flash.md"))).toBe(false);
+  const familyValid = { claims: [claim("Evidence.")] };
+  const domainValid = { domains: [{ domain: "tooling", claims: [claim("Evidence.")] }] };
+  // The named view fails twice; the other view still generates, validates and publishes.
+  if ("claims" in response) {
+    f.replies.splice(0, f.replies.length, response, response, domainValid);
+    await expect(f.service.command({ action: "aggregate" })).rejects.toThrow(
+      "1 views generated, 1 failed (glm-flash)"
+    );
+    expect(readFileSync(join(f.root, "learnings/models/by-domain.md"), "utf8")).toContain(
+      "Evidence."
+    );
+  } else {
+    f.replies.splice(0, f.replies.length, familyValid, response, response);
+    await expect(f.service.command({ action: "aggregate" })).rejects.toThrow(
+      "1 views generated, 1 failed (by-domain)"
+    );
+    expect(readFileSync(join(f.root, "learnings/models/glm-flash.md"), "utf8")).toContain(
+      "Evidence."
+    );
+  }
+  expect(f.deps.report).toHaveBeenCalledWith(message);
+  expect(existsSync(join(f.root, "learnings/models/glm-flash.md"))).toBe(!("claims" in response));
   f.done();
 });
 
