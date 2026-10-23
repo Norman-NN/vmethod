@@ -76,8 +76,8 @@ Set relations with `vmethod issue block <n> <blocker>` and clear them with
 `issue create` and `issue edit` refuse a body whose line consists only of a dependency
 reference. Record relations when filing an issue, including cross-repository blockers
 where needed. A blocked Ready card stays there until its open blockers close; take the
-next unblocked card. Closing a blocker prompts a fresh estimate, not automatic
-subtraction of points.
+next unblocked card. Closing a blocker prompts a fresh estimate with
+`vmethod issue estimate <n> <points>`, not automatic subtraction of points.
 
 ## Tracks and packs
 

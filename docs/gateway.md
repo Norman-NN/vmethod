@@ -86,6 +86,7 @@ and explicit `repos` bindings. See [shared learnings](learnings.md).
 - `vmethod board migrate [--dry-run] [--steal]`
 - `vmethod issue create <title> <body-file> [--label l] [--estimate n] [--status name]`
 - `vmethod issue close <n> [--comment file]`
+- `vmethod issue estimate <n> <points>`
 - `vmethod issue edit <n> <body-file>`
 - `vmethod issue block <n> <blocker>` (`<blocker>` is `#m`, `m` or `org/repo#m`)
 - `vmethod issue unblock <n> <blocker>`
@@ -179,6 +180,13 @@ and optionally posts a checked file comment before closing. It does not close PR
 or move board cards implicitly. Both file paths reject closing/association syntax.
 Do not blindly retry a failed create: inspect the repository for a created issue.
 
+`issue estimate <n> <points>` sets an existing issue card's Estimate through the
+same shared field writer, asserting the shared points scale before any write; the
+CLI accepts the same finite nonnegative number grammar as
+`issue create --estimate`. Like `board set`, it requires orchestrator role, a
+configured-repository issue that passes the people filter and already belongs to
+the configured board, and it refuses PR cards.
+
 `board set` accepts an issue number, not a project item ID. The issue must pass the
 people filter and already belong to the configured board. Per-item writes read
 issue/PR memberships or item nodes, not the eventually consistent project listing;
@@ -194,8 +202,8 @@ native field-clear mutation rather than an empty text or numeric zero.
 Status writes clear Progress first; the gateway client journals the
 successful mutations like other writes. No housekeeping command changes repository/board scope.
 The typed operations are `issueCreate({title, file, labels?, estimate?, status?})`,
-`issueClose({ref, comment?})`, `issueBlock({ref, blocker})`, `issueUnblock({ref, blocker})`
-and `boardSetIssue({ref, field, value})` in `src/gateway/transport.ts`.
+`issueClose({ref, comment?})`, `issueBlock({ref, blocker})`, `issueUnblock({ref, blocker})`,
+`issueEstimate({ref, points})` and `boardSetIssue({ref, field, value})` in `src/gateway/transport.ts`.
 
 ## Worker commands
 

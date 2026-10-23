@@ -259,6 +259,55 @@ test.each(["Progress", "Estimate"])(
   15000
 );
 
+test.each(["5", "0.5", "2"])(
+  "issue estimate %s writes an existing issue card through the shared field writer",
+  async (points) => {
+    const card = boardRecording.items.nodes[0];
+    const fieldId = boardRecording.fields.nodes.find((f) => f.name === "Estimate")!.id;
+    const f = fixtureServer([
+      graph({ repository: { issue: item({ id: card.content.id }) } }),
+      graph({ node: { ...acceptedIssue(), id: card.content.id } }),
+      ...boardReads(),
+      {
+        path: "/graphql",
+        checkQuery(query, variables) {
+          expect(query).toContain("mutation BoardSetCards");
+          expect(variables).toEqual({
+            m0: {
+              projectId: boardRecording.id,
+              itemId: card.id,
+              fieldId,
+              value: { number: Number(points) },
+            },
+          });
+        },
+        json: { data: { m0: { projectV2Item: { id: card.id } } } },
+      },
+    ]);
+    await expect(
+      gatewayVerb(f.transport, "issue", ["estimate", "39", points], {
+        VMETHOD_ROLE: "orchestrator",
+      })
+    ).resolves.toBe("Board field updated");
+    f.done();
+  },
+  15000
+);
+
+test.each(["1.5", "4", "1000000"])(
+  "issue estimate refuses off-scale %s with the allowed-values error before any write",
+  async (points) => {
+    const f = fixtureServer([]);
+    await expect(
+      gatewayVerb(f.transport, "issue", ["estimate", "39", points], {
+        VMETHOD_ROLE: "orchestrator",
+      })
+    ).rejects.toThrow("Estimate must be one of: 0, 0.5, 1, 2, 3, 5, 8, 13, 20, 40, 100, 999");
+    f.done();
+  },
+  15000
+);
+
 test("issue create sends validated file content and repeated labels to the configured repository", async () => {
   const recording = createdCard();
   const f = fixtureServer([
@@ -492,6 +541,11 @@ test.each([
   ["board", ["set", "39", "Progress", "👤❓", "--clear"]],
   ["board", ["set", "39", "Estimate", "--clear", "5"]],
   ["board", ["set", "39", "Estimate", "5", "--repo", "foreign"]],
+  ["issue", ["estimate", "39"]],
+  ["issue", ["estimate", "39", "abc"]],
+  ["issue", ["estimate", "39", "-1"]],
+  ["issue", ["estimate", "39", "NaN"]],
+  ["issue", ["estimate", "39", "NaN", "junk"]],
 ])(
   "housekeeping CLI rejects malformed %s arguments %j without networking",
   async (verb, args) => {
@@ -563,13 +617,14 @@ test("issue close gates identity and posts the exact checked comment before clos
   f.done();
 }, 15000);
 
-test.each(["issueCreate", "issueClose", "boardSetIssue"] as const)(
+test.each(["issueCreate", "issueClose", "issueEstimate", "boardSetIssue"] as const)(
   "%s denies workers before any network",
   async (operation) => {
     const f = fixtureServer([]);
     const inputs = {
       issueCreate: { title: "Title", file: "missing" },
       issueClose: { ref: "37" },
+      issueEstimate: { ref: "37", points: 5 },
       boardSetIssue: { ref: "37", field: "Estimate", value: "5" },
     };
     await expect(
@@ -580,26 +635,36 @@ test.each(["issueCreate", "issueClose", "boardSetIssue"] as const)(
   15000
 );
 
-test.each(["issueClose", "boardSetIssue"] as const)(
+test.each(["issueClose", "issueEstimate", "boardSetIssue"] as const)(
   "%s rejects foreign references before networking",
   async (operation) => {
     const f = fixtureServer([]);
     await expect(
-      f.transport.call(operation, { ref: "example/foreign#37", field: "Estimate", value: "5" })
+      f.transport.call(
+        operation,
+        operation === "issueEstimate"
+          ? { ref: "example/foreign#37", points: 5 }
+          : { ref: "example/foreign#37", field: "Estimate", value: "5" }
+      )
     ).rejects.toThrow("configured repository");
     f.done();
   },
   15000
 );
 
-test.each(["issueClose", "boardSetIssue"] as const)(
+test.each(["issueClose", "issueEstimate", "boardSetIssue"] as const)(
   "%s filters unknown issue authors before requesting text",
   async (operation) => {
     const f = fixtureServer([
       graph({ repository: { issue: item({ author: { ...actor(), databaseId: 999 } }) } }),
     ]);
     await expect(
-      f.transport.call(operation, { ref: "37", field: "Estimate", value: "5" })
+      f.transport.call(
+        operation,
+        operation === "issueEstimate"
+          ? { ref: "37", points: 5 }
+          : { ref: "37", field: "Estimate", value: "5" }
+      )
     ).rejects.toThrow("accepted task thread");
     f.done();
   },

@@ -1030,6 +1030,14 @@ class GatewayServer {
     return `Unblocked #${number} from ${blockerLabel(blockerRef, this.config)}`;
   };
 
+  /** Write an existing issue card's Estimate; the shared scale gate precedes any write. */
+  issueEstimate: Handlers["issueEstimate"] = async ({ ref, points }) => {
+    assertEstimate(points);
+    this.localNumber(ref);
+    const issue = await this.flowThread(ref, "issue");
+    return this.board.setIssueField(String(issue.id), "Estimate", String(points));
+  };
+
   private async issueNodeId(ref: ThreadRef): Promise<string> {
     const result = object(
       await this.github.graphql(
@@ -1905,6 +1913,7 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     issueEdit: server.issueEdit,
     issueBlock: server.issueBlock,
     issueUnblock: server.issueUnblock,
+    issueEstimate: server.issueEstimate,
     scopeReview: server.scopeReview,
     issueClose: server.issueClose,
     boardSetIssue: server.boardSetIssue,
@@ -1949,6 +1958,7 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     issueEdit: ["orchestrator"],
     issueBlock: ["orchestrator"],
     issueUnblock: ["orchestrator"],
+    issueEstimate: ["orchestrator"],
     scopeReview: ["orchestrator"],
     issueClose: ["orchestrator"],
     boardSetIssue: ["orchestrator"],

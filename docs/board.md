@@ -69,7 +69,10 @@ review and approval; an unchanged body covers all part PRs. See the
 
 Every issue gets an Estimate **in Backlog**, before the owner takes work into Ready.
 Revise it whenever new information changes the work: specification development,
-design questions, closed blockers or final grading. **Never set an Estimate on a PR.**
+design questions, closed blockers or final grading. Set it at filing with
+`issue create --estimate` and set or revise it on an existing issue with
+`vmethod issue estimate <n> <points>` (orchestrator only), validated against the
+scale below before any write. **Never set an Estimate on a PR.**
 Delivery grading writes `points_final` back to the issue; the model log retains
 `points_open` from task opening and `points_final` for calibration. Points measure
 work, not punishment for worker mistakes. Normalize numeric representations before
@@ -91,7 +94,8 @@ the initial estimate indefinitely.
 | 100    | Vision-sized, not a worker task                            |
 | 999    | Impossible as things stand; record the external constraint |
 
-Use only this scale. `board set` and `issue create --estimate` reject off-scale
+Use only this scale. `issue create --estimate`, `issue estimate` and `board set`
+reject off-scale
 values and list the allowed points; `open-task` also refuses to freeze an off-scale
 opening Estimate. Clearing an issue Estimate remains distinct from assigning zero.
 
