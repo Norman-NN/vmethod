@@ -19,6 +19,8 @@ export interface Operations {
   issueBlock: { input: { ref: string; blocker: string }; output: string };
   /** Clear a blocked-by relation on a configured-repository issue. */
   issueUnblock: { input: { ref: string; blocker: string }; output: string };
+  /** Set an existing issue card's Estimate on the shared points scale; never a PR card. */
+  issueEstimate: { input: { ref: string; points: number }; output: string };
   /** Publish body-bound scope review and give the owner the issue turn. */
   scopeReview: { input: { ref: string; file: string }; output: string };
   /** Null clears only Progress or Estimate; strings retain ordinary value validation. */

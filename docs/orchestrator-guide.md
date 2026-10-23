@@ -8,7 +8,10 @@ Hand over **every issue you file at once**: estimated, In review, assigned to th
 owner, with open questions. Keep initial intake and estimates visible as described
 in [Lifecycle](lifecycle.md) and [Board](board.md). When an unblocked card reaches
 Ready, take it in priority order; do not wait to be told. Develop it on the issue,
-flipping the assignee whenever the next move changes.
+flipping the assignee whenever the next move changes. Set an issue's initial
+Estimate at filing with `issue create --estimate`; estimate a Backlog issue filed
+without one (typically a collaborator's), or revise during discussion, with
+`vmethod issue estimate <n> <points>` on the [shared scale](board.md#estimate-belongs-to-the-issue).
 
 Record dependencies only in the blocked-by relation, never in issue text: a task
 brief copies the body, so a copied blocker line reads as a live blocker. Set and
@@ -214,7 +217,8 @@ cleanup and main-checkout fast-forward. Reinstall dependencies when `postMerge.t
 changes, using `postMerge.install`, **last**, after package-owned work finishes.
 External owner button-merges need the same idempotent follow-up; a partial failure
 resumes rather than merging again. Read and act on newly startable work and estimates
-to reconsider. Log archive/follow-up failures and retry with bounded backoff.
+to reconsider, re-estimating where the work changed with `vmethod issue estimate <n> <points>`.
+Log archive/follow-up failures and retry with bounded backoff.
 
 Releases wait for a **quiet base branch**. Treat a release as its own reviewed card
 with included changes, compatibility, migration, benchmark and deployment evidence.

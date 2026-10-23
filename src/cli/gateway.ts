@@ -74,8 +74,16 @@ export async function gatewayVerb(
       ) {
         return transport.call("issueClose", { ref: args[1], comment: args[3] }, ctx);
       }
+      if (args[0] === "estimate" && args.length === 3) {
+        if (!/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(args[2]) || !Number.isFinite(Number(args[2]))) {
+          throw new Error(
+            "Usage: issue estimate <n> <points>; <points> requires a finite nonnegative number"
+          );
+        }
+        return transport.call("issueEstimate", { ref: args[1], points: Number(args[2]) }, ctx);
+      }
       throw new Error(
-        "Usage: issue create <title> <body-file> [--label l] [--estimate n] [--status name] | issue close <n> [--comment file] | issue edit <n> <body-file> | issue block <n> <blocker> | issue unblock <n> <blocker>"
+        "Usage: issue create <title> <body-file> [--label l] [--estimate n] [--status name] | issue close <n> [--comment file] | issue edit <n> <body-file> | issue block <n> <blocker> | issue unblock <n> <blocker> | issue estimate <n> <points>"
       );
     }
     case "scope-review":
