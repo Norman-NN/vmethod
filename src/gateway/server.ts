@@ -850,11 +850,18 @@ class GatewayServer {
           throw new Error("Missing created issue node ID");
         }
         const board = this.board;
+        // One operation for the board init writes (#199): membership add, then the
+        // Estimate/Status fields in a single ordered mutation.
+        this.github.writes.beginOperation("issue create", [
+          { repo: String(this.config.repo), number: Number(created.number) },
+        ]);
         await board.ensure(created.node_id);
-        if (estimate !== undefined) {
-          await board.setIssueField(created.node_id, "Estimate", String(estimate));
-        }
-        await board.setIssueField(created.node_id, "Status", status ?? workflowColumns[0]);
+        // One ordered board mutation, Status last with its progress companion (#199);
+        // the created issue's default Status files it in the first workflow column (#231).
+        await board.setIssueFields(created.node_id, [
+          ...(estimate !== undefined ? [{ name: "Estimate", value: String(estimate) }] : []),
+          { name: "Status", value: status ?? workflowColumns[0] },
+        ]);
       } catch (error) {
         throw new Error(
           `Created issue #${String(created.number)}; board follow-up failed: ${error instanceof Error ? error.message : String(error)}. Do not recreate; inspect this issue and retry board operations only.`,
@@ -880,6 +887,9 @@ class GatewayServer {
         "Issue body changed since read (or not read); read issue again before editing"
       );
     }
+    // Journal the body write as the verb's operation (#199) so a poll between it and
+    // a sibling write cannot report the card.
+    this.github.writes.beginOperation("issue edit", [{ repo: String(this.config.repo), number }]);
     await this.github.rest(
       `/repos/${String(this.config.repo)}/issues/${number}`,
       "PATCH",
@@ -932,6 +942,8 @@ class GatewayServer {
       current,
       "owner"
     );
+    // One operation for the assignment, summary comment and board handoff writes (#199).
+    this.github.writes.beginOperation("scope-review", [{ repo: String(this.config.repo), number }]);
     await setTurn(this.github, String(this.config.repo), number, current, next);
     await this.github.rest(
       `/repos/${String(this.config.repo)}/issues/${number}/comments`,

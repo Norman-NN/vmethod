@@ -31,19 +31,42 @@ test.each([
   }
 );
 
-test("recent own Owner review status writes identify a handoff window for the watcher", () => {
+test("operation records and handoff status writes identify an in-flight window within two minutes", () => {
   const f = fixtureServer([]);
   const config = { ...getConfig(f.root, {}), repo: "example/project" };
-  const at = new Date(f.deps.now()).toISOString();
-  const dir = join(f.env.XDG_STATE_HOME, "vmethod", "example-state");
-  mkdirSync(dir, { recursive: true });
+  const now = Date.UTC(2026, 9, 17, 10);
+  const entry = (number: number, at: string, kind: string, extra: Record<string, unknown> = {}) =>
+    `${JSON.stringify({ at, kind, repo: "example/project", number, ...extra })}\n`;
+  mkdirSync(join(f.env.XDG_STATE_HOME, "vmethod", "example-state"), { recursive: true });
   writeFileSync(
-    join(dir, "writes.jsonl"),
-    `${JSON.stringify({ at, kind: "board", repo: "example/project", number: 58, field: "Status", value: "Owner review" })}\n`
+    join(f.env.XDG_STATE_HOME, "vmethod", "example-state", "writes.jsonl"),
+    [
+      entry(55, new Date(now).toISOString(), "operation", { op: "review" }),
+      entry(58, new Date(now - 119_999).toISOString(), "operation", { op: "scope-review" }),
+      entry(59, new Date(now - 120_000).toISOString(), "operation", { op: "release-hold" }),
+      entry(60, new Date(now - 120_001).toISOString(), "operation", { op: "merge-task" }),
+      entry(61, new Date(now).toISOString(), "board", { field: "Status", value: "Executing" }),
+      entry(62, new Date(now).toISOString(), "board", { field: "Progress", value: "🤖🔨" }),
+      entry(63, new Date(now).toISOString(), "unassigned", { field: "Assignee", value: "peer" }),
+      entry(64, new Date(now - 121_000).toISOString(), "board", {
+        field: "Status",
+        value: "Spec review",
+      }),
+    ].join("")
   );
-  const journal = new WriteJournal(config, f.env, f.deps.now);
+  const journal = new WriteJournal(config, f.env, () => now);
+  // A fresh operation record keeps the card quiet; older ones age out at two minutes.
+  expect(journal.recentlyWrote("example/project", 55)).toBe(true);
   expect(journal.recentlyWrote("example/project", 58)).toBe(true);
-  expect(journal.recentlyWrote("example/project", 59)).toBe(false);
+  expect(journal.recentlyWrote("example/project", 59)).toBe(true);
+  expect(journal.recentlyWrote("example/project", 60)).toBe(false);
+  // The #178 handoff match: a recent Status move into a delivery column, and nothing else.
+  expect(journal.recentlyWrote("example/project", 61)).toBe(true);
+  expect(journal.recentlyWrote("example/project", 62)).toBe(false);
+  expect(journal.recentlyWrote("example/project", 63)).toBe(false);
+  expect(journal.recentlyWrote("example/project", 64)).toBe(false);
+  expect(journal.recentlyWrote("EXAMPLE/PROJECT", 55)).toBe(true);
+  expect(journal.recentlyWrote("example/project", 65)).toBe(false);
   f.done();
 });
 

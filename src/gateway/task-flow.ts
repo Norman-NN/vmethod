@@ -811,6 +811,15 @@ export class TaskFlow {
       (input.replyTo ? `in reply to ${input.replyTo}\n\n` : "") +
       (input.outcome === "owner" ? `Current head: ${sha(item.headRefOid)}\n\n` : "") +
       handback;
+    // One operation for the PR card and every linked issue's writes (#199): the
+    // watcher's violation checks stay quiet while the writes land.
+    this.host.github.writes.beginOperation("review", [
+      { repo: this.repo, number: this.number(input.ref) },
+      ...(taskIssueNumbers(String(item.body)) ?? []).map((number) => ({
+        repo: this.repo,
+        number,
+      })),
+    ]);
     await this.post(input.ref, body);
     await this.ready(item, !["owner", "approve"].includes(input.outcome));
     const progress = {
@@ -889,6 +898,7 @@ export class TaskFlow {
         await this.deps.workers?.stop?.(pr);
       }
     }
+    this.host.github.writes.beginOperation("ask", [{ repo: this.repo, number: this.number(ref) }]);
     await this.post(ref, `[orchestrator] OWNER QUESTION\n\n${readFileSync(file, "utf8")}`);
     await this.turn(ref, "owner");
     await this.card(
@@ -923,11 +933,16 @@ export class TaskFlow {
     }
     await this.host.github.rest(this.path(ref, "pulls"), "PATCH", updated, false);
     const comments = await this.host.comments(String(item.id));
+    // One operation for the turn and board writes, recorded before the GO post (#199):
+    // the comment may already exist from an earlier release attempt while these writes land.
+    this.host.github.writes.beginOperation("release-hold", [
+      { repo: this.repo, number: this.number(ref) },
+    ]);
     if (!comments.some((c) => /^\[orchestrator\] GO(?:\s|$)/.test(String(c.body)))) {
       await this.post(ref, "[orchestrator] GO\n\nThe hold is lifted; work may begin.");
     }
-    await this.card(item, "Executing", "🤖🔨");
     await this.turn(ref, null);
+    await this.card(item, "Executing", "🤖🔨");
     const wake = await this.wake(ref, "GO");
     return `Released #${ref}${wake ? `\n${wake}` : ""}`;
   }
@@ -1306,6 +1321,12 @@ export class TaskFlow {
       }
     }
     this.save(file, journal);
+    // One operation for the merge follow-up's issue and PR card writes (#199): the
+    // watcher stays quiet while closures, board moves and turn clears land.
+    this.host.github.writes.beginOperation("merge-task", [
+      { repo: this.repo, number: this.number(ref) },
+      ...journal.issues.map((number) => ({ repo: this.repo, number })),
+    ]);
     const step = async (name: string, action: () => Promise<void | boolean>) => {
       if (!journal.done.includes(name)) {
         if ((await action()) === false) {

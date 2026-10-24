@@ -3375,7 +3375,10 @@ export class EventLoop {
     if (
       report &&
       !linkedIssue &&
-      !this.writes.recentlyWrote(card.repo, card.number, 60_000) &&
+      // In flight, keep quiet (issue #199): the card carries a verb operation record
+      // or a recent handoff Status move, both within the two-minute window, so a
+      // poll between the verb's own writes never reports its handoff.
+      !this.writes.recentlyWrote(card.repo, card.number) &&
       ((["Spec review", "Owner review"].includes(card.column) && card.assignees.length !== 1) ||
         mismatch)
     ) {

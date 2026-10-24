@@ -22,6 +22,10 @@ const STALE_LOCK_MS = 3_000;
 
 const RETENTION_MS = 24 * 60 * 60_000;
 const MATCH_MS = 2 * 60_000;
+/** A verb's operation record counts as in-flight for two minutes; the watcher's
+ * violation checks keep such a card quiet so a poll between the verb's own
+ * writes never reports its handoff (#199). */
+const INFLIGHT_MS = MATCH_MS;
 
 export interface WriteRecord {
   /** ISO-8601 server-observation time of the successful mutation response. */
@@ -34,6 +38,8 @@ export interface WriteRecord {
   itemId?: string;
   field?: string;
   value?: string | number | null;
+  /** Operation label for a verb's own in-flight handoff record. */
+  op?: string;
 }
 
 /** Successful writes only, recorded at the single GitHub I/O boundary. Unknown writes
@@ -78,17 +84,44 @@ export class WriteJournal {
     );
   }
 
-  /** Whether this account recently changed this card, including an in-flight handoff. */
-  recentlyWrote(repo: string, number: number, withinMs = 60_000): boolean {
+  /** Record the start of a verb's multi-field operation for every card it will write (#199).
+   * The watcher's violation checks skip a card whose operation record is within two minutes,
+   * so a poll between the verb's own writes never reports its handoff.
+   */
+  beginOperation(op: string, targets: { repo: string; number: number }[]): void {
+    try {
+      for (const target of targets) {
+        this.append({
+          at: new Date(this.now()).toISOString(),
+          kind: "operation",
+          op,
+          repo: target.repo,
+          number: target.number,
+        });
+      }
+    } catch (error) {
+      throw new Error(
+        `Cannot record the ${op} operation before its writes; the watcher would report the affected cards' handoff`,
+        { cause: error }
+      );
+    }
+  }
+
+  /** Whether this account's journal marks this card in flight, keeping the watcher's
+   * violation checks quiet: a verb's operation record within the window (#199), or a
+   * recent Status move into a delivery column (the #178 open-task skip).
+   */
+  recentlyWrote(repo: string, number: number, withinMs = INFLIGHT_MS): boolean {
     const since = this.now() - withinMs;
     return this.read().some(
       (entry) =>
         entry.repo.toLowerCase() === repo.toLowerCase() &&
         entry.number === number &&
         Date.parse(entry.at) >= since &&
-        entry.kind === "board" &&
-        entry.field === "Status" &&
-        ["Spec review", "Executing", "Owner review"].includes(String(entry.value))
+        (entry.kind === "operation" ||
+          (entry.kind === "board" &&
+            entry.field === "Status" &&
+            ["Spec review", "Executing", "Owner review"].includes(String(entry.value))))
     );
   }
 
