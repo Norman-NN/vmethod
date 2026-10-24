@@ -271,7 +271,6 @@ worker models
 worker health
 suggest-model <issue>
 grade <delivery-pr> [points]
-cost backfill [--dry-run] [--pr <n>]...
 ```
 
 The wrapper must set `VMETHOD_ROLE=orchestrator`. Worker clients cannot launch,
@@ -334,24 +333,6 @@ segments, never an issue rollup. `worker status` displays tokens and USD so far;
 the existing watcher poll updates the task PR card automatically, rounded to two
 formatted as `$0.00` on the board (the model log and GRADE text keep full precision). Configure family prices
 and migrate the board as described in [worker cost accounting](learnings.md#worker-cost-and-model-log-migration).
-`cost backfill` is an orchestrator-only, idempotent recovery command for existing
-task PRs. It reads worker state first, configured legacy worktree records second,
-and model-log USD values last. OpenCode assistant-message usage is priced per
-request at its model family's matching prompt tier, then summed. When
-worker sessions contain legacy segments without request caches, requests are
-attributed by their own model, or by the switch timestamp for missing/repeated
-models. Recorded earlier segment totals and USD are preserved. If attributed
-request usage exceeds a segment's totals, that segment uses totals-only base
-pricing and displays `≥` rather than blocking status or grading.
-When assistant-message history is truncated, the remaining
-cumulative tokens are priced at the session's model and marked `partial message
-history`. Totals-only, partial-history and legacy-only records are lower bounds:
-the report and board show `≥
-$0.00`, and the model log records `costSource: "backfill-partial"` and
-`costCoverage: "partial"`. A dry run prints per-PR results and totals without
-writing. Archived cards are left untouched; when a model-log record exists,
-recovered USD is recorded there and the report identifies the archived card.
-Unrecoverable sessions remain unknown, never zero.
 
 Records under `$XDG_STATE_HOME/vmethod/<stateName>/workers/<pr>.json` hold session
 identity, repository, issue, worktree, opening Estimate and timestamped model

@@ -28,10 +28,6 @@ export interface Operations {
   worker: { input: { args: string[] }; output: string };
   suggestModel: { input: { ref: string }; output: string };
   grade: { input: { ref: string; points?: number }; output: string };
-  costBackfill: {
-    input: { dryRun?: boolean; prs?: number[] };
-    output: string;
-  };
   workerAccess: { input: { directory: string }; output: string };
   openTask: { input: OpenTaskInput; output: string };
   reviewTask: { input: ReviewInput; output: string };
