@@ -61,8 +61,6 @@ import { blockerLabel, blockerReference, reference, type ThreadRef } from "./ref
 import { LearningsService } from "./learnings.js";
 import { LearningAnnotations, type LearningBundle } from "./learning-annotations.js";
 import { checkLearningPr } from "./learning-check.js";
-import { backfillCosts } from "./cost-backfill.js";
-import type { Price, PriceTier } from "../cost.js";
 import { ConflictService } from "./conflicts.js";
 import { verifyConflictHead } from "./verify-hook.js";
 import { isModelApproved } from "./model-gate.js";
@@ -306,54 +304,6 @@ class GatewayServer {
   }
   grade: Handlers["grade"] = async ({ ref, points }) =>
     this.workers.grade(this.localNumber(ref), points);
-  costBackfill: Handlers["costBackfill"] = async ({ dryRun, prs }) => {
-    if (dryRun !== undefined && typeof dryRun !== "boolean") {
-      throw new Error("Invalid dryRun");
-    }
-    if (
-      prs !== undefined &&
-      (!Array.isArray(prs) || prs.some((pr) => !Number.isSafeInteger(pr) || pr < 1))
-    ) {
-      throw new Error("Invalid PR numbers");
-    }
-    const models = loadYaml(this.root, "models") as {
-      family: string;
-      model: string;
-      price?: Price;
-      tiers?: PriceTier[];
-    }[];
-    return backfillCosts(
-      {
-        root: this.root,
-        config: this.config,
-        env: this.env,
-        models,
-        readSession: (id) => this.workers.readSessionForCost(id),
-        inspectCard: async (pr) => {
-          const item = await this.richThread(pr, "pr");
-          const value = this.projectValue(item, "Cost");
-          return {
-            cost: typeof value === "string" ? value : null,
-            archived: this.projectCard(item).isArchived === true,
-          };
-        },
-        setCost: (pr, cost) => this.setWorkerField(pr, "pr", "Cost", cost),
-        listPrs: async () => {
-          const snapshot = await this.board.snapshot();
-          return (await this.board.cards(snapshot.id))
-            .filter(
-              (card) =>
-                card.kind === "PullRequest" &&
-                card.repo?.toLowerCase() === String(this.config.repo).toLowerCase() &&
-                Number.isSafeInteger(card.number)
-            )
-            .map((card) => card.number!);
-        },
-        report: this.deps.report,
-      },
-      { dryRun, prs }
-    );
-  };
   suggestModel: Handlers["suggestModel"] = async ({ ref }) => {
     const suggestion = await this.workers.suggest(this.localNumber(ref));
     const family = suggestion.split(":", 1)[0];
@@ -2086,7 +2036,6 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     boardSetIssue: server.boardSetIssue,
     worker: server.worker,
     grade: server.grade,
-    costBackfill: server.costBackfill,
     suggestModel: server.suggestModel,
     workerAccess: server.workerAccess,
     openTask: server.openTask,
@@ -2131,7 +2080,6 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     boardSetIssue: ["orchestrator"],
     worker: ["orchestrator"],
     grade: ["orchestrator"],
-    costBackfill: ["orchestrator"],
     suggestModel: ["orchestrator"],
     workerAccess: ["worker", "orchestrator"],
     openTask: ["orchestrator"],

@@ -262,8 +262,8 @@ including cache creation in input. Result-event usage supplies cumulative token
 totals (or assistant totals when no result exists), never request tier selection.
 When only totals or partial history remain, unmeasured tokens use base rates and
 the board/status/GRADE cost is marked `≥ $0.00`. The model log carries
-`costCoverage: "partial"`; missing usage remains unknown. Polling, grading and
-backfill share the request-pricing function in `src/cost.ts`.
+`costCoverage: "partial"`; missing usage remains unknown. Polling and grading
+share the request-pricing function in `src/cost.ts`.
 Provider cost is retained only as `segments[].reportedUsd`. Claude's reported cost
 is cumulative over resumed turns: keep its latest value per session, never sum
 those repeated cumulative values. Its `modelUsage` totals are not per-turn usage.
