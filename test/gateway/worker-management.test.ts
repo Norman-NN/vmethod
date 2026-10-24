@@ -807,6 +807,7 @@ test.each(["auto-", "", "legacy"])(
           setEstimate: unexpected,
           workerIdentity: unexpected,
           issue: unexpected,
+          modelApproval: unexpected,
         };
         const service = new WorkerService(f.root, getConfig(f.root, {}), f.env, f.deps, hooks);
         w.workerStatus = (pr) => {

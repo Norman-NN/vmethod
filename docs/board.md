@@ -132,7 +132,8 @@ actions maintain it, never speculative watcher writes. `models.yaml` maps famili
 to ids, backend kind and owner gate; families must match board options.
 
 The baseline options are sol, luna, astra, sonnet, opus, glm, big-pickle, glm-flash,
-other. Use `other` only with an explicit id. Owner gates apply even when a model is
+other; migration 0005 appends fable. Use `other` only with an explicit id. Owner gates
+apply even when a model is
 selected by full id or inherited from a hint. See [model selection](orchestrator-guide.md#models-and-grading).
 
 ## Progress

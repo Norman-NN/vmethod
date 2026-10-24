@@ -845,6 +845,7 @@ test("grades stage locally, batch into one PR, and start fresh after merge witho
     modelComment: unexpected,
     workerIdentity: unexpected,
     issue: unexpected,
+    modelApproval: unexpected,
     setEstimate: async () => {},
     gradeComment: async () => {},
     submitLearnings: () => f.service.command({ action: "submit" }),

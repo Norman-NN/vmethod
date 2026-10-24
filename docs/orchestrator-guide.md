@@ -256,7 +256,16 @@ The baseline default family is sol unless an explicit selection or an issue hint
 supplies another; project policy and current learnings guide deliberate overrides.
 Backend isolation differs: an edit-acceptance mode is not a filesystem sandbox;
 consider `workerUser` and actual OS access. Never bypass permissions. Owner-gated
-families require explicit authorization, including when selected by full id.
+families (`gate: owner`, today astra and fable) require two-layer authorization,
+including when selected by full id: your own `--owner-approved` flag on
+`open-task`, `worker start` or `worker model`, **and** a comment the gateway can
+verify — the owner's task issue or task PR comment whose first line is exactly
+`APPROVE MODEL <family>`, posted after the issue body's last edit. The gateway
+refuses with that exact line until it can verify the comment's pinned identity
+(an edit by another account voids it), so ask the owner to post the line after
+agreeing scope; editing the issue body voids every earlier line and needs a
+fresh one. A direct task has no issue to read at open time: its launch still
+verifies the task PR for the line.
 
 On quota or model failure, inspect status/logs, switch the existing session through
 the worker wrapper and continue with its context on the same backend. A backend

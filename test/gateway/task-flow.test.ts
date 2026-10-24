@@ -4,6 +4,7 @@ import { promisify } from "node:util";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { parse } from "graphql";
+import { stringify } from "yaml";
 import { TaskFlow, conformingTitle } from "../../src/gateway/task-flow.js";
 import { GitHubClient, type Dependencies } from "../../src/gateway/client.js";
 import { getConfig } from "../../src/config.js";
@@ -514,7 +515,8 @@ function fixture() {
   const resumes: { pr: number; prompt: string }[] = [];
   const writes: { path: string; body: ObjectData }[] = [];
   let approved: boolean | "unknown" = true,
-    issueApproved: boolean | "unknown" = true;
+    issueApproved: boolean | "unknown" = true,
+    modelApproval = true;
   let worker: "live" | "stopped" | "unknown" = "stopped";
   let fail = "",
     liveBase = baseSha,
@@ -837,6 +839,10 @@ function fixture() {
     approved: async () => approved,
     candidates: async () => [],
     issueApproved: async () => issueApproved,
+    modelApproval: async (issue, family) => {
+      events.push(`model-approval ${issue} ${family}`);
+      return modelApproval;
+    },
   };
   return {
     root,
@@ -854,6 +860,7 @@ function fixture() {
     set: (values: {
       approved?: boolean | "unknown";
       issueApproved?: boolean;
+      modelApproval?: boolean;
       worker?: typeof worker;
       fail?: string;
       head?: string;
@@ -875,6 +882,7 @@ function fixture() {
     }) => {
       approved = values.approved ?? approved;
       issueApproved = values.issueApproved ?? issueApproved;
+      modelApproval = values.modelApproval ?? modelApproval;
       worker = values.worker ?? worker;
       fail = values.fail ?? fail;
       currentHead = values.head ?? currentHead;
@@ -2351,6 +2359,61 @@ test.each(["unapproved", "gated", "handoff"])(
   }
 );
 
+test.each(["astra", "fable"])(
+  "open-task honors --owner-approved only with the owner's verified line (%s, #218)",
+  async (family) => {
+    const f = fixture();
+    if (family === "fable") {
+      writeFileSync(
+        join(f.root, "models.yaml"),
+        stringify([
+          {
+            family: "sol",
+            model: "example/replace-me",
+            kind: "opencode",
+            gate: "none",
+            tier: "standard",
+          },
+          {
+            family: "fable",
+            model: "claude-fable-5-1",
+            kind: "claude",
+            gate: "owner",
+            tier: "expensive",
+            fallback: ["sol"],
+          },
+        ])
+      );
+    }
+    // The orchestrator's flag alone is not owner authority: the gateway verifies
+    // the owner's APPROVE MODEL line on the issue before any mutation.
+    f.set({ modelApproval: false });
+    await expect(f.flow().open({ issue: "8", model: family, ownerApproved: true })).rejects.toThrow(
+      `APPROVE MODEL ${family}`
+    );
+    expect(f.writes).toEqual([]);
+    expect(f.events).toContain(`model-approval 8 ${family}`);
+    // The owner's verified line authorizes the launch.
+    f.set({ modelApproval: true });
+    await expect(
+      f.flow().open({ issue: "8", model: family, ownerApproved: true })
+    ).resolves.toContain("27");
+    expect(f.touched).toContainEqual(
+      expect.objectContaining({ id: "pr", field: "Model", value: family })
+    );
+    f.done();
+  }
+);
+
+test("open-task refuses a gated model without --owner-approved before any verification query", async () => {
+  const f = fixture();
+  await expect(f.flow().open({ issue: "8", model: "astra" })).rejects.toThrow(
+    "Model requires --owner-approved"
+  );
+  expect(f.events).not.toContain("model-approval 8 astra");
+  f.done();
+});
+
 test("open-task creates a draft with a manual Development link, clears issue Progress and never estimates PRs", async () => {
   const f = fixture();
   f.set({ body: "## Approved spec\n\nImplement the test." });
@@ -2699,6 +2762,7 @@ test("a PR with no recorded worker session merges through the real session guard
     setEstimate: unexpected,
     workerIdentity: unexpected,
     issue: unexpected,
+    modelApproval: unexpected,
   });
   f.deps.workers!.status = (pr, forMerge) => workers.mergeStatus(pr, forMerge);
   await expect(f.flow().status("27")).resolves.toBe("unknown");
@@ -3156,6 +3220,9 @@ test("open held task, release, and worker start; second release has no side effe
       },
       issue: async () => {
         throw new Error("Unexpected issue read");
+      },
+      modelApproval: async () => {
+        throw new Error("Unexpected model gate");
       },
     }
   );

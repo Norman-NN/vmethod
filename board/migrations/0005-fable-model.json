@@ -1,0 +1,31 @@
+{
+  "version": 5,
+  "up": [{ "op": "add_option", "field": "Model", "option": "fable" }],
+  "expect": {
+    "fields": {
+      "Status": {
+        "type": "single_select",
+        "options": ["Backlog", "Ready", "In progress", "In review", "Approved", "Done"]
+      },
+      "Model": {
+        "type": "single_select",
+        "options": [
+          "sol",
+          "luna",
+          "astra",
+          "sonnet",
+          "opus",
+          "glm",
+          "big-pickle",
+          "glm-flash",
+          "other",
+          "fable"
+        ]
+      },
+      "Estimate": { "type": "number" },
+      "Cost": { "type": "text" },
+      "Progress": { "type": "text" }
+    },
+    "policy": { "doneKeeps": 6 }
+  }
+}

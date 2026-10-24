@@ -34,7 +34,8 @@ function fixture(
   requests: Request[] = [],
   priced = false,
   solGate: "owner" | "none" = "owner",
-  flash = false
+  flash = false,
+  fable = false
 ) {
   const root = validProject();
   const directory = join(root, ".worktrees/9-task");
@@ -87,6 +88,18 @@ function fixture(
         tier: "standard",
         ...(priced ? { price: { input: 3, output: 15, cached: 0.3 } } : {}),
       },
+      ...(fable
+        ? [
+            {
+              family: "fable",
+              model: "claude-fable-test",
+              kind: "claude",
+              gate: "owner",
+              tier: "expensive",
+              fallback: ["sol"],
+            },
+          ]
+        : []),
       { family: "other", model: "fake/other", kind: "opencode", gate: "owner", tier: "expensive" },
     ])
   );
@@ -182,6 +195,7 @@ function fixture(
     submitLearnings: vi.fn(async () => "Learning submission complete"),
     workerIdentity: vi.fn(async () => ({ GH_TOKEN: "worker-token", PATH: "fake-path" })),
     issue: vi.fn(async () => ({ estimate: 3, kind: "tooling" })),
+    modelApproval: vi.fn(async (_pr, _issue, family) => family === "sol" || family === "fable"),
   };
   const config = getConfig(root, {});
   (config.branches as Record<string, unknown>).mainCheckout = root;
@@ -2130,6 +2144,58 @@ test("raw configured ids obey the family gate; unknown raw ids obey the other po
       "--owner-approved"
     );
   }
+  f.done();
+});
+
+test("worker start honors the verifiable owner gate for fable (#218)", async () => {
+  const f = fixture([], false, "none", false, true);
+  await expect(f.service.command(["start", "31", "--model", "fable"])).rejects.toThrow(
+    "--owner-approved"
+  );
+  expect(f.hooks.prepare).not.toHaveBeenCalled();
+  // The flag alone is not owner authority: without the owner's verified line the gate refuses.
+  vi.mocked(f.hooks.modelApproval).mockClear();
+  vi.mocked(f.hooks.modelApproval).mockResolvedValue(false);
+  await expect(
+    f.service.command(["start", "31", "--model", "fable", "--owner-approved"])
+  ).rejects.toThrow("APPROVE MODEL fable");
+  expect(f.hooks.modelApproval).toHaveBeenCalledWith(31, 9, "fable");
+  expect(f.hooks.prepare).not.toHaveBeenCalled();
+  // The owner's `APPROVE MODEL fable` line authorizes the launch.
+  vi.mocked(f.hooks.modelApproval).mockResolvedValue(true);
+  await f.service.command(["start", "31", "--model", "fable", "--owner-approved"]);
+  expect(f.record().model.family).toBe("fable");
+  expect(vi.mocked(f.deps.processes!.launch).mock.calls[0][0].prompt).toContain('Model: "fable"');
+  f.done();
+});
+
+test("worker model honors the verifiable owner gate for fable (#218)", async () => {
+  const f = fixture([...start, ...measuredStatus()], false, "none", false, true);
+  await f.service.command(["start", "31"]);
+  expect(f.record().model.family).toBe("glm");
+  vi.mocked(f.hooks.modelApproval).mockClear();
+  vi.mocked(f.hooks.modelApproval).mockResolvedValue(false);
+  await expect(f.service.command(["model", "31", "fable", "--owner-approved"])).rejects.toThrow(
+    "APPROVE MODEL fable"
+  );
+  expect(f.hooks.modelApproval).toHaveBeenCalledWith(31, 9, "fable");
+  expect(f.record().model.family).toBe("glm");
+  expect(f.deps.processes!.launch).not.toHaveBeenCalled();
+  // The owner's verified line authorizes the same-backed switch on the existing session.
+  vi.mocked(f.hooks.modelApproval).mockResolvedValue(true);
+  await f.service.command([
+    "model",
+    "31",
+    "fable",
+    "--owner-approved",
+    "--why",
+    "owner line posted",
+  ]);
+  expect(f.record().model.family).toBe("fable");
+  expect(vi.mocked(f.hooks.modelComment)).toHaveBeenCalledWith(
+    31,
+    expect.stringContaining("model switched to fable")
+  );
   f.done();
 });
 
