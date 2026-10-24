@@ -642,7 +642,7 @@ class GatewayServer {
       this.deps
     );
     const viewer = object(
-      object(await client.graphql(`query WorkerIdentity { viewer { ${actorFields} } }`)).viewer
+      object(await client.graphql(`query WorkerIdentity { viewer { __typename login databaseId } }`)).viewer
     );
     if (this.filter.identity(viewer, false)?.role !== "worker") {
       throw new Error(
