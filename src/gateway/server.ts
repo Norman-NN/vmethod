@@ -688,7 +688,10 @@ class GatewayServer {
           resolveConflicts: (pr) => this.conflicts.resolve(pr),
           conflictPending: (pr) => this.conflicts.pending(pr),
           conflictFixing: (pr) => this.conflicts.fixing(pr),
-          board: { set: (input) => this.board.set(input) },
+          board: {
+            set: (input) => this.board.set(input),
+            moveToTop: (itemId) => this.board.moveToTop(itemId),
+          },
           digest: this.digest,
         },
         input
