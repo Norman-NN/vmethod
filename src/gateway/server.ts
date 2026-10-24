@@ -756,7 +756,7 @@ class GatewayServer {
   }
 
   private get conflicts(): ConflictService {
-    return new ConflictService(this.root, this.config, this.env, this.deps, {
+    return new ConflictService(this.root, this.config, this.env, eventDeps(this.deps), {
       snapshot: async (pr) => {
         await this.flow.conflictTask(String(pr));
         return this.ci.snapshot(String(pr));
