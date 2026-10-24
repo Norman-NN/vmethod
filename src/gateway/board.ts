@@ -506,58 +506,71 @@ export class BoardService implements BoardIO {
     value: string | null,
     progressValue?: string
   ): Promise<string> {
-    if (name === "Cost") {
+    return this.setIssueFields(contentId, [
+      { name, value, ...(progressValue !== undefined ? { progressValue } : {}) },
+    ]);
+  }
+
+  /** Write several fields of one issue card through a single ordered board mutation,
+   * journaling the verb's board writes as one operation (#199). A Status entry keeps
+   * its progress companion: the progress change rides the same mutation before Status
+   * (the #178 scope handoff order). Estimates must use the shared points scale; Cost
+   * is refused. Membership is read from the issue side, never the project listing.
+   */
+  async setIssueFields(
+    contentId: string,
+    entries: { name: string; value: string | null; progressValue?: string }[]
+  ): Promise<string> {
+    if (entries.some((entry) => entry.name === "Cost")) {
       throw new Error("Never set Cost on an issue");
     }
-    if (
-      typeof name !== "string" ||
-      !name ||
-      (value !== null && (typeof value !== "string" || !value.trim()))
-    ) {
-      throw new Error("Invalid board field/value");
-    }
-    if (value === null && !["Progress", "Estimate"].includes(name)) {
-      throw new Error("Only Progress and Estimate support --clear");
-    }
-    if (progressValue !== undefined && (name !== "Status" || !progressValue.trim())) {
-      throw new Error("Progress override is supported only for Status writes");
+    for (const entry of entries) {
+      if (
+        typeof entry.name !== "string" ||
+        !entry.name ||
+        (entry.value !== null && (typeof entry.value !== "string" || !entry.value.trim()))
+      ) {
+        throw new Error("Invalid board field/value");
+      }
+      if (entry.value === null && !["Progress", "Estimate"].includes(entry.name)) {
+        throw new Error("Only Progress and Estimate support --clear");
+      }
+      if (
+        entry.progressValue !== undefined &&
+        (entry.name !== "Status" || !entry.progressValue.trim())
+      ) {
+        throw new Error("Progress override is supported only for Status writes");
+      }
     }
     const snapshot = await this.snapshot();
     compatibility(readState(snapshot.readme), this.boardVersion, this.report);
-    const field = snapshot.fields.find((field) => field.name === name);
-    if (
-      !field ||
-      (!["number", "single_select"].includes(field.type) &&
-        !(name === "Progress" && field.type === "text"))
-    ) {
-      throw new Error("Expected a single-select or number board field, or Progress");
-    }
-    if (name === "Progress" && value !== null) {
-      const states = new Set([
-        ...Object.values(progressStates),
-        ...Object.values(readState(snapshot.readme).aliases),
-      ]);
-      const words = value.trim().split(/\s+/);
+    const resolved = entries.map((entry) => {
+      const field = snapshot.fields.find((candidate) => candidate.name === entry.name);
       if (
-        !states.has(words[0]) ||
-        !/^(?:🔁(?:\d\uFE0F\u20E3)+(?: 🔴)?|🔴)?$/.test(words.slice(1).join(" "))
+        !field ||
+        (!["number", "single_select"].includes(field.type) &&
+          !(entry.name === "Progress" && field.type === "text"))
       ) {
-        throw new Error("Invalid Progress value");
+        throw new Error("Expected a single-select or number board field, or Progress");
       }
-    }
-    if (progressValue !== undefined) {
-      const states = new Set([
-        ...Object.values(progressStates),
-        ...Object.values(readState(snapshot.readme).aliases),
-      ]);
-      const words = progressValue.trim().split(/\s+/);
-      if (
-        !states.has(words[0]) ||
-        !/^(?:🔁(?:\d\uFE0F\u20E3)+(?: 🔴)?|🔴)?$/.test(words.slice(1).join(" "))
-      ) {
-        throw new Error("Invalid Progress value");
+      for (const text of [
+        ...(entry.name === "Progress" && entry.value !== null ? [entry.value] : []),
+        ...(entry.progressValue !== undefined ? [entry.progressValue] : []),
+      ]) {
+        const states = new Set([
+          ...Object.values(progressStates),
+          ...Object.values(readState(snapshot.readme).aliases),
+        ]);
+        const words = text.trim().split(/\s+/);
+        if (
+          !states.has(words[0]) ||
+          !/^(?:🔁(?:\d\uFE0F\u20E3)+(?: 🔴)?|🔴)?$/.test(words.slice(1).join(" "))
+        ) {
+          throw new Error("Invalid Progress value");
+        }
       }
-    }
+      return { field, value: entry.value, progressValue: entry.progressValue };
+    });
     const node = await this.issueSideItem(contentId, snapshot.id);
     if (!node) {
       throw new Error("Issue is not on configured board");
@@ -567,28 +580,30 @@ export class BoardService implements BoardIO {
       throw new Error("Issue is not on configured board");
     }
     this.scope(card);
-    let parsed: string | number | null = value;
-    if (name === "Estimate" && value !== null) {
-      assertEstimate(value.trim() ? Number(value) : NaN);
-    }
-    if (field.type === "number" && value !== null) {
-      if (
-        !/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(value) ||
-        !Number.isFinite(Number(value))
-      ) {
-        throw new Error("Expected finite numeric board value");
+    const changes: { id: string; field: Field; value: string | number | null }[] = [];
+    for (const entry of resolved) {
+      let parsed: string | number | null = entry.value;
+      if (entry.field.name === "Estimate" && entry.value !== null) {
+        assertEstimate(entry.value.trim() ? Number(entry.value) : NaN);
       }
-      parsed = Number(value);
-    }
-    const changes: { id: string; field: Field; value: string | number | null }[] = [
-      { id: card.id, field, value: parsed },
-    ];
-    if (name === "Status") {
-      const progressField = snapshot.fields.find((field) => field.name === "Progress");
-      if (!progressField) {
-        throw new Error("Missing Progress field");
+      if (entry.field.type === "number" && entry.value !== null) {
+        if (
+          !/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(entry.value) ||
+          !Number.isFinite(Number(entry.value))
+        ) {
+          throw new Error("Expected finite numeric board value");
+        }
+        parsed = Number(entry.value);
       }
-      changes.unshift({ id: card.id, field: progressField, value: progressValue ?? null });
+      if (entry.field.name === "Status") {
+        const progressField = snapshot.fields.find((candidate) => candidate.name === "Progress");
+        if (!progressField) {
+          throw new Error("Missing Progress field");
+        }
+        // The progress companion rides the same mutation before Status (#178/#199).
+        changes.push({ id: card.id, field: progressField, value: entry.progressValue ?? null });
+      }
+      changes.push({ id: card.id, field: entry.field, value: parsed });
     }
     await this.setChanges(snapshot.id, changes);
     await this.orderAfterWrite(card, name, parsed, progressValue, snapshot.id);

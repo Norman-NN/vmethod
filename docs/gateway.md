@@ -478,7 +478,11 @@ REVIEW, ANSWER, AMENDMENT or GO handles that request. Other comments do not.
 The watcher synchronizes management assignees. Linked issues wait in Executing,
 without mirroring PR review columns, but explicit issue summons retain their owner turn.
 It reports unassigned Spec review and Owner review cards
-and Progress/assignee mismatches. PR links are replaced only after the full PR poll
+and Progress/assignee mismatches, unless the write journal marks the card in
+flight: a multi-field verb's operation record or a handoff Status move within two
+minutes covers every poll between the verb's own writes (#178, #199), so the
+handoff verbs order assignment writes before the board move and journal one
+operation per card. PR links are replaced only after the full PR poll
 succeeds; a failed PR poll retains the last successful snapshot and skips board
 violation reporting for that cycle, so stale or missing links never produce a verdict.
 Known states repair assignments from the same board poll; ambiguous states are
