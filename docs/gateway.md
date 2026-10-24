@@ -965,6 +965,14 @@ Watcher terminal events are `RESOLVED #n (step k)`,
 orchestrator just to repeat CONFLICT. State and locks live under the configured
 per-user state root, not in the package checkout.
 
+The per-PR lock is owned like the watcher's: a `0700` file holding the
+reconciling process's pid and process start time. A reconcile clears a lock
+whose owner no longer runs — including a lock left by an older release, whose
+empty directory carries no owner at all — and continues normally. A live owner
+reads as a quiet in-progress pending line and never blocks or fails the
+reconcile, so a watcher killed mid-resolution cannot wedge later reconciles
+behind a stale lock.
+
 ### Task worktree cleanup
 
 After confirming a merge and stopping its worker, `merge-task` journals a `worktree`

@@ -1,16 +1,18 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test, vi } from "vitest";
 import { fixture } from "../helpers.js";
+import { proc } from "./watch-fake.js";
+import { type EventDeps } from "../../src/gateway/events.js";
 import {
   ConflictService,
   conflictCertification,
   type ConflictHooks,
 } from "../../src/gateway/conflicts.js";
 import type { CiSnapshot } from "../../src/gateway/checks.js";
-import { GitHubHttpError, type Dependencies } from "../../src/gateway/client.js";
+import { GitHubHttpError } from "../../src/gateway/client.js";
 import { verifyConflictHead } from "../../src/gateway/verify-hook.js";
 
 const exec = promisify(execFile);
@@ -111,7 +113,7 @@ async function setup(conflict: boolean, approved: boolean, bad = false, escalate
       card = { status: prior.status, progress: prior.progress, assignees: [...prior.assignees] };
     }),
   };
-  const deps: Dependencies = {
+  const deps: EventDeps = {
     fetch: async () => {
       throw new Error("Unexpected network access");
     },
@@ -130,6 +132,9 @@ async function setup(conflict: boolean, approved: boolean, bad = false, escalate
       throw new Error("Unexpected polling sleep");
     },
     report: vi.fn(),
+    pid: process.pid,
+    // Lock liveness: only our own pid reads as alive, at process start 42.
+    readProc: (pid) => (pid === process.pid ? proc(42) : null),
   };
   const createService = () =>
     new ConflictService(
@@ -196,6 +201,17 @@ async function setup(conflict: boolean, approved: boolean, bad = false, escalate
           reason: "conflict dispatch failed; see gateway diagnostics",
         })
       );
+    },
+    lock: join(env.XDG_STATE_HOME, "vmethod/conflict-test/conflicts/31.lock"),
+    /** Seed the per-PR lock; a null body leaves the empty directory of pre-owned-lock versions. */
+    seedLock: (body: string | null) => {
+      const directory = join(env.XDG_STATE_HOME, "vmethod/conflict-test/conflicts");
+      mkdirSync(directory, { recursive: true });
+      if (body === null) {
+        mkdirSync(join(directory, "31.lock"));
+        return;
+      }
+      writeFileSync(join(directory, "31.lock"), body);
     },
     advance: () => {
       now += 61 * 60_000;
@@ -495,3 +511,67 @@ test.each([
   },
   15000
 );
+
+test("a lock left by a dead owner is cleared and the reconcile completes", async () => {
+  const f = await setup(true, true);
+  // The seeded holder is not our pid, and the default readProc knows no other pid.
+  f.seedLock(`${JSON.stringify({ pid: 5432, start: 6, at: new Date(0).toISOString() })}\n`);
+  expect(await f.service.resolve(31)).toBe("PENDING #31: conflict fixer dispatched (step 3)");
+  expect(existsSync(f.lock)).toBe(false);
+  expect(await f.createService().resolve(31)).toBe("MERGED #31 (conflict-only, approval carried)");
+}, 15000);
+
+test("a reused pid with a different recorded start reads as a dead owner", async () => {
+  const f = await setup(true, true);
+  f.seedLock(`${JSON.stringify({ pid: f.deps.pid, start: 6, at: new Date(0).toISOString() })}\n`);
+  expect(await f.service.resolve(31)).toBe("PENDING #31: conflict fixer dispatched (step 3)");
+  expect(existsSync(f.lock)).toBe(false);
+}, 15000);
+
+test("a live lock owner reads as an in-progress pending instead of a failure", async () => {
+  const f = await setup(true, true);
+  f.seedLock(`${JSON.stringify({ pid: 5432, start: 42, at: new Date(0).toISOString() })}\n`);
+  // Any pid read through /proc reports the live owner's start: the holder stays in control.
+  f.deps.readProc = () => proc(42);
+  expect(await f.service.resolve(31)).toBe(
+    "PENDING #31: conflict resolution in progress (pid 5432)"
+  );
+  expect(f.hooks.snapshot).not.toHaveBeenCalled();
+  expect(f.deps.report).not.toHaveBeenCalled();
+  const preserved = readFileSync(f.lock, "utf8");
+  await f.createService().resolve(31);
+  expect(readFileSync(f.lock, "utf8")).toBe(preserved);
+}, 15000);
+
+test("a legacy empty-directory lock counts as a dead owner and is cleared", async () => {
+  const f = await setup(true, true);
+  f.seedLock(null);
+  expect(await f.service.resolve(31)).toBe("PENDING #31: conflict fixer dispatched (step 3)");
+  expect(existsSync(f.lock)).toBe(false);
+  expect(await f.createService().resolve(31)).toBe("MERGED #31 (conflict-only, approval carried)");
+}, 15000);
+
+test("a legacy lock directory with contents fails loudly instead of being deleted", async () => {
+  const f = await setup(true, true);
+  f.seedLock(null);
+  writeFileSync(join(f.lock, "unexpected"), "keep");
+  await expect(f.service.resolve(31)).rejects.toThrow(
+    "Conflict #31: cannot clear the legacy conflict lock directory"
+  );
+  expect(existsSync(join(f.lock, "unexpected"))).toBe(true);
+}, 15000);
+
+test("the held lock is mode 0700 and is released even when the run fails", async () => {
+  const f = await setup(true, true);
+  let heldMode = -1;
+  vi.mocked(f.hooks.snapshot).mockImplementation(async () => {
+    heldMode = statSync(f.lock).mode & 0o777;
+    return { ...f.snapshot };
+  });
+  expect(await f.service.resolve(31)).toBe("PENDING #31: conflict fixer dispatched (step 3)");
+  expect(heldMode).toBe(0o700);
+  expect(existsSync(f.lock)).toBe(false);
+  vi.mocked(f.hooks.snapshot).mockRejectedValue(new Error("snapshot unavailable"));
+  await expect(f.service.resolve(31)).rejects.toThrow("snapshot unavailable");
+  expect(existsSync(f.lock)).toBe(false);
+}, 15000);
