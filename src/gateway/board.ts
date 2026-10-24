@@ -491,7 +491,16 @@ export class BoardService implements BoardIO {
       changes.unshift({ id: card.id, field: progress, value: input.progress! });
     }
     await this.setChanges(snapshot.id, changes);
-    await this.orderAfterWrite(card, input.field, input.value, input.progress, snapshot.id);
+    await this.orderAfterEntries(
+      card,
+      input.field === "Status"
+        ? [
+            { field: "Progress", value: input.progress! },
+            { field: "Status", value: input.value },
+          ]
+        : [{ field: input.field, value: input.value }],
+      snapshot.id
+    );
     return "Board field updated";
   }
   /** Set a single-select/number field or validated Progress by issue content ID.
@@ -606,7 +615,17 @@ export class BoardService implements BoardIO {
       changes.push({ id: card.id, field: entry.field, value: parsed });
     }
     await this.setChanges(snapshot.id, changes);
-    await this.orderAfterWrite(card, name, parsed, progressValue, snapshot.id);
+    // The batch decides order once: the last Status entry wins the column and
+    // carries the effective Progress (progress-only entries never queue).
+    await this.orderAfterEntries(
+      card,
+      resolved.map((entry) =>
+        entry.field.name === "Status"
+          ? { field: "Status", value: entry.value, progress: entry.progressValue ?? null }
+          : { field: String(entry.field.name), value: entry.value }
+      ),
+      snapshot.id
+    );
     return "Board field updated";
   }
   /** Best-effort ordering on GitHub's single manual order per project
@@ -660,31 +679,37 @@ export class BoardService implements BoardIO {
       { input: { projectId, itemId, afterId } }
     );
   }
-  /** Card order caused by a Progress or Status write: a changed Executing-Progress
-   * or a Status entry into Executing moves the card to the top; a Status write into
-   * Owner review queues it after the column's last card. All other target columns
-   * are owner-ordered and never moved. */
-  private async orderAfterWrite(
+  /** Card order caused by Progress/Status entries: a changed Executing-Progress or a
+   * Status entry into Executing moves the card to the top; a Status entry into Owner
+   * review queues it after the column's last card. All other target columns are
+   * owner-ordered and never moved. */
+  private async orderAfterEntries(
     card: Card,
-    field: string,
-    value: string | number | null,
-    progress: string | number | null | undefined,
+    entries: { field: string; value: string | number | null; progress?: string | number | null }[],
     projectId: string
   ): Promise<void> {
-    if (field !== "Status" && field !== "Progress") {
+    if (!entries.some((entry) => ["Status", "Progress"].includes(entry.field))) {
       return;
     }
-    const before = String(card.values.Status ?? "");
-    const status = field === "Status" ? String(value ?? "") : before;
-    const nextProgress = (field === "Status" ? progress : value) ?? null;
+    let status = String(card.values.Status ?? "");
+    let progress = card.values.Progress ?? null;
+    for (const entry of entries) {
+      if (entry.field === "Status") {
+        // A Status entry carries its companion (null clears), and decides the column.
+        status = String(entry.value ?? "");
+        progress = entry.progress ?? null;
+      } else if (entry.field === "Progress") {
+        progress = entry.value;
+      }
+    }
     const changed =
-      (field === "Status" && status !== before) || nextProgress !== (card.values.Progress ?? null);
+      status !== String(card.values.Status ?? "") || progress !== (card.values.Progress ?? null);
     if (!changed) {
       return;
     }
     if (status === "Executing") {
       await this.moveToTop(card.id, projectId);
-    } else if (field === "Status" && status === "Owner review") {
+    } else if (entries.some((entry) => entry.field === "Status") && status === "Owner review") {
       await this.moveToOwnerReviewBottom(card.id, projectId);
     }
   }
