@@ -65,6 +65,15 @@
         {
           "type": "object",
           "additionalProperties": false,
+          "required": ["op", "field"],
+          "properties": {
+            "op": { "const": "workflow_columns" },
+            "field": { "const": "Status" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
           "required": ["op", "field", "type"],
           "properties": {
             "op": { "const": "add_field" },

@@ -3,7 +3,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { stringify } from "yaml";
 import { readState, writeState } from "../../src/board/readme.js";
-import { validateMigrations } from "../../src/board/migrations.js";
+import { loadMigrations, validateMigrations } from "../../src/board/migrations.js";
 import { createGateway } from "../../src/gateway/server.js";
 import { gatewayVerb } from "../../src/cli/gateway.js";
 import { validProject } from "../helpers.js";
@@ -13,6 +13,109 @@ import { baseline, FakeBoard } from "./fake.js";
 import recordedFields from "../fixtures/github/board-fields.json" with { type: "json" };
 
 let fake: FakeBoard;
+test.each(["none", "failure", "budget"])(
+  "v6 remaps every legacy state with evidence and is resumable and idempotent (interrupt=%s)",
+  async (interrupt) => {
+    const board = setup();
+    const migrations = loadMigrations();
+    board.stamp(5, 4);
+    board.pinSelf("example/project", "dev");
+    board.fields = Object.entries(migrations[4].expect.fields).map(([name, shape], index) => ({
+      id: `field-${index}`,
+      name,
+      type: shape.type,
+      createdAt: board.clock,
+      options: (shape.options ?? []).map((name, option) => ({
+        id: `option-${index}-${option}`,
+        name,
+        color: "GRAY",
+        description: "",
+      })),
+    }));
+    const cases = [
+      ["Issue", "Backlog", "Backlog", false, false, false],
+      ["Issue", "Ready", "Scoping", false, false, false],
+      ["Issue", "In progress", "Executing", false, false, false],
+      ["Issue", "In review", "Spec review", false, true, true],
+      ["Issue", "In review", "Scoping", false, false, false],
+      ["Issue", "Approved", "Executing", true, false, false],
+      ["Issue", "Approved", "Spec review", false, false, false],
+      ["PullRequest", "In review", "Owner review", false, false, true],
+      ["PullRequest", "In review", "Executing", false, false, false],
+      ["PullRequest", "Approved", "Approved", false, false, false],
+      ["PullRequest", "In progress", "Executing", false, false, false],
+      ["Issue", "Done", "Done", false, false, false],
+    ] as const;
+    const evidence = new Map<
+      string,
+      { approved: boolean; reviewPending: boolean; ownerTurn: boolean }
+    >();
+    cases.forEach(([kind, from, , approved, reviewPending, ownerTurn], index) => {
+      const card = board.card(`card-${index}`);
+      card.kind = kind;
+      card.number = index + 1;
+      card.values.Status = from;
+      evidence.set(card.id, { approved, reviewPending, ownerTurn });
+    });
+    const extra = interrupt === "budget" ? 30 : 0;
+    for (let index = 0; index < extra; index++) {
+      board.card(`extra-${index}`).values.Status = "Ready";
+    }
+    let service = board.service(migrations);
+    service.workflowEvidence = async () => evidence;
+    const dry = await service.migrate({ dryRun: true });
+    expect(board.mutations).toEqual([]);
+    cases.forEach(([kind, from, to], index) =>
+      expect(dry.message).toContain(`#${index + 1} (${kind}): ${from} → ${to};`)
+    );
+    expect(dry.message).toContain("valid authenticated scope approval");
+    expect(dry.message).toContain("authenticated SCOPE REVIEW pending");
+    expect(dry.message).toContain("pinned owner holds the turn");
+    if (interrupt === "failure") {
+      board.failMove = true;
+      await expect(service.migrate({})).rejects.toThrow();
+      expect(readState(board.readme).version).toBe(5);
+      expect(
+        board.fields.find((field) => field.name === "Status")!.options.map((option) => option.name)
+      ).toContain("Ready");
+      board.failMove = false;
+      board.clock += 61 * 60_000;
+    }
+    if (interrupt === "budget") {
+      board.budgetAfterBatch = true;
+      const paused = await service.migrate({});
+      expect(paused.message).toContain("workflow cards left");
+      expect(paused.state).toMatchObject({ version: 5, paused: "6/1" });
+      expect(paused.state.lock).toBeUndefined();
+      expect(board.cards.some((card) => card.values.Status === "Scoping")).toBe(true);
+      expect(board.cards.some((card) => card.values.Status === "Ready")).toBe(true);
+      board.low = false;
+      service = board.service(migrations);
+      service.workflowEvidence = async () => evidence;
+    }
+    await service.migrate({ steal: interrupt === "failure" });
+    expect(board.cards.map((card) => card.values.Status)).toEqual([
+      ...cases.map((entry) => entry[2]),
+      ...Array(extra).fill("Scoping"),
+    ]);
+    expect(readState(board.readme)).toMatchObject({ version: 6, minCompatible: 6 });
+    expect(
+      board.fields.find((field) => field.name === "Status")!.options.map((option) => option.name)
+    ).toEqual([
+      "Backlog",
+      "Scoping",
+      "Spec review",
+      "Executing",
+      "Owner review",
+      "Approved",
+      "Done",
+    ]);
+    const mutations = board.mutations.length;
+    expect((await service.migrate({})).message).toContain("up to date");
+    expect((await service.migrate({ dryRun: true })).message).toBe("Dry run: no changes");
+    expect(board.mutations).toHaveLength(mutations);
+  }
+);
 test.each(["Issue", "PullRequest"] as const)(
   "task-flow %s membership is scoped, compatibility-guarded and replay-safe",
   async (kind) => {

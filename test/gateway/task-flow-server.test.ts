@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { parse } from "graphql";
 import { actor, fixtureServer, graph, item, people, sha } from "./helpers.js";
 import developmentLinks from "../fixtures/github/task-development-links.json" with { type: "json" };
+import boardRecording from "../fixtures/github/board-write-inputs.json" with { type: "json" };
 import {
   scopeIssue,
   scopeComment,
@@ -113,6 +114,15 @@ test("open-task checks the issue timeline actor at the server, not the card's St
         labels: { nodes: [], pageInfo: { hasNextPage: false } },
       }),
     }),
+    {
+      path: "/graphql",
+      json: {
+        data: {
+          organization: { projectV2: { id: boardRecording.id, readme: boardRecording.readme } },
+        },
+      },
+    },
+    { path: "/graphql", json: { data: { node: { fields: boardRecording.fields } } } },
     scopeGraph({ nodes: [scopeIssue()] }),
     scopeGraph({ nodes: [scopeIssue()] }),
     scopeGraph({ n0: scopeIssue({ comments: scopeConnection([]) }) }),

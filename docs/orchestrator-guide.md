@@ -4,10 +4,10 @@ Develop decisions with the owner, brief a worker and verify the result independe
 
 ## Develop issues and collaborate with the owner
 
-Hand over **every issue you file at once**: estimated, In review, assigned to the
-owner, with open questions. Keep initial intake and estimates visible as described
-in [Lifecycle](lifecycle.md) and [Board](board.md). When an unblocked card reaches
-Ready, take it in priority order; do not wait to be told. Develop it on the issue,
+File each issue estimated in Backlog, keeping open questions on the issue. The owner
+moves it to Scoping when discussion should start. Keep initial intake visible as described
+in [Lifecycle](lifecycle.md) and [Board](board.md). When a card reaches
+Scoping, take it in priority order; do not wait to be told. Develop it on the issue,
 flipping the assignee whenever the next move changes. Set an issue's initial
 Estimate at filing with `issue create --estimate`; estimate a Backlog issue filed
 without one (typically a collaborator's), or revise during discussion, with
@@ -24,7 +24,7 @@ that drops the prose line.
 Read code, settled decisions and git history before proposing to reverse deliberate
 behavior. Separate verified facts from assumptions. Present options with a
 recommendation and acceptance/verification criteria. **Confirm ambiguous readings
-as explicit owner decisions before Approved**, never as a retrospective note.
+as explicit owner decisions before Executing**, never as a retrospective note.
 Explore, assess and propose issues are your own analysis, not worker task PRs;
 workers only implement agreed specs.
 
@@ -36,7 +36,7 @@ workers only implement agreed specs.
 - Anything waiting on the owner is asked through vmethod (`review <pr> ask` or
   `review <pr> owner`), so the card shows the owner as assignee with an owner Progress
   state. A question asked only in chat is not tracked and does not exist.
-- No card sits in `In review` unassigned: the assignee is whoever's move it is.
+- Spec review and Owner review have exactly one turn assignee.
 - Never repeat in chat what an issue or PR already says: that is duplicate work. Point to
   it (`#n`) instead.
 - Use chat for coordination across items, never as a parallel record of decisions.
@@ -44,9 +44,9 @@ workers only implement agreed specs.
 Ask owner questions only with `vmethod review <pr> ask .tmp/question.md`.
 For an issue without an open task PR, use `vmethod ask <issue> .tmp/question.md`.
 These commands post OWNER QUESTION, assign the owner and set `👤❓` only where
-the answer belongs. A PR wait leaves linked issues In review without owner
+the answer belongs. A PR wait leaves linked issues Executing without owner
 assignment or Progress; follow Development to the PR. A question asked in chat is not tracked.
-Except for linked task issues, never leave an In review card unassigned: the assignee is exactly whose move it
+Never leave a Spec review or Owner review card unassigned: the assignee is exactly whose move it
 is. Review commands and the watcher maintain this invariant and report ambiguous
 or mismatched board state rather than relying on your memory.
 
@@ -58,7 +58,28 @@ card is still on you after an owner comment.
 
 Comments in a pending review are invisible until the reviewer submits it.
 
-The owner replies to your OWNER QUESTION with a question or a comment, not a decision → reply with `review <pr> ask --in-reply-to <owner comment>`; the worker stays out until the owner decides.
+## Owner summons inside Executing
+
+Use `review <pr> ask .tmp/question.md` to summon the owner without leaving Executing.
+You may also use `ask <issue> .tmp/question.md` on an Executing issue; its linked
+workers pause too. Owner assignment and `👤❓` (or an explicit `👤🔍` owner turn)
+are the pause, not a new lifecycle column. Do not open simultaneous issue and PR summons.
+
+If the owner asks another question rather than deciding, continue the thread and
+keep the pause. **An owner comment alone never resumes execution.** After they
+agree in words, quote their exact words as a Markdown blockquote in your hand-back:
+
+```sh
+npm exec --no -- vmethod review 43 answer .tmp/handback.md --owner-agreed https://github.com/org/repo/pull/43#issuecomment-123
+```
+
+The flag is your attestation that the quotation is agreement. The gateway verifies
+the current comment body, the effective owner identity (editor if edited), and that
+the comment was posted after the summons on the same PR, or the summoned issue.
+An edit by anyone else voids it. Without valid evidence, `answer` refuses to wake
+the paused worker; `changes`, `owner` and `approve` cannot bypass the pause.
+The independent release is **owner self-unassignment**: the watcher returns the
+turn to you with `🧭🔍`, not directly to the worker. Then hand back with `review answer`.
 
 The watcher reminds you with `ORCHESTRATOR TURN #n: waiting on you for 30+ min (<progress>)`
 after observing a card on the orchestrator for 30 minutes, then hourly while that
@@ -79,26 +100,28 @@ While an issue is under discussion, leave its body alone. Acknowledge and reason
 about each point (yours, the owner's, other orchestrators') in comments, so the
 thread shows how the ideas fit together. Do not fold each comment into the body as
 it arrives: rewriting mid-discussion confuses readers and wastes work. The rewrite
-happens once, after the owner moves the card to Approved.
+happens once, after the owner moves Scoping → Spec review.
 
 Before opening task PRs, fold every settled discussion conclusion into the issue
-body. An owner Approved move without reviewed scope means agreement with the
-conclusions, not permission to launch. On SCOPE, move the issue to In progress,
-read its current body and rewrite the final specification:
+body. Scoping → Spec review agrees with the conclusions, not permission to launch.
+On SCOPE, leave the issue in Spec review, read its current body, rewrite the final
+specification and revise Estimate from the discussion:
 
 ```sh
-npm exec --no -- vmethod board set 42 Status "In progress"
 npm exec --no -- vmethod read issue 42
 npm exec --no -- vmethod issue edit 42 .tmp/scope.md
+npm exec --no -- vmethod issue estimate 42 8
 npm exec --no -- vmethod scope-review 42 .tmp/scope-changes.md
 ```
 
 The edit refuses a body changed since your read; re-read and reconcile rather
 than overwriting it. The summary file contains a short list of changes from the
-original, without a protocol tag or hash. `scope-review` generates SCOPE REVIEW
-with the live `body sha256: …`, moves the card to In review, assigns the owner and
+original and the new Estimate with the reason for its revision (or why it is unchanged),
+without a protocol tag or hash. `scope-review` generates SCOPE REVIEW
+with the live Estimate and `body sha256: …`, keeps Spec review, assigns the owner and
 sets `👤🔍`. Nothing is added to the body. Have the owner read it and move it to
-Approved again. Changes requested or further discussion require another rewrite
+Executing to give go. Spec review → Scoping requests more discussion; return the
+turn to yourself with reset Progress. Changes require another rewrite
 and scope review. `open-task` and `merge-task` check the same body-bound evidence;
 an unchanged approval covers all parts despite intervening orchestrator moves.
 Always post the review with `scope-review`, which computes the digest. Do not hash
@@ -107,7 +130,7 @@ the digest then never matches, and the owner's approval silently fails to count.
 Hand-posted reviews may wrap the hex digest in backticks; exactly one hash line is
 required in either format.
 
-An owner Approved move on an orchestrator-written issue with only trusted
+An owner Scoping → Executing move on an already-final orchestrator-written issue with only trusted
 orchestrator comments (or no comments) is the trivial shortcut. Trust is per
 repository ([security](security.md)): only this repository's bound orchestrator is
 trusted; a peer project's orchestrator comments void it, as does anyone else,
@@ -115,7 +138,8 @@ including unknown authors/editors. Your own OWNER QUESTION
 handover does not: fold conclusions into the body, not comments. Projects can opt specific
 labels into `scope.fastPath`, for example `{ fastPath: [bug] }` under `scope` in
 `vmethod.yaml`. A matching label waives the owner wait only after SCOPE REVIEW
-records the current body. It is off by default and unset in vmethod itself.
+records the current body; explicitly move that issue to Executing before launch.
+It is off by default and unset in vmethod itself.
 Use `--unapproved <reason>` only for an explicitly recorded exception, not as a
 routine substitute for the configured fast path. None of these waive delivery
 approval or other launch/merge gates.
@@ -150,7 +174,7 @@ in worktree-local `.tmp/`. Do not launch a replacement session in an occupied tr
 
 ## Review rounds and verification
 
-Keep every PR draft unless it is really mergeable now. PRs that are In progress,
+Keep every PR draft unless it is really mergeable now. PRs that are Executing,
 awaiting changes, or waiting on an owner answer stay draft; only the orchestrator's
 decision that a PR is ready to merge should mark it ready. A green merge button means
 mergeable.
@@ -175,8 +199,10 @@ mergeable.
    Answer BLOCKED and QUESTION only through `review <pr> answer <file>`, which
    records the answer on the PR, updates the board and wakes the worker. A model
    switch alone does not hand back the turn; never substitute `worker send`.
-6. Hand owner decisions and try-outs over as OWNER REVIEW with evidence and
-   instructions. Update the agreed issue when owner feedback changes the scope.
+6. Hand the delivery over as OWNER REVIEW with evidence and instructions; this moves
+   only the PR to Owner review. Use an Executing summons for tactical owner questions.
+   Owner review → Executing is the one-step changes bounce, returning the turn to you.
+   Update the agreed issue when owner feedback changes the scope.
    Return requested changes to draft; workers never toggle draft state.
 
 Behavior a person will see or feel is judged by **trying it**, not by metrics alone.
@@ -194,7 +220,8 @@ incidental run. Local audit recipes and cadence stay with the project.
 ## Merge and release
 
 Only `merge-task` (vmethod 1.0, #8) merges. Apply the [owner approval policy](roles.md)
-and repository protections. Stop the worker first. Require green checks for the
+and repository protections. Require the PR in Approved after the owner's
+Owner review → Approved move. Stop the worker first. Require green checks for the
 exact reviewed head **and current base**: an old green merge run is stale if its
 base parent moved. `refresh-checks` updates the branch to trigger
 a new run; re-running the old event still tests its old base. Conflicts go back to
@@ -211,7 +238,7 @@ it posts the approved/current SHAs, your reason and remerge-diff file list befor
 the journaled merge. Green head CI, mergeability, worker-stop and current-base gates
 still apply. Any ordinary task commit requires fresh approval. If resolution
 changes behaviour or revamps the algorithm, re-ask the owner instead of carrying
-approval. The automatic clean-base exception remains unchanged; see
+approval. Keep conflict-only fixes in Approved. The automatic clean-base exception remains unchanged; see
 [approval and testing](gateway.md#approval-and-testing).
 
 After merge, complete issue relations, board state, Done-6, grading, branch/worktree

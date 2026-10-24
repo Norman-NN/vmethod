@@ -3,6 +3,7 @@ import { compatibility, readState, writeState } from "./readme.js";
 import { validateMigrations } from "./migrations.js";
 import type {
   BoardIO,
+  Card,
   BoardState,
   BoardStatus,
   Field,
@@ -15,6 +16,15 @@ import type {
 const lockName = "vmethod-migration-lock";
 const minute = 60000;
 const batchSize = 25;
+const workflowColumns = [
+  "Backlog",
+  "Scoping",
+  "Spec review",
+  "Executing",
+  "Owner review",
+  "Approved",
+  "Done",
+];
 class BudgetPause extends Error {}
 
 function drift(snapshot: Snapshot, migration?: Migration): string[] {
@@ -203,6 +213,11 @@ export class MigrationRunner {
   }): Promise<MigrationResult> {
     const initial = await this.status();
     if (dryRun) {
+      const remaps = initial.pending.some((migration) =>
+        migration.up.some((op) => op.op === "workflow_columns")
+      )
+        ? await this.workflowPlan((await this.io.snapshot()).id)
+        : [];
       const touchesStatus = initial.pending.some((migration) =>
         migration.up.some((op) => "field" in op && op.field === "Status")
       );
@@ -217,6 +232,10 @@ export class MigrationRunner {
                 migration.up.length
                   ? migration.up.map((op) => `v${migration.version}: ${describeOperation(op)}`)
                   : [`v${migration.version}: version only`]
+              ),
+              ...remaps.map(
+                (card) =>
+                  `#${card.number ?? card.id} (${card.kind}): ${card.from} → ${card.value}; ${card.evidence}`
               ),
             ].join("; ")
           : "Dry run: no changes",
@@ -337,6 +356,59 @@ export class MigrationRunner {
 
   private async apply(op: Operation): Promise<void> {
     const { snapshot, state } = await this.held();
+    if (op.op === "workflow_columns") {
+      let field = this.field(snapshot, "Status");
+      const options = field.options.map(({ name, color, description }) => ({
+        name,
+        color,
+        description,
+      }));
+      for (const name of workflowColumns) {
+        if (!options.some((option) => option.name === name)) {
+          options.push({ name, color: "GRAY", description: "" });
+        }
+      }
+      if (options.length !== field.options.length) {
+        await this.io.options(field, options);
+      }
+      const plan = await this.workflowPlan(snapshot.id);
+      field = this.field((await this.held()).snapshot, "Status");
+      const changed = plan.filter((card) => card.from !== card.value);
+      for (let index = 0; index < changed.length; index += batchSize) {
+        if (this.io.budgetStopped()) {
+          throw new BudgetPause(`${changed.length - index} workflow cards left`);
+        }
+        await this.held();
+        if (this.io.budgetStopped()) {
+          throw new BudgetPause(`${changed.length - index} workflow cards left`);
+        }
+        await this.io.setCards(
+          snapshot.id,
+          field,
+          changed.slice(index, index + batchSize).map(({ id, value }) => ({ id, value }))
+        );
+      }
+      await this.held();
+      if (this.io.budgetStopped()) {
+        throw new BudgetPause("workflow option contraction left");
+      }
+      if (
+        (await this.io.cards(snapshot.id)).some((card) =>
+          ["Ready", "In progress", "In review"].includes(String(card.values.Status))
+        )
+      ) {
+        throw new Error("Workflow migration still has occupied legacy options");
+      }
+      const final = workflowColumns.map((name) => options.find((option) => option.name === name)!);
+      if (
+        JSON.stringify(
+          field.options.map(({ name, color, description }) => ({ name, color, description }))
+        ) !== JSON.stringify(final)
+      ) {
+        await this.io.options(field, final);
+      }
+      return;
+    }
     if (op.op === "add_progress_alias") {
       await this.update((current) => {
         current.aliases[op.from] = op.to;
@@ -427,10 +499,61 @@ export class MigrationRunner {
       }
     }
   }
+
+  private async workflowPlan(projectId: string) {
+    const cards = await this.io.cards(projectId);
+    if (!this.io.workflowEvidence) {
+      throw new Error("Missing workflow migration evidence reader");
+    }
+    const evidence = await this.io.workflowEvidence(cards);
+    return cards.map((card: Card) => {
+      const from = String(card.values.Status ?? "");
+      const proof = evidence.get(card.id);
+      let value = from;
+      let reason = "unchanged";
+      if (from === "Ready") {
+        value = "Scoping";
+        reason = "legacy queue rename";
+      } else if (from === "In progress") {
+        value = "Executing";
+        reason = "legacy execution rename";
+      } else if (from === "In review" && card.kind === "Issue") {
+        if (!proof) {
+          throw new Error(`Missing scope evidence for ${card.id}`);
+        }
+        value = proof.reviewPending ? "Spec review" : "Scoping";
+        reason = proof.reviewPending
+          ? "authenticated SCOPE REVIEW pending"
+          : "no pending authenticated SCOPE REVIEW";
+      } else if (from === "Approved" && card.kind === "Issue") {
+        if (!proof) {
+          throw new Error(`Missing scope evidence for ${card.id}`);
+        }
+        value = proof.approved ? "Executing" : "Spec review";
+        reason = proof.approved
+          ? "valid authenticated scope approval"
+          : "scope approval invalid or absent";
+      } else if (from === "In review" && card.kind === "PullRequest") {
+        if (!proof) {
+          throw new Error(`Missing owner-turn evidence for ${card.id}`);
+        }
+        value = proof.ownerTurn ? "Owner review" : "Executing";
+        reason = proof.ownerTurn ? "pinned owner holds the turn" : "owner does not hold the turn";
+      } else if (from === "In review") {
+        throw new Error(`Cannot classify legacy review card ${card.id}`);
+      }
+      if (value && !workflowColumns.includes(value)) {
+        throw new Error(`Cannot map unknown Status ${from} on ${card.id}`);
+      }
+      return { id: card.id, number: card.number, kind: card.kind, from, value, evidence: reason };
+    });
+  }
 }
 
 function describeOperation(op: Operation): string {
   switch (op.op) {
+    case "workflow_columns":
+      return "remap Status using authenticated scope and owner-turn evidence; order seven workflow columns";
     case "add_field":
       return `add field ${op.field} (${op.type})${op.options ? ` with options ${op.options.join(", ")}` : ""}`;
     case "add_option":

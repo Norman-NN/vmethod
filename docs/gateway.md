@@ -493,14 +493,17 @@ An unanswered verified worker READY, QUESTION or BLOCKED on an orchestrator-turn
 card additionally emits `ORCHESTRATOR TURN #n: <state> unhandled for 5+ min` after
 five minutes, then every thirty minutes. A verified orchestrator REVIEW, OWNER
 REVIEW, ANSWER, AMENDMENT or GO handles that request. Other comments do not.
-The watcher synchronizes management assignees and clears stale owner mirrors on
-linked issues. It reports unassigned In review cards (except linked task issues)
+The watcher synchronizes management assignees. Linked issues wait in Executing,
+without mirroring PR review columns, but explicit issue summons retain their owner turn.
+It reports unassigned Spec review and Owner review cards
 and Progress/assignee mismatches. PR links are replaced only after the full PR poll
 succeeds; a failed PR poll retains the last successful snapshot and skips board
 violation reporting for that cycle, so stale or missing links never produce a verdict.
 Known states repair assignments from the same board poll; ambiguous states are
 reported for manual review. Owner replies and current-head owner reviews return
-the turn to the orchestrator. See the [protocol transition table](protocol.md).
+the turn to the orchestrator during delivery review. An Executing summons instead
+retains its pause through ordinary owner comments; verified self-unassignment
+returns the turn to the orchestrator. See the [protocol transition table](protocol.md).
 
 Each own-repository task PR poll also reads submitted inline review threads and
 their paginated comments. Allowed comments emit
@@ -527,7 +530,7 @@ this one), `NOT PLANNED #n (requested by <login>): tell the requester` instead a
 you to notify that peer, even for an own-account close. Closure events list remaining
 open task PRs; they never close those PRs. See the
 [orchestrator guide](orchestrator-guide.md#watch-without-wasting-budget).
-READY moves the task card to In review. HANDOFF uses 🤖🤝 (migration 0002), not the
+READY keeps the task card in Executing. HANDOFF uses 🤖🤝 (migration 0002), not the
 🔁 round marker; subsequent worker activity restores working. Other wake events
 include COMMENT, BOARD, NEXT, LAUNCH, ASSIGNED, OWNER DONE, STALE (30 minutes),
 SILENT (40 minutes), WORKER permission/failure, CONFLICT (once per head), CLOSED,
@@ -795,15 +798,23 @@ These commands require `VMETHOD_ROLE=orchestrator`:
   Failed linking after PR creation names the created PR and the `link-task` recovery
   command; retry that command rather than creating another task. A failed plan edit
   after a successful mutation can likewise be retried without duplicating links.
-- `review <pr> changes|owner|answer|ask|approve <file> [--in-reply-to <comment-url>]`
+- `review <pr> changes|owner|answer|ask|approve <file> [--in-reply-to <comment-url>] [--owner-agreed <comment-url>]`
   posts the protocol header and sets the next actor. Owner review always names the
   full current SHA and marks the draft ready. `approve` posts an orchestrator
-  acceptance, **not** owner authority.
+  acceptance, **not** owner authority. `owner` moves only the PR to Owner review;
+  changes and answers stay in Executing. `ask` summons the owner in Executing,
+  pauses the worker and clears queued wakes. A paused summons requires `answer
+--owner-agreed` and an exact Markdown block quotation from the current, effectively
+  owner-authored comment after the summons. The flag attests agreement; a plain owner
+  comment never releases execution. A verified owner self-unassignment is the
+  independent release path. See [owner summons](orchestrator-guide.md#owner-summons-inside-executing).
 - `ask <issue> <file>` posts `[orchestrator] OWNER QUESTION`, assigns the owner and
-  sets `👤❓`. It refuses issues with an open task PR: use `review <pr> ask` there.
+  sets `👤❓`, preserving Scoping or Executing. An Executing issue summons can pause
+  its linked workers; the hand-back's agreement URL must then name that issue.
+  Other issue phases refuse live task PRs: use `review <pr> ask` there.
   The typed operation is `askIssue({ref, file})`. `review ask` uses the same heading;
   `review answer` remains ANSWER for a worker. See [tracked owner questions](orchestrator-guide.md).
-- `merge-task <pr> [--merge-commit] [--carry-approval "<reason>"]` refuses live/unknown worker sessions before merging, stale
+- `merge-task <pr> [--merge-commit] [--carry-approval "<reason>"]` requires an Approved PR and refuses live/unknown worker sessions before merging, stale
   approval, untrusted/red/missing CI, unknown/conflicting mergeability and a stale
   tested base. No recorded worker session counts as stopped; a recorded session
   that is unknown or unreachable still blocks. `merge.requireCurrentBase` defaults
@@ -827,7 +838,7 @@ These commands require `VMETHOD_ROLE=orchestrator`:
   Only the orchestrator or watcher can call the `resolveConflicts({ref})` operation;
   a fixer never receives merge authority.
 - `release-hold <pr>` removes the exact hold banner and any legacy hold title prefix
-  in one body/title edit, posts GO, moves the card to In progress and resumes the
+  in one body/title edit, posts GO, moves the card to Executing and resumes the
   worker if present. It preserves other prompt text and refuses non-held PRs
   (including a second release). If the prompt changes during preparation, read it
   and retry rather than overwriting the edit.
@@ -1049,7 +1060,8 @@ that handover, approval is false. A later move away from Approved or a new head
 invalidates the old board approval. Edited handovers use their edit time, not a
 backdated creation time. Missing actors on the latest Approved event yield unknown,
 not approval.
-Current card Status and peer-session relays never approve. Chat approvals remain
+Current card Status is a position gate, not approval evidence; `merge-task` requires
+Approved as well as authenticated owner evidence. Peer-session relays never approve. Chat approvals remain
 the harness's responsibility and are never synthesized into GitHub records.
 
 For merge-task only, an approval can survive clean merges of the PR's base:
@@ -1057,7 +1069,15 @@ the gateway verifies the first-parent chain, recomputes every two-parent merge t
 without conflicts and compares the full binary task patch on the union of task
 paths against old/new merge-bases. Ordinary commits, edited merge trees or changed
 patches void approval. The client cannot assert this exception. Issue launch
-approval likewise checks the latest configured-board event's owner id, not Status.
+approval checks an authenticated Spec review → Executing move bound to the latest
+SCOPE REVIEW body hash, or the Scoping → Executing trivial shortcut. `open-task`
+also requires the issue in Executing. `scope-review` records the live Estimate and
+hash in Spec review; revise the Estimate and explain it in the summary first.
+NEXT selects Scoping (including blocked discussion), SCOPE selects issues needing
+their final rewrite in Spec review, and LAUNCH selects unblocked, scope-approved
+Executing issues without open task PRs. Historical scope approvals preceding v6
+migration remain evidence while the body is unchanged. See [board migration v6](board.md#migrations-what-adopters-see)
+for evidence-dependent remapping and per-card dry-run output.
 
 Orchestrators may explicitly carry an earlier verified owner approval across
 conflict-resolving base merges with `--carry-approval "<reason>"`. The reason must

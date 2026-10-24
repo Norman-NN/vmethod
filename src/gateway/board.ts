@@ -15,7 +15,8 @@ import type {
   Snapshot,
 } from "../board/types.js";
 import { GitHubClient, type Dependencies } from "./client.js";
-import { object, type ObjectData } from "./people.js";
+import { object, type ObjectData, type PeopleFilter } from "./people.js";
+import { ScopeReader } from "./scope.js";
 import packageInfo from "../../package.json" with { type: "json" };
 
 const fieldSelection =
@@ -66,7 +67,8 @@ export class BoardService implements BoardIO {
     private github: GitHubClient,
     private deps: Dependencies,
     migrations: Migration[] = loadMigrations(),
-    private boardVersion = packageInfo.boardVersion
+    private boardVersion = packageInfo.boardVersion,
+    private filter?: PeopleFilter
   ) {
     this.settings = object(config.board);
     if (this.settings.enabled === false) {
@@ -81,6 +83,35 @@ export class BoardService implements BoardIO {
   status = () => this.runner.status();
   fixStatus = () => this.runner.fixStatus();
   migrate = (input: { dryRun?: boolean; steal?: boolean }) => this.runner.migrate(input);
+
+  async workflowEvidence(cards: Card[]) {
+    if (!this.filter) {
+      throw new Error("Workflow migration requires the authenticated people filter");
+    }
+    const scopes = await new ScopeReader(this.github, this.filter, this.config).read(
+      cards
+        .filter(
+          (card) =>
+            card.kind === "Issue" && ["Approved", "In review"].includes(String(card.values.Status))
+        )
+        .map((card) => text(card.contentId))
+    );
+    return new Map(
+      cards.map((card) => [
+        card.id,
+        {
+          approved: scopes.get(String(card.contentId))?.approved === true,
+          reviewPending: scopes.get(String(card.contentId))?.reviewPending === true,
+          ownerTurn: card.assignees.some((login) =>
+            this.filter!.people.some(
+              (person) =>
+                person.role === "owner" && person.login.toLowerCase() === login.toLowerCase()
+            )
+          ),
+        },
+      ])
+    );
+  }
 
   async login(): Promise<string> {
     return text(

@@ -29,6 +29,7 @@ export interface FieldShape {
   states?: { name: string; emoji: string }[];
 }
 export type Operation =
+  | { op: "workflow_columns"; field: "Status" }
   | ({ op: "add_field"; field: string } & FieldShape)
   | {
       op: "add_option" | "set_option_meta";
@@ -81,6 +82,10 @@ export interface MigrationResult extends BoardStatus {
   message: string;
 }
 export interface BoardIO {
+  /** Batched authenticated v5 scope evidence and pinned owner turns for v6 remapping. */
+  workflowEvidence?(
+    cards: Card[]
+  ): Promise<Map<string, { approved: boolean; reviewPending: boolean; ownerTurn: boolean }>>;
   now(): number;
   login(): Promise<string>;
   snapshot(): Promise<Snapshot>;

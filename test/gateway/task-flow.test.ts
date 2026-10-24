@@ -30,6 +30,134 @@ import packageInfo from "../../package.json" with { type: "json" };
 
 const holdBanner = "> ⛔ ON HOLD. Wait for [orchestrator] GO.";
 
+test("Executing issue summons pauses linked workers and requires agreement from that issue", async () => {
+  const f = fixture();
+  const original = f.deps.fetch;
+  f.deps.fetch = async (input, init) => {
+    const path = new URL(String(input)).pathname;
+    if (path === "/repos/example/project/pulls") {
+      return Response.json([{ number: 27, body: '<!-- vmethod-task {"issues":[8]} -->' }]);
+    }
+    return original(input, init);
+  };
+  const clears: number[] = [],
+    stops: number[] = [];
+  f.deps.workers!.clearWake = async (pr) => {
+    clears.push(pr);
+  };
+  f.deps.workers!.status = async () => "live";
+  f.deps.workers!.stop = async (pr) => {
+    stops.push(pr);
+  };
+  const file = join(f.root, "question.md");
+  writeFileSync(file, "Decision?\n");
+  await f.flow().ask("8", file);
+  expect(clears).toEqual([27]);
+  expect(stops).toEqual([27]);
+  expect(f.touched).toContainEqual(
+    expect.objectContaining({ id: "issue", field: "Status", value: "Executing", progress: "👤❓" })
+  );
+  // The board/comment fakes expose the writes on the next read, just as the live API does.
+  f.cards[0].values.Progress = "👤❓";
+  f.comments.push(scopeComment({ body: "[orchestrator] OWNER QUESTION\n\nDecision?" }));
+  f.set({ boardValues: { Status: "Executing", Progress: "🤖❓" } });
+  f.host.ownerAgreement = async (ref, _url, _since, _text, kind) => {
+    expect({ ref, kind }).toEqual({ ref: "8", kind: "issue" });
+    return true;
+  };
+  writeFileSync(file, "> Yes, proceed.\n");
+  await f.flow().review({
+    ref: "27",
+    outcome: "answer",
+    file,
+    ownerAgreed: "https://github.com/example/project/issues/8#issuecomment-123",
+  });
+  expect(f.resumes).toHaveLength(1);
+  expect(f.touched).toContainEqual(
+    expect.objectContaining({ id: "issue", field: "Status", value: "Executing", progress: null })
+  );
+  f.done();
+});
+
+test.each(["answer", "changes", "owner", "approve"] as const)(
+  "Executing summons refuses %s without agreement before side effects",
+  async (outcome) => {
+    const f = fixture();
+    f.set({ boardValues: { Status: "Executing", Progress: "👤❓" }, assignees: ["owner"] });
+    f.comments.push(scopeComment({ body: "[orchestrator] OWNER QUESTION\n\nDecision?" }));
+    const file = join(f.root, ".tmp", "answer.md");
+    mkdirSync(join(f.root, ".tmp"), { recursive: true });
+    writeFileSync(file, "> Yes, proceed.\n");
+    await expect(f.flow().review({ ref: "27", outcome, file })).rejects.toThrow(
+      "summons is paused"
+    );
+    expect(f.writes).toEqual([]);
+    expect(f.touched).toEqual([]);
+    expect(f.resumes).toEqual([]);
+    f.done();
+  }
+);
+
+test.each([false, true])(
+  "Executing summons wakes only after verified agreement (valid=%s)",
+  async (valid) => {
+    const f = fixture();
+    f.set({ boardValues: { Status: "Executing", Progress: "👤❓" }, assignees: ["owner"] });
+    const summons = scopeComment({ body: "[orchestrator] OWNER QUESTION\n\nDecision?" });
+    f.comments.push(summons);
+    const url = "https://github.com/example/project/pull/27#issuecomment-123";
+    const file = join(f.root, ".tmp", "answer.md");
+    mkdirSync(join(f.root, ".tmp"), { recursive: true });
+    writeFileSync(file, "> Yes, proceed.\n");
+    f.host.ownerAgreement = async (ref, target, since, text) => {
+      expect({ ref, target, since, text }).toEqual({
+        ref: "27",
+        target: url,
+        since: Date.parse(String(summons.createdAt)),
+        text: "> Yes, proceed.\n",
+      });
+      return valid;
+    };
+    const result = f.flow().review({ ref: "27", outcome: "answer", file, ownerAgreed: url });
+    if (valid) {
+      await expect(result).resolves.toContain("ANSWER");
+      expect(f.touched).toContainEqual(
+        expect.objectContaining({ id: "pr", field: "Status", value: "Executing", progress: "🤖🔨" })
+      );
+      expect(f.resumes).toHaveLength(1);
+    } else {
+      await expect(result).rejects.toThrow("summons is paused");
+      expect(f.writes).toEqual([]);
+      expect(f.resumes).toEqual([]);
+    }
+    f.done();
+  }
+);
+
+test.each(["Scoping", "Spec review", "Approved", "Done"])(
+  "open-task refuses a %s issue even with historical scope approval",
+  async (status) => {
+    const f = fixture();
+    f.cards[0].values.Status = status;
+    await expect(f.flow().open({ issue: "8", model: "sol" })).rejects.toThrow(
+      "requires an Executing issue"
+    );
+    expect(f.writes).toEqual([]);
+    f.done();
+  }
+);
+
+test.each(["Executing", "Owner review", "Done"])(
+  "merge-task refuses a %s PR even with valid owner evidence",
+  async (status) => {
+    const f = fixture();
+    f.set({ boardValues: { Status: status } });
+    await expect(f.flow().merge("27")).rejects.toThrow("requires an Approved PR");
+    expect(f.writes).toEqual([]);
+    f.done();
+  }
+);
+
 /** What the scripted host reports for a reply target's REST comment id. */
 type ReplyTarget = { author: Person; issue: number; firstLine: string };
 
@@ -241,9 +369,15 @@ test.each(
       f.config.board = w.config.board;
       w.readme = writeState("", { version: 2, minCompatible: 1, aliases: {} }, true);
       const status = w.fields.find((field) => field.name === "Status")!;
-      status.options = ["Backlog", "Ready", "In progress", "In review", "Approved", "Done"].map(
-        (name, index) => ({ id: `option-${index}`, name, color: "GRAY", description: "" })
-      );
+      status.options = [
+        "Backlog",
+        "Scoping",
+        "Spec review",
+        "Executing",
+        "Owner review",
+        "Approved",
+        "Done",
+      ].map((name, index) => ({ id: `option-${index}`, name, color: "GRAY", description: "" }));
       w.fields.push({
         id: "model",
         name: "Model",
@@ -251,12 +385,12 @@ test.each(
         createdAt: "2026-10-16T11:12:25Z",
         options: [{ id: "model-sol", name: "sol", color: "GRAY", description: "" }],
       });
-      w.cards = [w.card(8, "In review")];
+      w.cards = [w.card(8, "Executing")];
       object(w.cards[0].content).id = "issue";
-      object(w.cards[0].content).assignees = { nodes: [{ login: "owner" }] };
+      object(w.cards[0].content).assignees = { nodes: [] };
       w.issues = [{ number: 8, labels: [] }];
       if (verb !== "open-task") {
-        const pr = w.card(27, "In progress", "PullRequest");
+        const pr = w.card(27, verb === "merge-task" ? "Approved" : "Executing", "PullRequest");
         object(pr.content).id = "pr";
         w.cards.push(pr);
         w.pulls = [
@@ -354,11 +488,14 @@ test.each(
       w.clock += 668;
       if (["review changes", "review answer", "review approve"].includes(verb)) {
         for (const card of w.cards) {
+          if (object(card.content).__typename !== "PullRequest") {
+            continue;
+          }
           card.progress = { text: "👤🔍" };
           object(card.content).assignees = { nodes: [{ login: "owner" }] };
         }
         object(w.cards.find((card) => object(card.content).number === 27)!.status).name =
-          "In review";
+          "Owner review";
       }
       if (verb === "open-task") {
         await taskFlowVerb(transport, verb, ["8", "--model", "sol"], commandEnv);
@@ -377,7 +514,7 @@ test.each(
         const ownerReply = verb === "review owner" && identity === "self";
         if (ownerReply) {
           const pr = w.cards.find((card) => object(card.content).number === 27)!;
-          pr.status = { ...object(pr.status), name: "In review" };
+          pr.status = { ...object(pr.status), name: "Owner review" };
           pr.progress = { text: "👤🔍" };
           object(pr.content).assignees = { nodes: [{ login: "owner" }] };
           const question = w.comment("Can you explain the change?", 0);
@@ -434,7 +571,7 @@ test.each(
                   : "🧭🔍"
         );
       }
-      if (identity !== "self") {
+      if (identity !== "self" && verb !== "open-task") {
         expect(events.map((event) => event.kind)).toContain(
           verb === "open-task" ? "owner-done" : verb === "merge-task" ? "button-merge" : "comment"
         );
@@ -547,17 +684,18 @@ function fixture() {
     branchExists = true,
     checkoutHead = sha;
   let assignees: string[] = [];
-  let boardValues: Record<string, string | number | null> = {};
+  let boardValues: Record<string, string | number | null> = { Status: "Approved" };
   const comments: ObjectData[] = [];
   let replyTarget: ReplyTarget | undefined;
   const cards: Card[] = [
     {
       id: "issue-card",
       contentId: "issue",
+      number: 8,
       repo: "example/project",
       kind: "Issue",
       assignees: [],
-      values: { Estimate: 13 },
+      values: { Estimate: 13, Status: "Executing" },
     },
   ];
   const touched: { id: string; field: string; value: unknown; progress?: unknown }[] = [];
@@ -799,7 +937,17 @@ function fixture() {
         events.push("done-cap");
       },
       snapshot: async () => ({ id: "board", readme: "", fields: [] }),
-      cards: async () => cards,
+      cards: async () => [
+        ...cards,
+        {
+          id: "pr",
+          contentId: "pr",
+          repo: "example/project",
+          kind: "PullRequest",
+          assignees,
+          values: { ...boardValues },
+        },
+      ],
     }),
     thread: async (ref, kind) => {
       events.push(`read ${kind} ${ref}`);
@@ -932,7 +1080,7 @@ test.each([
         expect.objectContaining({
           id: "issue",
           field: "Status",
-          value: "In review",
+          value: "Executing",
           progress: null,
         })
       );
@@ -1183,6 +1331,9 @@ test.each([false, true])(
   "issue ask refuses a live task (%s) and otherwise tracks the owner",
   async (live) => {
     const f = fixture();
+    if (live) {
+      f.cards[0].values.Status = "Scoping";
+    }
     const original = f.deps.fetch;
     f.deps.fetch = async (input, init) =>
       new URL(String(input)).pathname === "/repos/example/project/pulls"
@@ -1199,7 +1350,7 @@ test.each([false, true])(
         expect.objectContaining({
           id: "issue",
           field: "Status",
-          value: "In review",
+          value: "Executing",
           progress: "👤❓",
         })
       );
@@ -1208,7 +1359,7 @@ test.each([false, true])(
         body: { assignees: ["owner"] },
       });
       expect(f.events.indexOf("POST /repos/example/project/issues/8/assignees")).toBeLessThan(
-        f.events.indexOf("board issue Status In review")
+        f.events.indexOf("board issue Status Executing")
       );
       expect(f.writes.find((write) => write.path.endsWith("/comments"))?.body.body).toMatch(
         /^\[orchestrator\] OWNER QUESTION/
@@ -2431,7 +2582,7 @@ test("open-task creates a draft with a manual Development link, clears issue Pro
   ).toHaveLength(1);
   expect(create.body.body).not.toContain("<specifics>");
   expect(f.touched).toContainEqual(
-    expect.objectContaining({ id: "pr", field: "Status", value: "In progress", progress: "⛔" })
+    expect.objectContaining({ id: "pr", field: "Status", value: "Executing", progress: "⛔" })
   );
   expect(f.touched).toContainEqual(
     expect.objectContaining({ id: "issue", field: "Status", progress: null })
@@ -2521,7 +2672,7 @@ test.each(["owner", "changes", "answer", "ask", "approve"] as const)(
         f.writes.some((w) => String(w.body.query).includes("markPullRequestReadyForReview"))
       ).toBe(true);
       expect(f.touched).toContainEqual(
-        expect.objectContaining({ field: "Status", value: "In review", progress: "👤🔍" })
+        expect.objectContaining({ field: "Status", value: "Owner review", progress: "👤🔍" })
       );
       expect(f.writes.some((w) => w.path.endsWith("/assignees"))).toBe(true);
     }
@@ -2920,7 +3071,7 @@ test("independent conflict rejection names files and gives the blocked PR back t
     "src/conflict.ts"
   );
   expect(f.touched).toContainEqual(
-    expect.objectContaining({ field: "Status", value: "In progress", progress: "🤖🚫" })
+    expect.objectContaining({ field: "Status", value: "Executing", progress: "🤖🚫" })
   );
   expect(f.writes.some((write) => write.path.endsWith("/merge"))).toBe(false);
   expect(f.writes.some((write) => write.path.endsWith("/assignees"))).toBe(true);
@@ -2929,9 +3080,9 @@ test("independent conflict rejection names files and gives the blocked PR back t
 
 test("card prior captures the interrupted turn from the board and the PR", async () => {
   const f = fixture();
-  f.set({ boardValues: { Status: "In review", Progress: "👤🔍" }, assignees: ["owner"] });
+  f.set({ boardValues: { Status: "Owner review", Progress: "👤🔍" }, assignees: ["owner"] });
   expect(await f.flow().cardPrior("27")).toEqual({
-    status: "In review",
+    status: "Owner review",
     progress: "👤🔍",
     assignees: ["owner"],
   });
@@ -2956,7 +3107,7 @@ test("card restore returns the stored turn to the board and the PR", async () =>
   const f = fixture();
   f.set({ assignees: ["worker"] });
   await f.flow().cardRestore("27", {
-    status: "In review",
+    status: "Owner review",
     progress: "👤🔍",
     assignees: ["owner"],
   });
@@ -2964,7 +3115,7 @@ test("card restore returns the stored turn to the board and the PR", async () =>
     expect.objectContaining({
       id: "pr",
       field: "Status",
-      value: "In review",
+      value: "Owner review",
       progress: "👤🔍",
     })
   );
@@ -2982,7 +3133,7 @@ test.each(["cardConflict", "cardRestore"] as const)(
     f.config.board = { ...object(f.config.board), enabled: false };
     f.set({ assignees: verb === "cardRestore" ? ["worker"] : ["owner"] });
     await f.flow()[verb]("27", {
-      status: "In review",
+      status: "Owner review",
       progress: "👤🔍",
       assignees: ["owner"],
     });
@@ -3008,7 +3159,7 @@ test.each(["cardConflict", "cardRestore"] as const)(
 test("card prior reads only the PR when the board is disabled", async () => {
   const f = fixture();
   f.config.board = { ...object(f.config.board), enabled: false };
-  f.set({ boardValues: { Status: "In review" }, assignees: ["owner"] });
+  f.set({ boardValues: { Status: "Owner review" }, assignees: ["owner"] });
   expect(await f.flow().cardPrior("27")).toEqual({
     status: null,
     progress: null,
@@ -3232,7 +3383,7 @@ test("open held task, release, and worker start; second release has no side effe
   const released = await f.host.thread("27", "pr");
   expect(released.body).toBe(String(held.body).replace(`${holdBanner}\n`, ""));
   expect(f.touched).toContainEqual(
-    expect.objectContaining({ field: "Status", value: "In progress" })
+    expect.objectContaining({ field: "Status", value: "Executing" })
   );
   const before = { writes: f.writes.length, touched: f.touched.length, resumes: f.resumes.length };
   await expect(f.flow().release("27")).rejects.toThrow("not on hold");

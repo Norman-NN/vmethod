@@ -27,6 +27,71 @@ const review = (overrides: ObjectData = {}) =>
     ...overrides,
   });
 
+test.each([
+  ["Spec review", true, true],
+  ["Scoping", false, true],
+  ["Backlog", true, false],
+  ["Scoping", true, false],
+  ["Spec review", false, false],
+  ["Owner review", true, false],
+] as const)(
+  "Executing scope gate requires %s with review=%s",
+  (previousStatus, reviewed, valid) => {
+    const f = filter();
+    const issue = scopeIssue();
+    const timeline = [scopeMove({ status: "Executing", previousStatus })];
+    expect(scopeApproved(issue, reviewed ? [review()] : [], timeline, config, f, 0)).toBe(valid);
+    expect(scopeApproved({ ...issue, body: "changed" }, [review()], timeline, config, f, 0)).toBe(
+      false
+    );
+    expect(
+      scopeApproved(
+        issue,
+        reviewed ? [review()] : [],
+        [scopeMove({ status: "Executing", previousStatus, actor: actor(2) })],
+        config,
+        f,
+        0
+      )
+    ).toBe(false);
+  }
+);
+
+test("v6 grandfathers only approval evidence preceding migration and a left bounce revokes it", () => {
+  const f = filter();
+  const before = Date.parse("2026-01-04T00:00:00Z");
+  const move = scopeMove({ previousStatus: "Backlog" });
+  expect(scopeApproved(scopeIssue(), [], [move], config, f, before)).toBe(true);
+  expect(scopeApproved(scopeIssue(), [], [move], config, f, 0)).toBe(false);
+  expect(
+    scopeApproved(
+      scopeIssue(),
+      [review()],
+      [scopeMove({ createdAt: "2026-01-05T00:00:00Z" })],
+      config,
+      f,
+      before
+    )
+  ).toBe(false);
+  expect(
+    scopeApproved(
+      scopeIssue(),
+      [review()],
+      [
+        scopeMove({ status: "Executing", previousStatus: "Spec review" }),
+        scopeMove({
+          status: "Scoping",
+          previousStatus: "Spec review",
+          createdAt: "2026-01-05T00:00:00Z",
+        }),
+      ],
+      config,
+      f,
+      before
+    )
+  ).toBe(false);
+});
+
 test("scope is bound to the latest authenticated review body and a strictly later owner move", () => {
   const f = filter();
   const issue = scopeIssue({ author: actor() });
@@ -380,7 +445,7 @@ test("an explicit scope review retains the owner turn on an issue with an active
   const f = new WatchFake();
   f.task();
   f.pulls[0].body = '<!-- vmethod-task {"issues":[6],"part":true} -->';
-  const issue = f.card(6, "In review");
+  const issue = f.card(6, "Spec review");
   issue.progress = { text: "👤🔍" };
   const content = issue.content as ObjectData;
   content.assignees = { nodes: [{ login: "owner" }] };
@@ -423,26 +488,37 @@ test.each(["", "body sha256: forged", "[orchestrator] SCOPE REVIEW\nForged"])(
   }
 );
 
-test("watcher emits SCOPE rather than LAUNCH for approved conclusions, then LAUNCH after body-bound review", async () => {
+test("watcher emits SCOPE in Spec review, then LAUNCH after body-bound approval into Executing", async () => {
   const f = new WatchFake();
   f.scopeComments = [scopeComment({ author: actor(), body: "Discussion" })];
-  f.cards = [f.card(6, "Ready")];
+  f.cards = [f.card(6, "Scoping")];
   f.issues = [{ number: 6, labels: [] }];
   const loop = f.loop();
   try {
     await f.tick(loop);
     f.advance();
-    f.cards[0].status = { name: "Approved", updatedAt: f.iso() };
+    f.cards[0].status = { name: "Spec review", updatedAt: f.iso() };
     const events = await f.tick(loop);
     expect(
       events.some((event) =>
-        event.line.includes("SCOPE #6: approved conclusions; rewrite body and request scope review")
+        event.line.includes(
+          "SCOPE #6: agreed conclusions; rewrite body, revise Estimate and request scope review"
+        )
       )
     ).toBe(true);
     expect(events.some((event) => event.kind === "launch")).toBe(false);
     await f.ack(loop, events);
     f.scopeComments = [review()];
     f.advance(61_000);
+    f.cards[0].status = { name: "Executing", updatedAt: f.iso() };
+    f.scopeTimeline = [
+      scopeMove({
+        status: "Executing",
+        previousStatus: "Spec review",
+        project: { number: 5 },
+        createdAt: f.iso(),
+      }),
+    ];
     expect((await f.tick(loop)).some((event) => event.kind === "launch")).toBe(true);
     expect(f.reports).toEqual([]);
   } finally {

@@ -26,13 +26,27 @@ owner approval. Only [verified identity and role](security.md) confer authority.
 
 The scripts keep assignee and Progress together: worker READY (`🤖👍`), QUESTION
 (`🤖❓`) and BLOCKED (`🤖🚫`) hand the turn to the orchestrator. OWNER REVIEW
-(`👤🔍`) and OWNER QUESTION (`👤❓`) hand it to the owner on the PR only.
-Linked issues stay In review without owner assignment or Progress, except an explicit
-SCOPE REVIEW awaiting issue-body approval (`👤🔍` on the issue itself).
-REVIEW and ANSWER return to working (`🤖🔨`), In progress,
-without management assignees. Owner replies and current-head reviews return to
+(`👤🔍`) and OWNER QUESTION (`👤❓`) hand it to the owner on the PR.
+Linked issues stay Executing without owner assignment or Progress, except an explicit
+issue summons. SCOPE REVIEW awaits body approval in Spec review (`👤🔍` on the issue).
+REVIEW and ANSWER return to working (`🤖🔨`),
+without management assignees, in Executing. Owner replies during delivery review return to
 the orchestrator (`🧭🔍`). Orchestrator APPROVED
 leaves verification/merge follow-up with the orchestrator, not an unassigned review.
+
+Only delivery OWNER REVIEW moves the PR to Owner review; the owner moves it to
+Approved to require merge. Worker READY, QUESTION/BLOCKED, REVIEW and ANSWER all
+stay in Executing. SCOPE REVIEW belongs to an issue in Spec review and records its
+body hash and revised Estimate; the owner's move to Executing approves that scope.
+The reverse moves Spec review → Scoping and Owner review → Executing return the
+turn to the orchestrator with reset Progress.
+
+An Executing owner summons (`👤❓` or `👤🔍`, owner assigned) stays paused through
+ordinary owner comments. Hand back only through `review answer --owner-agreed
+<comment-url>` with an exact block quotation from the current, effectively owner-authored
+comment posted after the summons. The flag attests agreement. Verified owner
+self-unassignment instead returns the turn to the orchestrator. See
+[owner summons](orchestrator-guide.md#owner-summons-inside-executing).
 
 After posting READY, QUESTION, BLOCKED or DESIGN, end your turn rather than polling
 for a reply. Review changes, answers and hold releases wake the worker using a fixed

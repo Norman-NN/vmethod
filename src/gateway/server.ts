@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { assertEstimate } from "../board/estimate.js";
+import { ownerAgreement } from "./owner-agreement.js";
 import { getConfig, loadYaml, type Config } from "../config.js";
 import { workerWorktree } from "./worker-path.js";
 import { WorktreeService, type WorktreeTask } from "./worktrees.js";
@@ -33,7 +34,7 @@ import {
 } from "./transport.js";
 import { tokenIdentity, tokenViewer } from "./identity.js";
 import { isOwnerApproved } from "./approval.js";
-import { bodyHash, ScopeReader } from "./scope.js";
+import { bodyHash, ScopeReader, legacyScopeCutoff } from "./scope.js";
 import { setTurn, turnAssignees } from "./turn.js";
 import { renderProgress } from "../board/progress.js";
 import { legacyIssueHeaders, TaskFlow } from "./task-flow.js";
@@ -576,9 +577,13 @@ class GatewayServer {
     const issue = [...numbers][0];
     let estimate: number | undefined,
       kind = "other",
-      blocked = false;
+      blocked = false,
+      ownerPaused = false;
     if (issue) {
       const linked = await this.richThread(issue, "issue");
+      ownerPaused =
+        this.projectValue(linked, "Status") === "Executing" &&
+        /^👤(?:❓|🔍)/u.test(String(this.projectValue(linked, "Progress") ?? ""));
       const n = this.projectValue(linked, "Estimate");
       estimate = typeof n === "number" ? n : undefined;
       const blockers = object(linked.blockedBy);
@@ -636,6 +641,10 @@ class GatewayServer {
       state: String(item.state),
       draft: item.isDraft === true,
       blocked,
+      ownerPaused:
+        ownerPaused ||
+        (this.projectValue(item, "Status") === "Executing" &&
+          /^👤(?:❓|🔍)/u.test(String(progress ?? ""))),
       progress: typeof progress === "string" ? progress : undefined,
       estimate,
       pointsOpen: snapshot ? Number(snapshot[1]) : undefined,
@@ -813,7 +822,14 @@ class GatewayServer {
   verify: Handlers["verify"] = async (input) => this.verification.verify(input);
 
   private get board(): BoardService {
-    return (this.boardClient ??= new BoardService(this.config, this.github, this.deps));
+    return (this.boardClient ??= new BoardService(
+      this.config,
+      this.github,
+      this.deps,
+      undefined,
+      undefined,
+      this.filter
+    ));
   }
 
   boardStatus: Handlers["boardStatus"] = async ({ fix }) =>
@@ -935,7 +951,11 @@ class GatewayServer {
     if (issue.state !== "OPEN" || typeof issue.body !== "string") {
       throw new Error("Scope review requires an open issue with a readable body");
     }
-    const body = `[orchestrator] SCOPE REVIEW\n\nI have updated the main body to the final scope.\n\n${summary.trim()}\n\nbody sha256: ${bodyHash(String(issue.body))}`;
+    const snapshot = await this.board.snapshot();
+    const card = (await this.board.cards(snapshot.id)).find((card) => card.contentId === issue.id);
+    const estimate = card?.values.Estimate;
+    assertEstimate(estimate);
+    const body = `[orchestrator] SCOPE REVIEW\n\nI have updated the main body to the final scope.\n\nEstimate: ${estimate}\n\n${summary.trim()}\n\nbody sha256: ${bodyHash(String(issue.body))}`;
     await checkMarkdown(this.root, body);
     guardClosingKeywords(body);
     const assignments = await this.node(
@@ -972,7 +992,7 @@ class GatewayServer {
     await this.board.setIssueField(
       String(issue.id),
       "Status",
-      "In review",
+      "Spec review",
       renderProgress({ state: "owner-review", round: null, red: false })
     );
     return `Scope review requested for #${number}`;
@@ -1071,7 +1091,7 @@ class GatewayServer {
       board: () => this.board,
       people: loadYaml(this.root, "people") as Person[],
       thread: (ref, kind) => this.flowThread(ref, kind),
-      comments: (id) => this.flowComments(id),
+      comments: (id, kind) => this.flowComments(id, kind === "issue" ? "Issue" : "PullRequest"),
       replyTarget: (id) => this.flowComment(id),
       approved: (ref, historical) => this.approvalFor(ref, historical),
       candidates: async (ref) => {
@@ -1104,9 +1124,34 @@ class GatewayServer {
       },
       issueApproved: async (item) =>
         (
-          await new ScopeReader(this.github, this.filter, this.config).approved([String(item.id)])
+          await new ScopeReader(
+            this.github,
+            this.filter,
+            this.config,
+            object(this.config.board).enabled === false
+              ? Infinity
+              : legacyScopeCutoff((await this.board.snapshot()).readme)
+          ).approved([String(item.id)])
         ).get(String(item.id)) === true,
       modelApproval: (issue, family) => this.modelApproval(family, { issue }),
+      ownerAgreement: async (ref, url, since, handback, kind = "pr") => {
+        const match =
+          /^https:\/\/github\.com\/([^/]+\/[^/]+)\/(?:pull|issues)\/([1-9]\d*)#issuecomment-([1-9]\d*)$/.exec(
+            url
+          );
+        if (!match || match[1] !== String(this.config.repo) || match[2] !== ref) {
+          return false;
+        }
+        const item = await this.flowThread(ref, kind);
+        const comments = await this.ownerModelComments(
+          String(item.id),
+          kind === "issue" ? "Issue" : "PullRequest",
+          url
+        );
+        return comments.some((comment) =>
+          ownerAgreement(comment, this.filter, String(this.config.repo), ref, url, since, handback)
+        );
+      },
     });
   }
   openTask: Handlers["openTask"] = async (input) => this.flow.open(input);
@@ -1140,20 +1185,26 @@ class GatewayServer {
     }
     return data;
   }
-  private async flowComments(id: string): Promise<ObjectData[]> {
+  private async flowComments(
+    id: string,
+    type: "Issue" | "PullRequest" = "PullRequest"
+  ): Promise<ObjectData[]> {
     const output: ObjectData[] = [];
-    for (const meta of await this.collection(id, "PullRequest", "comments")) {
-      if (this.filter.identity(meta.author)?.role !== "orchestrator") {
+    for (const meta of await this.collection(id, type, "comments")) {
+      const author = this.filter.identity(meta.author);
+      if (!author || this.filter.roleIn(author, String(this.config.repo)) !== "orchestrator") {
         continue;
       }
-      const comment = await this.node(String(meta.id), "body createdAt", "IssueComment");
+      const comment = await this.node(String(meta.id), "body createdAt url", "IssueComment");
+      const effective = this.filter.accept(
+        comment,
+        repoOf(comment).owner,
+        `https://github.com/${String(this.config.repo)}`
+      );
       if (
         this.filter.identity(comment.author)?.role === "orchestrator" &&
-        this.filter.accept(
-          comment,
-          repoOf(comment).owner,
-          `https://github.com/${String(this.config.repo)}`
-        )?.role === "orchestrator"
+        effective &&
+        this.filter.roleIn(effective, String(this.config.repo)) === "orchestrator"
       ) {
         output.push(comment);
       }
@@ -1174,7 +1225,11 @@ class GatewayServer {
       if (this.filter.accept(meta, repoOf(meta).owner, link)?.role !== "owner") {
         continue;
       }
-      const comment = await this.node(String(meta.id), "body createdAt", "IssueComment");
+      const comment = await this.node(
+        String(meta.id),
+        "body createdAt url issue { number } pullRequest { number }",
+        "IssueComment"
+      );
       if (this.filter.accept(comment, repoOf(comment).owner, link)?.role === "owner") {
         output.push(comment);
       }
@@ -1608,7 +1663,7 @@ class GatewayServer {
     const card = (await board.cards(snapshot.id)).find((card) => card.contentId === item.id);
     if (
       !card ||
-      card.values.Status !== "In review" ||
+      !["Owner review", "Executing"].includes(String(card.values.Status)) ||
       (!String(card.values.Progress ?? "").startsWith("🧭") &&
         !card.assignees.some((login) =>
           this.filter.people.some(

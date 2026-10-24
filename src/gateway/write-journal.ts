@@ -88,7 +88,7 @@ export class WriteJournal {
         Date.parse(entry.at) >= since &&
         entry.kind === "board" &&
         entry.field === "Status" &&
-        entry.value === "In review"
+        ["Spec review", "Executing", "Owner review"].includes(String(entry.value))
     );
   }
 

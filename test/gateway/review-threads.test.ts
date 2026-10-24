@@ -164,7 +164,7 @@ test("inline worker protocol turns match conversation turns but still emit COMME
   expect(events).toHaveLength(1);
   expect(events[0].line).toContain("from worker (worker)");
   expect(object(f.cards[0].progress).text).toBe("🤖👍 🔁3️⃣");
-  expect(object(f.cards[0].status).name).toBe("In review");
+  expect(object(f.cards[0].status).name).toBe("Executing");
 });
 
 test.each(["another inline thread", "conversation"])(

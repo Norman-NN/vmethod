@@ -1983,6 +1983,28 @@ const wakeRequest: Request = {
   body: { text: wake, delivery: "queue" },
 };
 
+test("owner summons blocks starts and explicit sends before any transport", async () => {
+  const f = fixture();
+  f.meta.ownerPaused = true;
+  await expect(f.service.command(["start", "31"])).rejects.toThrow("Owner summons is paused");
+  f.done();
+});
+
+test("owner summons blocks resumes and discards pre-summons queued wakes across restart", async () => {
+  const f = fixture([...start, ...status(true), ...status()]);
+  await f.service.command(["start", "31"]);
+  expect(await f.service.resume(31, wake)).toBe("queued for #31");
+  f.meta.ownerPaused = true;
+  const restarted = new WorkerService(f.root, f.config, f.env, f.deps, f.hooks);
+  await restarted.watchStatus(31);
+  expect(f.record().pendingWake).toBeUndefined();
+  expect(await restarted.resume(31, wake)).toBe("owner summons paused for #31; nothing sent");
+  await expect(restarted.command(["send", "31", "missing.md"])).rejects.toThrow(
+    "Owner summons is paused"
+  );
+  f.done();
+});
+
 test("resume without a recorded session reports absence without sending", async () => {
   const f = fixture();
   expect(await f.service.resume(31, wake)).toBe("no worker session for #31; nothing sent");

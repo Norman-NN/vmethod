@@ -121,6 +121,8 @@ export interface TaskMetadata {
   blocked: boolean;
   /** Raw PR-card Progress, including optional round and red-check suffixes. */
   progress?: string;
+  /** Executing owner summons on the PR or its issue; never wake while it remains. */
+  ownerPaused?: boolean;
   /** Current board Estimate of the linked issue, not a historical opening snapshot. */
   estimate?: number;
   /** Opening snapshot from the PR; only legacy import may fall back to estimate. */
@@ -467,6 +469,9 @@ export class WorkerService {
       !status.active &&
       !["permission-wait", "session unknown"].includes(status.reason)
     ) {
+      if ((await this.hooks.metadata(record.pr)).ownerPaused) {
+        return status;
+      }
       const pending = record.pendingConflict;
       await this.switchModel(record, pending.model, "conflict-only resolution", status);
       await this.prompt(record, this.conflictLine(pending.base), "queue");
@@ -507,6 +512,9 @@ export class WorkerService {
       return [];
     }
     const meta = await this.hooks.metadata(record.pr);
+    if (meta.ownerPaused) {
+      return [];
+    }
     const firstLine = (body: string): string => body.split(/\r?\n/)[0];
     const dispatchNote = /^\[orchestrator\] NOTE: resolving a conflict with /;
     const turnComment =
@@ -871,6 +879,9 @@ export class WorkerService {
           ? (why as SwitchReason)
           : "orchestrator-judgement";
         const meta = await this.hooks.metadata(pr);
+        if (meta.ownerPaused) {
+          throw new Error("Owner summons is paused; use review answer --owner-agreed");
+        }
         const model = await this.resolve(selected, approved, (family) =>
           this.hooks.modelApproval(pr, meta.issue, family)
         );
@@ -898,6 +909,9 @@ export class WorkerService {
           throw new Error("Usage: worker send <pr> <file> [--queue|--now]");
         }
         const meta = await this.hooks.metadata(pr);
+        if (meta.ownerPaused) {
+          throw new Error("Owner summons is paused; use review answer --owner-agreed");
+        }
         if (
           ["blocked", "question", "ready", "design"].includes(
             parseProgress(meta.progress).state ?? ""
@@ -1202,6 +1216,11 @@ export class WorkerService {
           if (!record) {
             return `no worker session for #${pr}; nothing sent`;
           }
+          if ((await this.hooks.metadata(pr)).ownerPaused) {
+            delete record.pendingWake;
+            this.save(record);
+            return `owner summons paused for #${pr}; nothing sent`;
+          }
           const status = await this.status(record, false);
           if (status.reason === "session unknown") {
             return `no worker session for #${pr}; nothing sent`;
@@ -1239,7 +1258,13 @@ export class WorkerService {
   /** Run a fixed conflict turn on the cheapest ungated configured backend-compatible family. */
   async resolveConflict(pr: number, base: string, files: string[]): Promise<2 | 3> {
     const meta = await this.hooks.metadata(pr);
-    if (meta.state !== "OPEN" || meta.merged || meta.blocked || taskHeld(meta.title, meta.body)) {
+    if (
+      meta.state !== "OPEN" ||
+      meta.merged ||
+      meta.blocked ||
+      meta.ownerPaused ||
+      taskHeld(meta.title, meta.body)
+    ) {
       throw new Error("Conflict task is closed, blocked or on hold");
     }
     await this.recordMetric(pr, {
@@ -1524,6 +1549,9 @@ export class WorkerService {
     const meta = await this.hooks.metadata(pr);
     if ((!meta.draft && !conflictPrompt) || meta.state !== "OPEN") {
       throw new Error("Worker start requires an open draft task PR");
+    }
+    if (meta.ownerPaused) {
+      throw new Error("Owner summons is paused; use review answer --owner-agreed");
     }
     if (!meta.issue && !conflictPrompt) {
       throw new Error("Task PR has no linked issue");

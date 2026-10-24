@@ -21,6 +21,8 @@ export interface ReviewInput {
   outcome: "changes" | "owner" | "answer" | "ask" | "approve";
   file: string;
   replyTo?: string;
+  /** Owner comment attested as agreement; required to release an Executing summons. */
+  ownerAgreed?: string;
 }
 
 /** The card turn a conflict fixer dispatch interrupts; stored with the resolution record. */
