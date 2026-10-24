@@ -44,7 +44,6 @@ test.each([
   ["board", ["set", "3", "Status", "Done"]],
   ["issue", ["create", "Title", "nonexistent.md"]],
   ["open-task", ["3"]],
-  ["cost", ["backfill"]],
 ] as const)(
   "worker credential cannot claim orchestrator for %s",
   async (verb, args) => {

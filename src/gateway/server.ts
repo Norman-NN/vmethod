@@ -37,6 +37,7 @@ import { isOwnerApproved } from "./approval.js";
 import { bodyHash, ScopeReader, legacyScopeCutoff } from "./scope.js";
 import { setTurn, turnAssignees } from "./turn.js";
 import { renderProgress } from "../board/progress.js";
+import { workflowColumns } from "../board/runner.js";
 import { legacyIssueHeaders, TaskFlow } from "./task-flow.js";
 import { isTaskPrompt } from "./task-flow-types.js";
 import { GitTransport, taskBranch, validateBranch } from "./git.js";
@@ -61,8 +62,6 @@ import { blockerLabel, blockerReference, reference, type ThreadRef } from "./ref
 import { LearningsService } from "./learnings.js";
 import { LearningAnnotations, type LearningBundle } from "./learning-annotations.js";
 import { checkLearningPr } from "./learning-check.js";
-import { backfillCosts } from "./cost-backfill.js";
-import type { Price, PriceTier } from "../cost.js";
 import { ConflictService } from "./conflicts.js";
 import { verifyConflictHead } from "./verify-hook.js";
 import { isModelApproved } from "./model-gate.js";
@@ -306,54 +305,6 @@ class GatewayServer {
   }
   grade: Handlers["grade"] = async ({ ref, points }) =>
     this.workers.grade(this.localNumber(ref), points);
-  costBackfill: Handlers["costBackfill"] = async ({ dryRun, prs }) => {
-    if (dryRun !== undefined && typeof dryRun !== "boolean") {
-      throw new Error("Invalid dryRun");
-    }
-    if (
-      prs !== undefined &&
-      (!Array.isArray(prs) || prs.some((pr) => !Number.isSafeInteger(pr) || pr < 1))
-    ) {
-      throw new Error("Invalid PR numbers");
-    }
-    const models = loadYaml(this.root, "models") as {
-      family: string;
-      model: string;
-      price?: Price;
-      tiers?: PriceTier[];
-    }[];
-    return backfillCosts(
-      {
-        root: this.root,
-        config: this.config,
-        env: this.env,
-        models,
-        readSession: (id) => this.workers.readSessionForCost(id),
-        inspectCard: async (pr) => {
-          const item = await this.richThread(pr, "pr");
-          const value = this.projectValue(item, "Cost");
-          return {
-            cost: typeof value === "string" ? value : null,
-            archived: this.projectCard(item).isArchived === true,
-          };
-        },
-        setCost: (pr, cost) => this.setWorkerField(pr, "pr", "Cost", cost),
-        listPrs: async () => {
-          const snapshot = await this.board.snapshot();
-          return (await this.board.cards(snapshot.id))
-            .filter(
-              (card) =>
-                card.kind === "PullRequest" &&
-                card.repo?.toLowerCase() === String(this.config.repo).toLowerCase() &&
-                Number.isSafeInteger(card.number)
-            )
-            .map((card) => card.number!);
-        },
-        report: this.deps.report,
-      },
-      { dryRun, prs }
-    );
-  };
   suggestModel: Handlers["suggestModel"] = async ({ ref }) => {
     const suggestion = await this.workers.suggest(this.localNumber(ref));
     const family = suggestion.split(":", 1)[0];
@@ -756,7 +707,7 @@ class GatewayServer {
   }
 
   private get conflicts(): ConflictService {
-    return new ConflictService(this.root, this.config, this.env, this.deps, {
+    return new ConflictService(this.root, this.config, this.env, eventDeps(this.deps), {
       snapshot: async (pr) => {
         await this.flow.conflictTask(String(pr));
         return this.ci.snapshot(String(pr));
@@ -854,7 +805,8 @@ class GatewayServer {
 
   /** Create an own-repository issue from checked content and ensure readable configured-board
    * membership. Optional estimate/status use the shared board field writer; estimates must
-   * use the shared points scale and labels may repeat.
+   * use the shared points scale and labels may repeat. Status defaults to the first workflow
+   * column (Backlog), so a card filed without --status is never in no column.
    * Board follow-up failures identify the created issue so callers do not create a duplicate.
    */
   issueCreate: Handlers["issueCreate"] = async ({ title, file, labels = [], estimate, status }) => {
@@ -904,15 +856,12 @@ class GatewayServer {
           { repo: String(this.config.repo), number: Number(created.number) },
         ]);
         await board.ensure(created.node_id);
-        // One ordered board mutation when the caller passes fields: the verb's board
-        // writes journal as a single operation (#199), Status last with its progress
-        // companion.
-        if (estimate !== undefined || status !== undefined) {
-          await board.setIssueFields(created.node_id, [
-            ...(estimate !== undefined ? [{ name: "Estimate", value: String(estimate) }] : []),
-            ...(status !== undefined ? [{ name: "Status", value: status }] : []),
-          ]);
-        }
+        // One ordered board mutation, Status last with its progress companion (#199);
+        // the created issue's default Status files it in the first workflow column (#231).
+        await board.setIssueFields(created.node_id, [
+          ...(estimate !== undefined ? [{ name: "Estimate", value: String(estimate) }] : []),
+          { name: "Status", value: status ?? workflowColumns[0] },
+        ]);
       } catch (error) {
         throw new Error(
           `Created issue #${String(created.number)}; board follow-up failed: ${error instanceof Error ? error.message : String(error)}. Do not recreate; inspect this issue and retry board operations only.`,
@@ -2099,7 +2048,6 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     boardSetIssue: server.boardSetIssue,
     worker: server.worker,
     grade: server.grade,
-    costBackfill: server.costBackfill,
     suggestModel: server.suggestModel,
     workerAccess: server.workerAccess,
     openTask: server.openTask,
@@ -2144,7 +2092,6 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     boardSetIssue: ["orchestrator"],
     worker: ["orchestrator"],
     grade: ["orchestrator"],
-    costBackfill: ["orchestrator"],
     suggestModel: ["orchestrator"],
     workerAccess: ["worker", "orchestrator"],
     openTask: ["orchestrator"],

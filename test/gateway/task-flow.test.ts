@@ -1129,7 +1129,7 @@ test("review changes hands the turn back before the board move so no poll report
 });
 
 const REPLY_REFUSAL =
-  "answer replies to a worker QUESTION or BLOCKED; to reply to the owner use review <pr> ask --in-reply-to <url>";
+  "answer replies to a worker QUESTION, BLOCKED, DESIGN or HANDOFF; to reply to the owner use review <pr> ask --in-reply-to <url>";
 
 test.each([
   {
@@ -1199,7 +1199,7 @@ test.each([
   }
 );
 
-test.each(["QUESTION", "BLOCKED"] as const)(
+test.each(["QUESTION", "BLOCKED", "DESIGN", "HANDOFF"] as const)(
   "review answer --in-reply-to a worker %s posts, wakes and replies as before",
   async (tag) => {
     const f = fixture();
