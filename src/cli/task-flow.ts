@@ -61,26 +61,32 @@ export async function taskFlowVerb(
     return transport.call("openTask", input, ctx);
   }
   if (verb === "review") {
-    const replyFirst = args[2] === "--in-reply-to";
-    if (
-      ![3, 5].includes(args.length) ||
-      (args.length === 5 && args[replyFirst ? 2 : 3] !== "--in-reply-to") ||
-      (replyFirst && args.length !== 5)
-    ) {
-      throw new Error(
-        "Usage: review <pr> changes|owner|answer|ask|approve <file> [--in-reply-to url]"
-      );
+    const input: ReviewInput = {
+      ref: args[0],
+      outcome: args[1] as ReviewInput["outcome"],
+      file: "",
+    };
+    const usage =
+      "Usage: review <pr> changes|owner|answer|ask|approve <file> [--in-reply-to url] [--owner-agreed url]";
+    for (let i = 2; i < args.length; i++) {
+      const arg = args[i];
+      if (arg === "--in-reply-to" || arg === "--owner-agreed") {
+        const key = arg === "--in-reply-to" ? "replyTo" : "ownerAgreed";
+        const value = args[++i];
+        if (input[key] || !value || value.startsWith("--")) {
+          throw new Error(usage);
+        }
+        input[key] = value;
+      } else if (!input.file && !arg.startsWith("--")) {
+        input.file = arg;
+      } else {
+        throw new Error(usage);
+      }
     }
-    return transport.call(
-      "reviewTask",
-      {
-        ref: args[0],
-        outcome: args[1] as ReviewInput["outcome"],
-        file: args[replyFirst ? 4 : 2],
-        replyTo: args[replyFirst ? 3 : 4],
-      },
-      ctx
-    );
+    if (!input.ref || !input.outcome || !input.file) {
+      throw new Error(usage);
+    }
+    return transport.call("reviewTask", input, ctx);
   }
   if (verb === "link-task") {
     if (

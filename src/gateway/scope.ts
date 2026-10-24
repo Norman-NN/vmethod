@@ -3,6 +3,17 @@ import type { Config } from "../config.js";
 import { object, type ObjectData, type PeopleFilter, type Person } from "./people.js";
 import { identityFields, actorFields, repoOf } from "./queries.js";
 import type { GitHubClient } from "./client.js";
+import { readState } from "../board/readme.js";
+
+/** Grandfather v5 owner approvals only before the recorded v6 migration. */
+export function legacyScopeCutoff(readme: string): number {
+  const state = readState(readme);
+  if (state.version < 6) {
+    return Infinity;
+  }
+  const cutoff = Date.parse(state.migrated?.split(" by ")[0] ?? "");
+  return Number.isFinite(cutoff) ? cutoff : 0;
+}
 
 /** Hash the exact GitHub body; the review comment, never the body, carries the digest. */
 export function bodyHash(body: string): string {
@@ -21,7 +32,8 @@ export function scopeApproved(
   comments: ObjectData[],
   timeline: ObjectData[],
   config: Config,
-  filter: PeopleFilter
+  filter: PeopleFilter,
+  legacyBefore = Infinity
 ): boolean {
   if (typeof issue.body !== "string") {
     return false;
@@ -56,7 +68,13 @@ export function scopeApproved(
   } else if (!trusted(issue) || comments.some((comment) => !trusted(comment))) {
     return false;
   }
-  const latest = ownerApprovalAt(timeline, config, filter);
+  const latest = ownerApprovalAt(
+    timeline,
+    config,
+    filter,
+    review ? "Spec review" : "Scoping",
+    legacyBefore
+  );
   const since = review ? time(review) : time(issue);
   return latest !== null && Number.isFinite(since) && latest > since;
 }
@@ -64,7 +82,9 @@ export function scopeApproved(
 function ownerApprovalAt(
   timeline: ObjectData[],
   config: Config,
-  filter: PeopleFilter
+  filter: PeopleFilter,
+  from?: "Spec review" | "Scoping",
+  legacyBefore = Infinity
 ): number | null {
   const time = (item: ObjectData) => Date.parse(String(item.createdAt));
   const events = timeline.filter(
@@ -82,7 +102,21 @@ function ownerApprovalAt(
     return null;
   }
   const latest = Math.max(...owners.map(time));
-  if (owners.some((event) => time(event) === latest && event.status !== "Approved")) {
+  if (
+    owners.some(
+      (event) =>
+        time(event) === latest &&
+        !(
+          (event.status === "Executing" &&
+            (from
+              ? event.previousStatus === from
+              : ["Spec review", "Scoping"].includes(String(event.previousStatus)))) ||
+          // Migration changes position, not the owner's historical decision. The
+          // migration timestamp prevents new issue Approved moves becoming scope go.
+          (event.status === "Approved" && time(event) < legacyBefore)
+        )
+    )
+  ) {
     return null;
   }
   return latest;
@@ -101,7 +135,8 @@ function reviewPending(
   comments: ObjectData[],
   timeline: ObjectData[],
   config: Config,
-  filter: PeopleFilter
+  filter: PeopleFilter,
+  legacyBefore: number
 ): boolean {
   const time = (item: ObjectData) => Date.parse(String(item.lastEditedAt ?? item.createdAt));
   const repo = repoOf(issue).repo;
@@ -119,7 +154,7 @@ function reviewPending(
   if (!matchesBody(review, issue.body)) {
     return false;
   }
-  const ownerAt = ownerApprovalAt(timeline, config, filter);
+  const ownerAt = ownerApprovalAt(timeline, config, filter, undefined, legacyBefore);
   return (
     (ownerAt === null || ownerAt <= time(review)) &&
     !comments.some((comment) => time(comment) > time(review))
@@ -133,7 +168,8 @@ export class ScopeReader {
   constructor(
     private github: GitHubClient,
     private filter: PeopleFilter,
-    private config: Config
+    private config: Config,
+    private legacyBefore = Infinity
   ) {}
 
   async approved(ids: string[]): Promise<Map<string, boolean>> {
@@ -203,10 +239,14 @@ export class ScopeReader {
       );
       const discussion = commentMetas.map((meta) => bodies.get(meta.id) ?? meta);
       result.set(id, {
-        approved: complete && scopeApproved(issue, discussion, events, this.config, this.filter),
-        ownerApproved: ownerApprovalAt(events, this.config, this.filter) !== null,
+        approved:
+          complete &&
+          scopeApproved(issue, discussion, events, this.config, this.filter, this.legacyBefore),
+        ownerApproved:
+          ownerApprovalAt(events, this.config, this.filter, undefined, this.legacyBefore) !== null,
         reviewPending:
-          complete && reviewPending(issue, discussion, events, this.config, this.filter),
+          complete &&
+          reviewPending(issue, discussion, events, this.config, this.filter, this.legacyBefore),
       });
     }
     return result;
@@ -239,7 +279,7 @@ export class ScopeReader {
         const selection =
           field === "comments"
             ? `${identityFields} createdAt`
-            : `__typename ... on ProjectV2ItemStatusChangedEvent { actor { ${actorFields} } status createdAt project { number } }`;
+            : `__typename ... on ProjectV2ItemStatusChangedEvent { actor { ${actorFields} } status previousStatus createdAt project { number } }`;
         return `n${i}: node(id: $id${i}) { ... on Issue { ${identityFields} ${field}(first: 100, after: $cursor${i}${field === "timelineItems" ? ", itemTypes: [PROJECT_V2_ITEM_STATUS_CHANGED_EVENT]" : ""}) { nodes { ${selection} } pageInfo { hasNextPage endCursor } } } }`;
       });
       const data = object(

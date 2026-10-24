@@ -31,7 +31,7 @@ test.each([
   }
 );
 
-test("recent own In review status writes identify a handoff window for the watcher", () => {
+test("recent own Owner review status writes identify a handoff window for the watcher", () => {
   const f = fixtureServer([]);
   const config = { ...getConfig(f.root, {}), repo: "example/project" };
   const at = new Date(f.deps.now()).toISOString();
@@ -39,7 +39,7 @@ test("recent own In review status writes identify a handoff window for the watch
   mkdirSync(dir, { recursive: true });
   writeFileSync(
     join(dir, "writes.jsonl"),
-    `${JSON.stringify({ at, kind: "board", repo: "example/project", number: 58, field: "Status", value: "In review" })}\n`
+    `${JSON.stringify({ at, kind: "board", repo: "example/project", number: 58, field: "Status", value: "Owner review" })}\n`
   );
   const journal = new WriteJournal(config, f.env, f.deps.now);
   expect(journal.recentlyWrote("example/project", 58)).toBe(true);

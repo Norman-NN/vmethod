@@ -13,7 +13,8 @@ test("issue approval follows latest configured-board event by verified owner id 
   );
   const event = {
     __typename: "ProjectV2ItemStatusChangedEvent",
-    status: "Approved",
+    status: "Executing",
+    previousStatus: "Spec review",
     actor: actor(),
     project: { number: 1 },
     createdAt: "2026-01-01T00:00:00Z",
@@ -27,7 +28,7 @@ test("issue approval follows latest configured-board event by verified owner id 
   expect(isIssueOwnerApproved([event], 2, filter)).toBe(false);
   expect(
     isIssueOwnerApproved(
-      [event, { ...event, status: "In progress", createdAt: "2026-01-02T00:00:00Z" }],
+      [event, { ...event, status: "Scoping", createdAt: "2026-01-02T00:00:00Z" }],
       1,
       filter
     )
@@ -58,6 +59,7 @@ test("only owner reviews on the head or owner status-change actors approve; card
     __typename: "ProjectV2ItemStatusChangedEvent",
     field: "Status",
     status: "Approved",
+    previousStatus: "Owner review",
     actor: actor(),
     project: { number: 1 },
     createdAt: "2026-01-01T01:00:00Z",
@@ -287,6 +289,7 @@ test("historical board approval survives a later non-owner move and is revoked b
     __typename: "ProjectV2ItemStatusChangedEvent",
     field: "Status",
     status: "Approved",
+    previousStatus: "Owner review",
     actor: actor(),
     project: { number: 1 },
     createdAt: "2026-01-01T02:00:00Z",

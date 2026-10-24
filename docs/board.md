@@ -4,43 +4,44 @@ Keep each card's status, next actor and progress synchronized through the wrappe
 
 ## Status and assignee
 
-Status options are ordered **Backlog, Ready, In progress, In review, Approved, Done**.
-Issues and PRs use the same columns for different stages:
+Status options are ordered **Backlog, Scoping, Spec review, Executing, Owner review, Approved, Done**.
+Issues start on the left; task PRs start in Executing:
 
-| Status      | Issue                                              | Task PR                                    |
-| ----------- | -------------------------------------------------- | ------------------------------------------ |
-| Backlog     | Idea, initially estimated; no implementation       | Not used                                   |
-| Ready       | Owner wants it developed; blocked items wait       | Not used                                   |
-| In progress | Scope rewrite or its deliveries are open           | Worker builds                              |
-| In review   | Specification conversation                         | Orchestrator verification or owner review  |
-| Approved    | Conclusions agreed; scope gate decides execution   | Owner agrees to delivery; verify and merge |
-| Done        | Last delivery integrated, or closed as not planned | Merged or closed                           |
+| Status       | Issue                                                                | Task PR                                         |
+| ------------ | -------------------------------------------------------------------- | ----------------------------------------------- |
+| Backlog      | Idea with initial Estimate                                           | Not used                                        |
+| Scoping      | Discussion; blocked cards may be discussed here                      | Not used                                        |
+| Spec review  | Final body and revised Estimate await owner go                       | Not used                                        |
+| Executing    | Waits for task PRs, or all epic sub-issues, to finish                | Worker builds; orchestrator reviews and answers |
+| Owner review | Not used                                                             | Owner reviews delivery                          |
+| Approved     | Not used                                                             | Approved delivery must be merged                |
+| Done         | Last delivery integrated, all sub-issues Done, or closed not planned | Merged or closed                                |
 
 **Assignee means whose move it is**, not who wrote the code. Assign the owner when
 they must read, try, answer or decide. Assign the orchestrator when it must act,
 even if only to reply. No assignee means a worker has it or no human action is pending.
 Remove yourself or hand over when done. Every Status or Assignee change also sets
 Progress; do not leave stale state or manually patch Progress.
-In review has exactly one assignee, except linked task issues. Owner waits belong
-only on the task PR: linked issues stay In review without an owner assignee or
-owner Progress; follow their Development link. After a task PR merges, the watcher
-keeps this exception while merge follow-up is pending: an incomplete journal updated
-within ten minutes, or less than ten minutes since the merge. Once that window expires,
-an issue still In review without an assignee is a board violation. An explicit pending
-SCOPE REVIEW instead belongs on the issue, even with linked tasks. The watcher clears
-stale owner mirrors; see [protocol transitions](protocol.md). Use `board set` only for
+Spec review and Owner review have exactly one turn assignee. Linked issues wait in
+Executing with no Progress or management assignee; they never mirror their PR's review
+columns. An explicit issue summons may retain its own owner turn. See
+[protocol transitions](protocol.md). Use `board set` only for
 explicit housekeeping with validated Progress, not as a substitute for the
 [tracked owner-question commands](orchestrator-guide.md).
 
-When you move a card back to Backlog or Ready, the watcher treats it as nobody's
-move yet only when the authenticated status-change event is newer than the current
-Progress and management turn assignment. It clears the entire Progress field and
-removes owner/orchestrator assignees, preserving worker assignments. An `ask` with
-no subsequent move, or one made after the move, survives. Orchestrator and worker
-moves do not cancel turns; missing or same-second ordering evidence also preserves
-the turn. The original board move still notifies the orchestrator; cleanup does not
-generate an owner-completion notification. Other destination columns and journalled
-gateway moves keep their existing handling.
+The owner moves Backlog → Scoping to start discussion, then Scoping → Spec review
+to agree conclusions. The orchestrator gets `🧭🔍` to rewrite the scope. After
+SCOPE REVIEW the owner gets `👤🔍`; Spec review → Executing approves the exact body.
+The only bounces are Spec review → Scoping and Owner review → Executing, both
+returning the turn to the orchestrator with reset Progress. A newer owner question
+survives a stale queue move: missing or same-second ordering evidence never cancels it.
+A move back to Backlog clears an older management turn and Progress, preserving worker
+assignments. Journalled gateway moves retain their deliberate turn.
+
+In Executing you may summon the owner with `👤❓` or `👤🔍` and owner assignment
+without changing columns. The worker stays paused until an explicitly attested owner
+agreement is quoted in the hand-back, or the owner unassigns themself. A plain owner
+comment does not release the pause. See [the summons procedure](orchestrator-guide.md#owner-summons-inside-executing).
 
 `board status` lists cards whose open/closed state disagrees with Status. Use
 `board status --fix` to move closed cards to Done and open cards out of Done to
@@ -57,17 +58,18 @@ and muted or out-of-scope threads are not changed.
 
 ## Issue scope approval
 
-Approved alone does not authorize execution. Without valid scope evidence, the
-watcher emits `SCOPE #n: approved conclusions; rewrite body and request scope review`
-instead of LAUNCH. Move the issue to In progress while rewriting, then use
-`scope-review` to put it In review, owner assigned, with `👤🔍`. The owner's next
-Approved move approves the body hash in that comment. A changed body needs a new
+In Spec review the watcher emits `SCOPE #n` when the final scope review is not yet
+pending. Rewrite the body and revise Estimate from the discussion, explaining the
+new estimate in the summary. `scope-review` records the live Estimate and body hash,
+keeps Spec review, assigns the owner and sets `👤🔍`. The owner's move to Executing
+approves that hash. `open-task` requires both Executing and valid scope evidence.
+A changed body needs a new
 review and approval; an unchanged body covers all part PRs. See the
 [scope procedure and shortcuts](orchestrator-guide.md#scope-review).
 
 ## Estimate belongs to the issue
 
-Every issue gets an Estimate **in Backlog**, before the owner takes work into Ready.
+Every issue gets an Estimate **in Backlog**, before the owner takes work into Scoping.
 Revise it whenever new information changes the work: specification development,
 design questions, closed blockers or final grading. Set it at filing with
 `issue create --estimate` and set or revise it on an existing issue with
@@ -182,6 +184,15 @@ asks for a reply there, not authority to run its workflow. Board migrations alon
 operate on the whole `board.repos` set.
 
 ## Migrations: what adopters see
+
+Migration 0006 changes the workflow columns. Its dry run lists **every card's old and
+new column and deciding evidence**. It remaps legacy queue/execution names, splits
+issue review by pending authenticated SCOPE REVIEW, maps issue approval by valid
+scope evidence, and splits PR review by the pinned owner's turn. PR approval is
+unchanged. Destination options expand first; card writes are batched; obsolete
+options contract last. Rerunning a completed migration writes nothing. Historical
+scope approvals remain valid only before the migration timestamp and while the
+reviewed body is unchanged; new issue moves to Approved are not scope approval.
 
 `board status` and `board migrate` (vmethod 1.0, #5) report and apply ordered,
 append-only migrations. Review the pending diff and dry run, especially built-in

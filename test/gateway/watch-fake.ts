@@ -129,7 +129,22 @@ export class WatchFake {
   workerMetrics: { pr: number; event: import("../../src/learning-metrics.js").MetricEvent }[] = [];
   workerStatus?: (pr: number) => Promise<WorkerSessionStatus>;
   watchPeople = people;
-  fields: ObjectData[] = structuredClone(recordedBoard.fields.nodes);
+  fields: ObjectData[] = structuredClone(recordedBoard.fields.nodes).map((field) =>
+    field.name === "Status"
+      ? {
+          ...field,
+          options: [
+            "Backlog",
+            "Scoping",
+            "Spec review",
+            "Executing",
+            "Owner review",
+            "Approved",
+            "Done",
+          ].map((name, index) => ({ ...field.options?.[0], id: `status-${index}`, name })),
+        }
+      : field
+  );
   enableWrites = false;
   deps: EventDeps = {
     pid: 1,
@@ -915,7 +930,7 @@ export class WatchFake {
       { number: 6, labels: [] },
       { number: 24, pull_request: {}, body: "Part of #6", labels: [] },
     ];
-    this.cards = [this.card(24, "In progress", "PullRequest")];
+    this.cards = [this.card(24, "Executing", "PullRequest")];
   }
   card(number = 6, status = "Backlog", kind = "Issue", overrides: ObjectData = {}): ObjectData {
     return {

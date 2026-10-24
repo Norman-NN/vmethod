@@ -28,7 +28,8 @@ import { writeState } from "../../src/board/readme.js";
 import { createGateway } from "../../src/gateway/server.js";
 import { stringify } from "yaml";
 import { actor, people } from "./helpers.js";
-import { scopeMove } from "./scope-fixture.js";
+import { scopeMove, scopeComment } from "./scope-fixture.js";
+import { bodyHash } from "../../src/gateway/scope.js";
 import recordedActions from "../fixtures/github/watch-actions.json" with { type: "json" };
 import recordedComment from "../fixtures/github/review-comment.json" with { type: "json" };
 import { GitHubClient } from "../../src/gateway/client.js";
@@ -36,13 +37,120 @@ import { WriteJournal } from "../../src/gateway/write-journal.js";
 import ownerReviews from "../fixtures/github/owner-reviews.json" with { type: "json" };
 import orchestratorReviews from "../fixtures/github/orchestrator-reviews.json" with { type: "json" };
 
+test.each(["Executing", "Done", "missing", "incomplete"])(
+  "epic waits for every sub-issue's Done column (%s)",
+  async (childStatus) => {
+    const f = setup();
+    const epic = f.card(6, "Executing");
+    const child = f.card(7, childStatus === "Done" ? "Done" : "Executing");
+    object(epic.content).subIssues = {
+      nodes: [{ id: object(child.content).id }],
+      pageInfo: { hasNextPage: childStatus === "incomplete" },
+    };
+    f.cards = childStatus === "missing" ? [epic] : [epic, child];
+    const loop = f.loop();
+    await f.tick(loop);
+    expect(object(epic.status).name).toBe(childStatus === "Done" ? "Done" : "Executing");
+    const writes = f.writes.length;
+    f.advance();
+    await f.tick(loop);
+    expect(f.writes).toHaveLength(writes);
+    expect(f.reports).toEqual([]);
+  }
+);
+
+test.each([
+  ["Issue", "Backlog", "Scoping", "🧭🔍", "next"],
+  ["Issue", "Scoping", "Spec review", "🧭🔍", "scope"],
+  ["Issue", "Spec review", "Scoping", "🧭🔍", "next"],
+  ["Issue", "Spec review", "Executing", "", "launch"],
+  ["Issue", "Scoping", "Executing", "", "launch"],
+  ["PullRequest", "Owner review", "Executing", "🧭🔍", "board"],
+  ["PullRequest", "Owner review", "Approved", "🧭🔍", "board"],
+] as const)(
+  "owner lifecycle move %s %s → %s resets turn and emits %s",
+  async (kind, from, to, progress, eventKind) => {
+    const f = setup();
+    const card = f.card(6, from, kind);
+    card.progress = {
+      text: from === "Owner review" || from === "Spec review" ? "👤🔍" : "",
+      updatedAt: f.iso(),
+    };
+    object(card.content).assignees = { nodes: [{ login: "owner" }] };
+    f.cards = [card];
+    const loop = f.loop();
+    await f.tick(loop);
+    f.advance();
+    card.status = { name: to, updatedAt: f.iso() };
+    const move = scopeMove({
+      project: { number: 5 },
+      status: to,
+      previousStatus: from,
+      createdAt: f.iso(),
+    });
+    f.boardTimeline[String(card.id)] = [[move]];
+    f.scopeTimeline = [move];
+    if (to === "Executing" && from === "Spec review") {
+      f.scopeComments = [
+        scopeComment({
+          body: `[orchestrator] SCOPE REVIEW\n\nbody sha256: ${bodyHash("Final scope")}`,
+        }),
+      ];
+    }
+    const events = await f.tick(loop);
+    expect(object(card.status).name).toBe(to);
+    expect(object(card.progress).text ?? "").toBe(progress);
+    expect(object(object(card.content).assignees).nodes).toEqual(
+      progress ? [{ login: "peer" }] : []
+    );
+    expect(events.some((event) => event.kind === eventKind)).toBe(true);
+    expect(f.reports).toEqual([]);
+  }
+);
+
+test.each(["comment", "self-unassign", "other-unassign"])(
+  "Executing summons preserves pause except owner self-unassignment: %s",
+  async (action) => {
+    const f = setup();
+    f.task();
+    const card = f.cards[0];
+    card.progress = { text: "👤❓" };
+    object(card.content).assignees = { nodes: [{ login: "owner" }] };
+    const loop = f.loop();
+    await f.tick(loop);
+    f.advance();
+    if (action === "comment") {
+      f.comment("I have another question; this is not agreement.", 0);
+    } else {
+      object(card.content).assignees = { nodes: [] };
+      f.assignmentEvents = [
+        {
+          ...recordedActions.timelineItems.nodes[1],
+          createdAt: f.iso(),
+          actor: actor(action === "self-unassign" ? 0 : 2),
+          assignee: actor(),
+        },
+      ];
+    }
+    const events = await f.tick(loop);
+    expect(object(card.status).name).toBe("Executing");
+    expect(object(card.progress).text).toBe(action === "self-unassign" ? "🧭🔍" : "👤❓");
+    expect(object(object(card.content).assignees).nodes).toEqual([
+      { login: action === "self-unassign" ? "peer" : "owner" },
+    ]);
+    expect(events.every((event) => !["launch", "scope", "next"].includes(event.kind))).toBe(true);
+    expect(f.workerSends).toEqual([]);
+    expect(f.reports).toEqual([]);
+  }
+);
+
 test.each(["progress", "assignment"])(
   "orchestrator %s turn reminds after 30 minutes, hourly and after a new stretch",
   async (signal) => {
     const f = setup();
     f.task();
     const card = f.cards[0];
-    card.status = { ...object(card.status), name: "In review" };
+    card.status = { ...object(card.status), name: "Executing" };
     card.progress = { text: signal === "progress" ? "🧭🔍" : "" };
     object(card.content).assignees = { nodes: [{ login: "peer" }] };
     let loop = f.loop();
@@ -112,7 +220,7 @@ test.each(["removed", "closed", "Done", "muted"])(
     f.advance(2 * 60_000);
     f.cards = [card];
     object(card.content).state = "OPEN";
-    object(card.status).name = "In review";
+    object(card.status).name = "Executing";
     // A closure now clears both turn signals; reopening starts a new turn.
     card.progress = { text: "🧭🔍" };
     object(card.content).assignees = { nodes: [{ login: "peer" }] };
@@ -134,7 +242,7 @@ test.each(["assignment", "progress", "both"])(
     f.pulls[0].body = '<!-- vmethod-task {"issues":[6]} -->';
     f.cards[0].progress = { text: "👤🔍" };
     object(f.cards[0].content).assignees = { nodes: [{ login: "owner" }] };
-    f.cards.push(f.card(6, "In review"));
+    f.cards.push(f.card(6, "Spec review"));
     if (stale !== "assignment") {
       f.cards[1].progress = { text: "👤❓" };
     }
@@ -145,7 +253,7 @@ test.each(["assignment", "progress", "both"])(
     await f.tick(loop);
     expect(object(f.cards[1].progress).text ?? "").toBe("");
     expect(object(object(f.cards[1].content).assignees).nodes).toEqual([]);
-    expect(object(f.cards[1].status).name).toBe("In review");
+    expect(object(f.cards[1].status).name).toBe("Spec review");
     expect(object(f.cards[0].progress).text).toBe("👤🔍");
     f.advance();
     await f.tick(loop);
@@ -154,9 +262,9 @@ test.each(["assignment", "progress", "both"])(
   }
 );
 
-test("watcher suppresses a recent own In review violation during the handoff poll", async () => {
+test("watcher suppresses a recent own Spec review violation during the handoff poll", async () => {
   const f = setup();
-  const card = f.card(6, "In review");
+  const card = f.card(6, "Spec review");
   card.progress = { text: "👤🔍" };
   f.cards.push(card);
   mkdirSync(f.dir, { recursive: true });
@@ -168,7 +276,7 @@ test("watcher suppresses a recent own In review violation during the handoff pol
       repo: "example/project",
       number: 6,
       field: "Status",
-      value: "In review",
+      value: "Spec review",
     })}\n`
   );
   const loop = f.loop();
@@ -183,7 +291,7 @@ test.each(["listing", "processing"])(
     const f = setup();
     f.task();
     f.pulls[0].body = '<!-- vmethod-task {"issues":[6]} -->';
-    f.cards.push(f.card(6, "In review"));
+    f.cards.push(f.card(6, "Spec review"));
     let fail = false;
     const fetch = f.deps.fetch;
     f.deps.fetch = async (input, init) => {
@@ -205,7 +313,7 @@ test.each(["listing", "processing"])(
     // The new relation must not replace the last successful snapshot on failure.
     f.pulls[0].body = '<!-- vmethod-task {"issues":[7]} -->';
     f.pulls.push({ ...f.pulls[0], number: 31, head: { ref: "7-task", sha } });
-    f.cards.push(f.card(7, "In review"));
+    f.cards.push(f.card(7, "Spec review"));
     fail = true;
     expect((await f.once(loop)).filter((event) => event.kind === "board-violation")).toEqual([]);
     expect(f.reports).toEqual([
@@ -221,13 +329,13 @@ test.each(["listing", "processing"])(
     const recovered = await f.once(loop);
     expect(
       recovered.filter((event) => event.kind === "board-violation").map((e) => e.line)
-    ).toEqual([expect.stringContaining("BOARD VIOLATION #6: In review with no assignee")]);
+    ).toEqual([expect.stringContaining("BOARD VIOLATION #6: Spec review with no assignee")]);
     await f.ack(loop, recovered);
     f.pulls = [];
     f.advance();
     expect(
       (await f.once(loop)).filter((event) => event.kind === "board-violation").map((e) => e.line)
-    ).toEqual([expect.stringContaining("BOARD VIOLATION #7: In review with no assignee")]);
+    ).toEqual([expect.stringContaining("BOARD VIOLATION #7: Spec review with no assignee")]);
   }
 );
 
@@ -240,7 +348,7 @@ test.each(["missing", "active", "stale"])(
     f.pulls[0].body = body;
     f.cards[0].progress = { text: "👤🔍" };
     object(f.cards[0].content).assignees = { nodes: [{ login: "owner" }] };
-    f.cards.push(f.card(6, "In review"));
+    f.cards.push(f.card(6, "Spec review"));
     const loop = f.loop();
     await f.once(loop);
     f.advance();
@@ -288,7 +396,7 @@ test.each(["complete", "closed", "untrusted", "missing merge time"])(
     f.pulls[0].body = body;
     f.cards[0].progress = { text: "👤🔍" };
     object(f.cards[0].content).assignees = { nodes: [{ login: "owner" }] };
-    f.cards.push(f.card(6, "In review"));
+    f.cards.push(f.card(6, "Spec review"));
     const loop = f.loop();
     await f.once(loop);
     f.advance();
@@ -346,7 +454,7 @@ test("clearing an owner mirror retries an assignment failure without losing the 
   f.pulls[0].body = '<!-- vmethod-task {"issues":[6]} -->';
   f.cards[0].progress = { text: "👤❓" };
   object(f.cards[0].content).assignees = { nodes: [{ login: "owner" }] };
-  f.cards.push(f.card(6, "In progress"));
+  f.cards.push(f.card(6, "Spec review"));
   f.cards[1].progress = { text: "👤❓" };
   object(f.cards[1].content).assignees = { nodes: [{ login: "owner" }] };
   const loop = f.loop();
@@ -409,7 +517,7 @@ test.each(["old head", "untrusted author", "orchestrator", "historical"])(
 );
 
 test.each(["READY", "QUESTION", "BLOCKED"])(
-  "worker %s takes the turn from owner and clears the issue mirror",
+  "worker %s cannot release an Executing owner summons",
   async (tag) => {
     const f = setup();
     f.task();
@@ -417,7 +525,7 @@ test.each(["READY", "QUESTION", "BLOCKED"])(
     const pr = f.cards[0];
     pr.progress = { text: "👤❓" };
     object(pr.content).assignees = { nodes: [{ login: "owner" }] };
-    f.cards.push(f.card(6, "In progress"));
+    f.cards.push(f.card(6, "Executing"));
     const loop = f.loop();
     await f.tick(loop);
     expect(object(f.cards[1].progress).text ?? "").toBe("");
@@ -425,24 +533,22 @@ test.each(["READY", "QUESTION", "BLOCKED"])(
     f.advance();
     f.comment(`[worker] ${tag} (round 2)`);
     await f.tick(loop);
-    expect(object(object(pr.content).assignees).nodes).toEqual([{ login: "peer" }]);
-    expect(object(pr.progress).text).toContain(
-      tag === "READY" ? "🤖👍" : tag === "QUESTION" ? "🤖❓" : "🤖🚫"
-    );
+    expect(object(object(pr.content).assignees).nodes).toEqual([{ login: "owner" }]);
+    expect(object(pr.progress).text).toContain("👤❓");
     expect(object(f.cards[1].progress).text ?? "").toBe("");
     expect(object(object(f.cards[1].content).assignees).nodes).toEqual([]);
     expect(f.reports).toEqual([]);
   }
 );
 
-test("unassigned In review is reported, and unambiguous wrong assignments are repaired", async () => {
+test("unassigned review is reported, and unambiguous wrong assignments are repaired", async () => {
   const f = setup();
-  f.cards = [f.card(6, "In review"), f.card(24, "In review", "PullRequest")];
+  f.cards = [f.card(6, "Spec review"), f.card(24, "Owner review", "PullRequest")];
   f.cards[1].progress = { text: "🤖👍" };
   object(f.cards[1].content).assignees = { nodes: [{ login: "owner" }, { login: "worker" }] };
   const events = await f.tick(f.loop());
   expect(events.filter((event) => event.kind === "board-violation")).toHaveLength(2);
-  expect(events.some((event) => event.line.includes("In review with no assignee"))).toBe(true);
+  expect(events.some((event) => event.line.includes("Spec review with no assignee"))).toBe(true);
   expect(object(object(f.cards[1].content).assignees).nodes).toEqual([{ login: "peer" }]);
 });
 
@@ -453,7 +559,7 @@ test("a foreign peer's assignment never counts as this project's orchestrator tu
     ...people,
     { login: "vecsmaster", id: 900, type: "User", role: "orchestrator", repos: ["example/other"] },
   ];
-  f.cards = [f.card(6, "In review")];
+  f.cards = [f.card(6, "Spec review")];
   f.cards[0].progress = { text: "🤖👍" };
   object(f.cards[0].content).assignees = { nodes: [{ login: "vecsmaster" }] };
   const events = await f.tick(f.loop());
@@ -471,9 +577,10 @@ test.each(["reply", "issue reply", "approval"])(
     f.task();
     f.pulls[0].body = '<!-- vmethod-task {"issues":[6]} -->';
     const pr = f.cards[0];
+    object(pr.status).name = "Owner review";
     pr.progress = { text: "👤🔍" };
     object(pr.content).assignees = { nodes: [{ login: "owner" }] };
-    f.cards.push(f.card(6, "In progress"));
+    f.cards.push(f.card(6, "Executing"));
     const loop = f.loop();
     await f.tick(loop);
     f.advance();
@@ -550,14 +657,14 @@ test("a closed Done card reappearing in Backlog is returned to Done without a du
 
 test("a card missing from one listing and present in the next emits nothing and keeps its baseline", async () => {
   const f = setup();
-  f.cards = [f.card(6, "In review")];
+  f.cards = [f.card(6, "Spec review")];
   object(f.cards[0].content).assignees = { nodes: [{ login: "owner" }] };
   const loop = f.loop();
   await f.once(loop);
   f.advance();
   f.boardSnapshot = [];
   expect(await f.once(loop)).toEqual([]);
-  expect(readFileSync(join(f.dir, "board", "PVTI_6"), "utf8")).toBe("In review\n");
+  expect(readFileSync(join(f.dir, "board", "PVTI_6"), "utf8")).toBe("Spec review\n");
   expect(readFileSync(join(f.dir, "board", "PVTI_6.who"), "utf8")).toBe("owner\n");
   expect(JSON.parse(f.marker("board-absences.json"))).toEqual({
     PVTI_6: { first: f.clock, count: 1 },
@@ -566,7 +673,7 @@ test("a card missing from one listing and present in the next emits nothing and 
   f.boardSnapshot = null;
   const events = await f.once(loop);
   expect(events.filter((event) => event.kind === "board")).toEqual([]);
-  expect(readFileSync(join(f.dir, "board", "PVTI_6"), "utf8")).toBe("In review\n");
+  expect(readFileSync(join(f.dir, "board", "PVTI_6"), "utf8")).toBe("Spec review\n");
   expect(readFileSync(join(f.dir, "board", "PVTI_6.who"), "utf8")).toBe("owner\n");
   expect(JSON.parse(f.marker("board-absences.json"))).toEqual({});
   expect(f.reports).toEqual([]);
@@ -574,7 +681,13 @@ test("a card missing from one listing and present in the next emits nothing and 
 
 test("a card is pruned after 24 hours and 3 absent polls, and reappearance resets the window", async () => {
   const f = setup();
-  f.cards = [f.card(6, "In review")];
+  f.scopeTimeline = [];
+  f.scopeComments = [
+    scopeComment({
+      body: `[orchestrator] SCOPE REVIEW\n\nbody sha256: ${bodyHash("Final scope")}`,
+    }),
+  ];
+  f.cards = [f.card(6, "Spec review")];
   object(f.cards[0].content).assignees = { nodes: [{ login: "owner" }] };
   const loop = f.loop();
   await f.once(loop);
@@ -593,7 +706,7 @@ test("a card is pruned after 24 hours and 3 absent polls, and reappearance reset
   // Three successful polls without the item are not enough within 24 hours.
   f.advance();
   expect(await f.once(loop)).toEqual([]);
-  expect(readFileSync(join(f.dir, "board", "PVTI_6"), "utf8")).toBe("In review\n");
+  expect(readFileSync(join(f.dir, "board", "PVTI_6"), "utf8")).toBe("Spec review\n");
   expect(readFileSync(join(f.dir, "board", "PVTI_6.who"), "utf8")).toBe("owner\n");
   expect(JSON.parse(f.marker("board-absences.json"))).toEqual({
     PVTI_6: { first, count: 3 },
@@ -625,15 +738,15 @@ test("a card is pruned after 24 hours and 3 absent polls, and reappearance reset
   f.boardSnapshot = null;
   const events = await f.once(loop);
   expect(events.filter((event) => event.kind === "board").map((event) => event.line)).toEqual([
-    "BOARD #6 (ISSUE): new card → In review https://github.com/example/project/issues/6",
+    "BOARD #6 (ISSUE): new card → Spec review https://github.com/example/project/issues/6",
   ]);
-  expect(readFileSync(join(f.dir, "board", "PVTI_6"), "utf8")).toBe("In review\n");
+  expect(readFileSync(join(f.dir, "board", "PVTI_6"), "utf8")).toBe("Spec review\n");
   expect(f.reports).toEqual([]);
 });
 
 test("a network failure on board page 2 followed by a full read emits nothing", async () => {
   const f = setup();
-  const inReview = f.card(6, "In review");
+  const inReview = f.card(6, "Spec review");
   const backlog = f.card(7, "Backlog");
   f.cards = [inReview, backlog];
   f.boardPages = [[inReview], [backlog]];
@@ -648,7 +761,7 @@ test("a network failure on board page 2 followed by a full read emits nothing", 
   f.boardPages = [[inReview], [backlog]];
   const events = await f.once(loop);
   expect(events.filter((event) => event.kind === "board")).toEqual([]);
-  expect(readFileSync(join(f.dir, "board", "PVTI_6"), "utf8")).toBe("In review\n");
+  expect(readFileSync(join(f.dir, "board", "PVTI_6"), "utf8")).toBe("Spec review\n");
   expect(readFileSync(join(f.dir, "board", "PVTI_7"), "utf8")).toBe("Backlog\n");
   expect(JSON.parse(f.marker("board-absences.json"))).toEqual({});
 });
@@ -768,7 +881,7 @@ test("a failed closure board write retries without losing the closure event or r
   object(card.content).assignees = { nodes: [{ login: "owner" }] };
   writeFileSync(
     join(f.dir, "pending-progress-6"),
-    JSON.stringify({ status: "In review", state: "ready" })
+    JSON.stringify({ status: "Executing", state: "ready" })
   );
   f.failSet = true;
   const failedEvents = await f.once(loop);
@@ -1080,7 +1193,7 @@ test("existing worker poll writes Cost to the PR, deduplicates and clears unknow
   const f = setup();
   f.task();
   f.worktree();
-  const taskPr = f.card(24, "In progress", "PullRequest");
+  const taskPr = f.card(24, "Executing", "PullRequest");
   f.cards.push(taskPr);
   f.staleWorker = { reason: "running", active: true, prCost: { pr: 24, usd: 1.256 } };
   const loop = f.loop();
@@ -1118,7 +1231,7 @@ test("worker poll preserves lower-bound Cost text on the task PR", async () => {
   const f = setup();
   f.task();
   f.worktree();
-  const taskPr = f.card(24, "In progress", "PullRequest");
+  const taskPr = f.card(24, "Executing", "PullRequest");
   f.cards.push(taskPr);
   f.staleWorker = {
     reason: "running",
@@ -1223,7 +1336,9 @@ test.each(
     f.task();
     const card = f.cards[0];
     const ownerHandover = tag.startsWith("OWNER");
-    card.status = { ...object(card.status), name: ownerHandover ? "In progress" : "In review" };
+    const targetColumn = tag === "OWNER REVIEW" ? "Owner review" : "Executing";
+    const firstWrites = tag === "OWNER QUESTION" ? 0 : 1;
+    card.status = { ...object(card.status), name: ownerHandover ? "Executing" : "Owner review" };
     let loop = f.loop();
     await f.once(loop);
     f.advance();
@@ -1237,9 +1352,9 @@ test.each(
     }
     await f.once(loop);
     const statusWrites = () => f.writes.filter((write) => write.field === "Status");
-    expect(statusWrites()).toEqual([
-      expect.objectContaining({ value: ownerHandover ? "In review" : "In progress" }),
-    ]);
+    expect(statusWrites()).toEqual(
+      firstWrites ? [expect.objectContaining({ value: targetColumn })] : []
+    );
     expect(object(card.progress).text).toContain(
       tag === "OWNER REVIEW" ? "👤🔍" : tag === "OWNER QUESTION" ? "👤❓" : "🤖🔨"
     );
@@ -1253,22 +1368,22 @@ test.each(
       card.status = { ...object(card.status), name: "Approved", updatedAt: f.iso() };
       await f.once(loop);
       expect(object(card.status).name).toBe("Approved");
-      expect(statusWrites()).toHaveLength(1);
+      expect(statusWrites()).toHaveLength(firstWrites);
     }
     // A distinct comment with the same tag is still a new handover.
     f.advance();
     const next = f.comment(`[orchestrator] ${tag}`, 2);
     next.user = comment.user;
     await f.once(loop);
-    expect(object(card.status).name).toBe(ownerHandover ? "In review" : "In progress");
-    expect(statusWrites()).toHaveLength(2);
+    expect(object(card.status).name).toBe(targetColumn);
+    expect(statusWrites()).toHaveLength(firstWrites + 1);
     expect(f.reports).toEqual([]);
   }
 );
 
 test("an older in-flight board listing cannot turn a completed Done write into Done → In review", async () => {
   const f = setup();
-  f.cards = [f.card(24, "In review", "PullRequest")];
+  f.cards = [f.card(24, "Owner review", "PullRequest")];
   f.cards[0].progress = { text: "🤖👍" };
   object(f.cards[0].content).assignees = { nodes: [{ login: "peer" }] };
   const loop = f.loop();
@@ -1504,11 +1619,11 @@ test.each(["self", "owner", "sibling"])(
   }
 );
 
-test.each(["Backlog", "Ready"])(
+test.each(["Backlog", "Scoping"])(
   "a person's move to %s clears the turn without cleanup event noise",
   async (column) => {
     const f = setup();
-    const previousStatus = column === "Backlog" ? "Ready" : "In review";
+    const previousStatus = column === "Backlog" ? "Scoping" : "Spec review";
     const card = f.card(6, previousStatus);
     card.progress = { text: "👤❓ 🔁2️⃣ 🔴", updatedAt: f.iso() };
     object(card.content).assignees = { nodes: [{ login: "owner" }] };
@@ -1536,8 +1651,10 @@ test.each(["Backlog", "Ready"])(
     expect(events.find((event) => event.kind === "board")?.line).toContain(
       `${previousStatus} → ${column}`
     );
-    expect(object(card.progress).text).toBeNull();
-    expect(object(card.content).assignees).toEqual({ nodes: [] });
+    expect(object(card.progress).text).toBe(column === "Scoping" ? "🧭🔍" : null);
+    expect(object(card.content).assignees).toEqual({
+      nodes: column === "Scoping" ? [{ login: "peer" }] : [],
+    });
     await f.ack(loop, events);
     const writes = f.writes.length;
     f.advance();
@@ -1547,11 +1664,11 @@ test.each(["Backlog", "Ready"])(
   }
 );
 
-test.each(["Backlog", "Ready"])(
+test.each(["Backlog", "Scoping"])(
   "a move to %s removes management assignees but preserves workers",
   async (column) => {
     const f = setup();
-    const card = f.card(6, "In progress");
+    const card = f.card(6, "Executing");
     object(card.content).assignees = { nodes: [{ login: "peer" }, { login: "worker" }] };
     f.cards = [card];
     const loop = f.loop();
@@ -1563,7 +1680,7 @@ test.each(["Backlog", "Ready"])(
         scopeMove({
           actor: actor(0),
           status: column,
-          previousStatus: "In progress",
+          previousStatus: "Executing",
           createdAt: f.iso(),
           project: { number: 5 },
         }),
@@ -1571,18 +1688,20 @@ test.each(["Backlog", "Ready"])(
     ];
     card.progress = null;
     const events = await f.tick(loop);
-    expect(object(card.content).assignees).toEqual({ nodes: [{ login: "worker" }] });
-    expect(object(card.progress).text).toBeUndefined();
+    expect(object(card.content).assignees).toEqual({
+      nodes: [{ login: column === "Scoping" ? "peer" : "worker" }],
+    });
+    expect(object(card.progress).text).toBe(column === "Scoping" ? "🧭🔍" : undefined);
     await f.ack(loop, events);
     expect((await f.tick(loop)).filter((event) => event.kind !== "next")).toEqual([]);
   }
 );
 
-test.each(["Backlog", "Ready"])(
+test.each(["Backlog", "Scoping"])(
   "a journalled move to %s retains its deliberate turn",
   async (column) => {
     const f = setup();
-    const card = f.card(6, "In review");
+    const card = f.card(6, "Spec review");
     card.progress = { text: "👤❓" };
     object(card.content).assignees = { nodes: [{ login: "owner" }] };
     f.cards = [card];
@@ -1600,7 +1719,7 @@ test.each(["Backlog", "Ready"])(
   }
 );
 
-test.each(["Backlog", "Ready"])(
+test.each(["Backlog", "Scoping"])(
   "an ask on %s with no subsequent move survives polling",
   async (column) => {
     const f = setup();
@@ -1631,12 +1750,12 @@ test.each(["later Progress", "same-second Progress", "later assignment"])(
     const loop = f.loop();
     await f.tick(loop);
     f.advance();
-    card.status = { name: "Ready", updatedAt: f.iso() };
+    card.status = { name: "Scoping", updatedAt: f.iso() };
     f.boardTimeline[String(card.id)] = [
       [
         scopeMove({
           actor: actor(0),
-          status: "Ready",
+          status: "Scoping",
           previousStatus: "Backlog",
           createdAt: f.iso(),
           project: { number: 5 },
@@ -1684,7 +1803,7 @@ test.each([
     const loop = f.loop();
     await f.tick(loop);
     f.advance();
-    card.status = { name: "Ready", updatedAt: f.iso() };
+    card.status = { name: "Scoping", updatedAt: f.iso() };
     const event = scopeMove({
       actor:
         scenario === "orchestrator"
@@ -1694,7 +1813,7 @@ test.each([
             : scenario === "unverified"
               ? { ...actor(0), databaseId: 987654 }
               : actor(0),
-      status: "Ready",
+      status: "Scoping",
       previousStatus: "Backlog",
       createdAt: f.iso(),
       project: { number: scenario === "foreign project" ? 99 : 5 },
@@ -1721,20 +1840,20 @@ test("queue cleanup paginates status evidence and uses the latest actor", async 
   f.advance();
   const earlier = scopeMove({
     actor: actor(0),
-    status: "Ready",
+    status: "Scoping",
     previousStatus: "Backlog",
     createdAt: f.iso(),
     project: { number: 5 },
   });
   f.advance();
-  card.status = { name: "Ready", updatedAt: f.iso() };
+  card.status = { name: "Scoping", updatedAt: f.iso() };
   f.boardTimeline[String(card.id)] = [
     [earlier],
     [
       scopeMove({
         actor: actor(2),
-        status: "Ready",
-        previousStatus: "In review",
+        status: "Scoping",
+        previousStatus: "Spec review",
         createdAt: f.iso(),
         project: { number: 5 },
       }),
@@ -1749,7 +1868,7 @@ test("queue cleanup paginates status evidence and uses the latest actor", async 
 
 test("a failed queue cleanup retries the move rather than acknowledging stale turn state", async () => {
   const f = setup();
-  const card = f.card(6, "In review");
+  const card = f.card(6, "Spec review");
   card.progress = { text: "👤❓", updatedAt: f.iso() };
   object(card.content).assignees = { nodes: [{ login: "owner" }] };
   f.cards = [card];
@@ -1762,7 +1881,7 @@ test("a failed queue cleanup retries the move rather than acknowledging stale tu
       scopeMove({
         actor: actor(0),
         status: "Backlog",
-        previousStatus: "In review",
+        previousStatus: "Spec review",
         createdAt: f.iso(),
         project: { number: 5 },
       }),
@@ -1784,23 +1903,23 @@ test("a failed queue cleanup retries the move rather than acknowledging stale tu
 
 test("a discarded snapshot does not swallow the later real move to a third column", async () => {
   const f = setup();
-  f.cards = [f.card(24, "In review", "PullRequest")];
+  f.cards = [f.card(24, "Owner review", "PullRequest")];
   f.cards[0].progress = { text: "🤖👍" };
   object(f.cards[0].content).assignees = { nodes: [{ login: "peer" }] };
   const loop = f.loop();
   await f.tick(loop);
   f.advance();
   f.boardSnapshot = structuredClone(f.cards);
-  object(f.boardSnapshot[0].status).name = "Ready";
+  object(f.boardSnapshot[0].status).name = "Scoping";
   object(f.cards[0].status).name = "Approved";
   expect((await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true })).events).toEqual([]);
   f.boardSnapshot = null;
   const events = (await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true })).events;
   expect(events.map((event) => event.kind)).toEqual(["board"]);
-  expect(events[0].line).toContain("In review → Approved");
+  expect(events[0].line).toContain("Owner review → Approved");
 });
 
-test("an old journalled Ready move does not suppress a later unblocking notification", async () => {
+test("an old journalled Executing move does not suppress a later unblocking LAUNCH", async () => {
   const f = setup();
   f.cards = [f.card()];
   f.blockers = [{ number: 7, state: "open" }];
@@ -1808,15 +1927,15 @@ test("an old journalled Ready move does not suppress a later unblocking notifica
   const once = async () => (await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true })).events;
   expect(await once()).toEqual([]);
   f.advance();
-  f.cards[0].status = { name: "Ready", updatedAt: f.iso() };
+  f.cards[0].status = { name: "Executing", updatedAt: f.iso() };
   writeFileSync(
     join(f.dir, "writes.jsonl"),
-    `${JSON.stringify({ at: f.iso(), kind: "board", repo: "example/project", number: 6, itemId: "PVTI_6", field: "Status", value: "Ready" })}\n`
+    `${JSON.stringify({ at: f.iso(), kind: "board", repo: "example/project", number: 6, itemId: "PVTI_6", field: "Status", value: "Executing" })}\n`
   );
   expect(await once()).toEqual([]);
   f.advance(300_000);
   f.blockers[0].state = "closed";
-  expect((await once()).map((event) => event.kind)).toEqual(["next"]);
+  expect((await once()).map((event) => event.kind)).toEqual(["launch"]);
 });
 
 test("failed or missing board observations restart GRADE settling, including across restart", async () => {
@@ -1900,7 +2019,7 @@ test.each(["READY", "QUESTION", "DESIGN", "BLOCKED", "HANDOFF"])(
     );
     expect(object(f.cards[0].progress).text).toContain(tag === "READY" ? "🔁3️⃣" : "🔁2️⃣");
     expect(object(f.cards[0].progress).text).toContain("🔴");
-    expect(object(f.cards[0].status).name).toBe(tag === "READY" ? "In review" : "In progress");
+    expect(object(f.cards[0].status).name).toBe("Executing");
   }
 );
 
@@ -2037,14 +2156,14 @@ test("GRADE is once per open unestimated issue, never PR, closed or Done, respec
   expect(f.writes.every((write) => write.value === null || write.value === "Done")).toBe(true);
 });
 
-test("board Ready/Approved, NEXT, LAUNCH, assignments and owner completion wake; foreign cards never mutate", async () => {
+test("board Scoping/Executing, NEXT, LAUNCH, assignments and owner completion wake; foreign cards never mutate", async () => {
   const f = setup();
   f.cards = [f.card()];
   object(f.cards[0].content).assignees = { nodes: [{ login: "owner" }] };
   const loop = f.loop();
   await f.tick(loop);
   f.advance();
-  object(f.cards[0].status).name = "Ready";
+  object(f.cards[0].status).name = "Scoping";
   object(f.cards[0].content).assignees = { nodes: [] };
   f.assigned["example/project"] = [{ number: 6 }];
   let events = await f.tick(loop);
@@ -2053,12 +2172,12 @@ test("board Ready/Approved, NEXT, LAUNCH, assignments and owner completion wake;
   );
   await f.ack(loop, events);
   f.advance();
-  object(f.cards[0].status).name = "Approved";
+  object(f.cards[0].status).name = "Executing";
   events = await f.tick(loop);
-  expect(events.map((e) => e.kind)).toEqual(expect.arrayContaining(["board", "launch"]));
+  expect(events.map((e) => e.kind)).toEqual(expect.arrayContaining(["launch"]));
   await f.ack(loop, events);
   f.advance();
-  const foreign = f.card(7, "Ready");
+  const foreign = f.card(7, "Scoping");
   object(foreign.content).repository = { nameWithOwner: "other/project" };
   object(foreign.content).assignees = { nodes: [{ login: "me" }] };
   f.cards.push(foreign);
@@ -2083,7 +2202,7 @@ test.each([
   const loop = f.loop();
   await f.tick(loop);
   f.advance();
-  object(f.cards[0].status).name = "Approved";
+  object(f.cards[0].status).name = "Executing";
   const events = await f.tick(loop);
   expect(events.some((event) => event.kind === "launch")).toBe(launches);
   if (!launches) {
@@ -2096,12 +2215,13 @@ test.each([
 
 test("own remembered moves and migration-stamped changes stay quiet", async () => {
   const f = setup();
-  f.cards = [f.card()];
+  f.cards = [f.card(24, "Executing", "PullRequest")];
   const loop = f.loop();
   await f.tick(loop);
   f.advance();
-  object(f.cards[0].status).name = "In review";
-  writeFileSync(join(f.dir, "board", "PVTI_6"), "In review\n");
+  object(f.cards[0].status).name = "Owner review";
+  writeFileSync(join(f.dir, "board", "PVTI_24"), "Owner review\n");
+  f.cards[0].progress = { text: "👤🔍" };
   object(f.cards[0].content).assignees = { nodes: [{ login: "owner" }] };
   expect(await f.tick(loop)).toEqual([]);
   f.readme = writeState(
@@ -2321,7 +2441,7 @@ test("merge notice identifies held task references without requiring worker sess
     },
   ];
   f.issues.push({ number: 31, pull_request: {}, labels: [] });
-  f.cards.push(f.card(31, "In progress", "PullRequest"));
+  f.cards.push(f.card(31, "Executing", "PullRequest"));
   const fetch = f.deps.fetch;
   f.deps.fetch = async (input, init) => {
     if (
@@ -2916,7 +3036,7 @@ test.each(["BLOCKED", "QUESTION", "READY FOR REVIEW (round 1)", "DESIGN", "HANDO
     const f = setup();
     f.task();
     f.worktree();
-    const issue = f.card(6, "In progress");
+    const issue = f.card(6, "Executing");
     f.cards.push(issue);
     f.staleWorker = { reason: "idle", active: false, prCost: { pr: 24, usd: 1.25 } };
     f.pulls[0].created_at = f.iso(-120 * 60_000);
@@ -3029,9 +3149,9 @@ test("recorded-worker poll failures are once per status and do not block a healt
   mkdirSync(join(f.root, ".worktrees/auto-7-watch"), { recursive: true });
   f.pulls.push({ ...f.pulls[0], number: 31, head: { ref: "7-watch", sha } });
   f.issues.push({ number: 7, labels: [] }, { number: 31, pull_request: {}, labels: [] });
-  const healthyPr = f.card(31, "In progress", "PullRequest");
+  const healthyPr = f.card(31, "Executing", "PullRequest");
   f.cards.push(healthyPr);
-  const healthyIssue = f.card(7, "In progress");
+  const healthyIssue = f.card(7, "Executing");
   f.cards.push(healthyIssue);
   let status = 400;
   f.workerStatus = async (pr) => {

@@ -1,0 +1,40 @@
+{
+  "version": 6,
+  "requires": "0.0.0-dev",
+  "up": [{ "op": "workflow_columns", "field": "Status" }],
+  "expect": {
+    "fields": {
+      "Status": {
+        "type": "single_select",
+        "options": [
+          "Backlog",
+          "Scoping",
+          "Spec review",
+          "Executing",
+          "Owner review",
+          "Approved",
+          "Done"
+        ]
+      },
+      "Model": {
+        "type": "single_select",
+        "options": [
+          "sol",
+          "luna",
+          "astra",
+          "sonnet",
+          "opus",
+          "glm",
+          "big-pickle",
+          "glm-flash",
+          "other",
+          "fable"
+        ]
+      },
+      "Estimate": { "type": "number" },
+      "Cost": { "type": "text" },
+      "Progress": { "type": "text" }
+    },
+    "policy": { "doneKeeps": 6 }
+  }
+}

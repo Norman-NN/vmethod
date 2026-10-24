@@ -14,12 +14,15 @@ test("scope-review publishes the body hash and hands the issue card to the owner
   const card = recording.items.nodes[0];
   const status = recording.fields.nodes.find((field) => field.name === "Status")!;
   const option = status.options![0];
-  option.name = "In review";
+  option.name = "Spec review";
   const issue = { ...acceptedIssue(), id: card.content.id };
-  const summary = "- Folded the agreed acceptance cases into the body.";
+  const summary =
+    "- Folded the agreed acceptance cases into the body. Estimate revised to 5 because the new cases add work.";
   const f = fixtureServer([
     graph({ repository: { issue: item({ id: issue.id }) } }),
     graph({ node: issue }),
+    ...boardReads(recording).slice(0, 2),
+    { path: "/graphql", json: { data: { node: { items: recording.items } } } },
     graph({
       node: item({
         id: issue.id,
@@ -41,7 +44,7 @@ test("scope-review publishes the body hash and hands the issue card to the owner
     {
       path: "/repos/example/project/issues/39/comments",
       body: {
-        body: `[orchestrator] SCOPE REVIEW\n\nI have updated the main body to the final scope.\n\n${summary}\n\nbody sha256: ${bodyHash("Specification")}`,
+        body: `[orchestrator] SCOPE REVIEW\n\nI have updated the main body to the final scope.\n\nEstimate: 5\n\n${summary}\n\nbody sha256: ${bodyHash("Specification")}`,
       },
       json: {},
     },

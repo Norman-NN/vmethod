@@ -35,7 +35,7 @@ import { WorktreeService } from "./worktrees.js";
 
 interface Host {
   thread(ref: string, kind: "pr" | "issue"): Promise<ObjectData>;
-  comments(id: string): Promise<ObjectData[]>;
+  comments(id: string, kind?: "pr" | "issue"): Promise<ObjectData[]>;
   /**
    * The comment with this REST id: the verified pinned author (an editor replaces the
    * author) with the repository-adjusted role, its issue number and the body's first
@@ -47,6 +47,14 @@ interface Host {
   approved(ref: string, historical?: string): Promise<boolean | "unknown">;
   candidates(ref: string): Promise<string[]>;
   issueApproved(item: ObjectData): Promise<boolean | "unknown">;
+  /** Verify an owner quotation after the latest summons, behind the identity filter. */
+  ownerAgreement?(
+    ref: string,
+    url: string,
+    since: number,
+    handback: string,
+    kind?: "pr" | "issue"
+  ): Promise<boolean>;
   /** #218: did the pinned owner verify this gated family on the task issue? */
   modelApproval(issue: number, family: string): Promise<boolean>;
   github: GitHubClient;
@@ -164,6 +172,14 @@ export class TaskFlow {
     if (model) {
       await board.set({ itemId: id, field: "Model", value: model });
     }
+  }
+  private async boardCard(item: ObjectData) {
+    if (object(this.config.board).enabled === false) {
+      return undefined;
+    }
+    const board = this.host.board();
+    const snapshot = await board.snapshot();
+    return (await board.cards(snapshot.id)).find((card) => card.contentId === item.id);
   }
   private async assigned(ref: string): Promise<string[]> {
     const current = object(await this.host.github.rest(this.path(ref)));
@@ -308,6 +324,9 @@ export class TaskFlow {
       }
       assertEstimate(estimate);
       pointsOpen = estimate;
+      if (input.unapproved === undefined && card?.values.Status !== "Executing") {
+        throw new Error("open-task requires an Executing issue with approved scope");
+      }
     }
     const models = loadYaml(this.root, "models") as {
       family: string;
@@ -467,10 +486,10 @@ export class TaskFlow {
         );
       }
     }
-    await this.card(pr, "In progress", input.hold ? "⛔" : "🤖🔨", model.family);
+    await this.card(pr, "Executing", input.hold ? "⛔" : "🤖🔨", model.family);
     await this.turn(ref, null);
     if (issue) {
-      await this.card(issue, "In progress", null);
+      await this.card(issue, "Executing", null);
       await this.turn(input.issue!, null);
     }
     return `Opened draft PR #${ref} (${branch})`;
@@ -728,11 +747,70 @@ export class TaskFlow {
         }
       }
     }
+    const board = object(this.config.board).enabled === false ? undefined : this.host.board();
+    const cards = board ? await board.cards((await board.snapshot()).id) : [];
+    const card = cards.find((card) => card.contentId === item.id);
+    const issues = taskIssueNumbers(String(item.body)) ?? [];
+    const summons = cards.filter(
+      (candidate) =>
+        (candidate.contentId === item.id ||
+          (candidate.kind === "Issue" && issues.includes(Number(candidate.number)))) &&
+        candidate.values.Status === "Executing" &&
+        /^👤(?:❓|🔍)/u.test(String(candidate.values.Progress ?? ""))
+    );
+    const paused = summons.length > 0;
+    if (summons.length > 1) {
+      throw new Error(
+        "Multiple Executing summons remain paused; release the extra owner turns before handing back"
+      );
+    }
+    const summonsRef = summons[0]?.kind === "Issue" ? String(summons[0].number) : input.ref;
+    const summonsKind = summons[0]?.kind === "Issue" ? "issue" : "pr";
+    if (input.ownerAgreed !== undefined && input.outcome !== "answer") {
+      throw new Error("--owner-agreed is supported only by review answer");
+    }
+    const handback = readFileSync(input.file, "utf8");
+    if (paused && input.outcome !== "ask") {
+      const summonsComments =
+        summonsKind === "issue"
+          ? await this.host.comments(String(summons[0].contentId), "issue")
+          : comments;
+      const since = Math.max(
+        ...summonsComments
+          .filter((comment) =>
+            /^\[orchestrator\] OWNER (?:QUESTION|REVIEW)(?:\s|$)/.test(String(comment.body))
+          )
+          .map((comment) => Date.parse(String(comment.lastEditedAt ?? comment.createdAt)))
+      );
+      if (
+        input.outcome !== "answer" ||
+        !input.ownerAgreed ||
+        !Number.isFinite(since) ||
+        !(await this.host.ownerAgreement?.(
+          summonsRef,
+          input.ownerAgreed,
+          since,
+          handback,
+          summonsKind
+        ))
+      ) {
+        throw new Error(
+          "Executing summons is paused; answer requires --owner-agreed and an exact owner quotation after the summons, or owner self-unassignment"
+        );
+      }
+    } else if (input.ownerAgreed) {
+      throw new Error("--owner-agreed requires a paused Executing summons");
+    }
+    if (paused && input.outcome === "ask" && summonsKind === "issue") {
+      throw new Error(
+        "Continue the existing issue-card summons instead of opening a second owner turn"
+      );
+    }
     const body =
       `[orchestrator] ${heading}\n\n` +
       (input.replyTo ? `in reply to ${input.replyTo}\n\n` : "") +
       (input.outcome === "owner" ? `Current head: ${sha(item.headRefOid)}\n\n` : "") +
-      readFileSync(input.file, "utf8");
+      handback;
     await this.post(input.ref, body);
     await this.ready(item, !["owner", "approve"].includes(input.outcome));
     const progress = {
@@ -752,22 +830,24 @@ export class TaskFlow {
     );
     await this.card(
       item,
-      input.outcome === "owner" || input.outcome === "ask" || input.outcome === "approve"
-        ? "In review"
-        : input.outcome === "changes" || input.outcome === "answer"
-          ? "In progress"
-          : undefined,
+      input.outcome === "owner"
+        ? "Owner review"
+        : input.outcome === "approve" && card?.values.Status === "Approved"
+          ? "Approved"
+          : "Executing",
       progress
     );
     for (const number of taskIssueNumbers(String(item.body)) ?? []) {
       const issue = await this.host.thread(String(number), "issue");
-      const owner = input.outcome === "owner" || input.outcome === "ask";
       await this.turn(String(number), null);
-      await this.card(issue, owner ? "In review" : "In progress", null);
+      await this.card(issue, "Executing", null);
     }
     // The owner now holds the turn; nothing queued for the stopped worker may wake it.
-    if (input.outcome === "owner") {
+    if (input.outcome === "owner" || input.outcome === "ask") {
       await this.deps.workers?.clearWake?.(this.number(input.ref));
+      if ((await this.status(input.ref)) === "live") {
+        await this.deps.workers?.stop?.(this.number(input.ref));
+      }
     }
     const wake =
       input.outcome === "changes" || input.outcome === "answer"
@@ -776,13 +856,15 @@ export class TaskFlow {
     return `Posted ${heading} on #${input.ref}${wake ? `\n${wake}` : ""}`;
   }
 
-  /** Ask the owner on an issue without a live task PR; task questions belong on that PR. */
+  /** Ask on the issue; an Executing issue summons also pauses its linked workers. */
   async ask(ref: string, file: string): Promise<string> {
     const issue = await this.host.thread(String(this.number(ref)), "issue");
     this.track(issue);
     if (issue.state !== "OPEN") {
       throw new Error("Issue is not open");
     }
+    const card = await this.boardCard(issue);
+    const linked: number[] = [];
     for (let page = 1; ; page++) {
       const pulls = await this.host.github.rest(
         `/repos/${this.repo}/pulls?state=open&per_page=100&page=${page}`
@@ -790,16 +872,30 @@ export class TaskFlow {
       if (!Array.isArray(pulls)) {
         throw new Error("Missing open task PRs");
       }
-      if (pulls.some((pr) => taskIssueNumbers(String(object(pr).body))?.includes(Number(ref)))) {
+      const tasks = pulls
+        .map(object)
+        .filter((pr) => taskIssueNumbers(String(pr.body))?.includes(Number(ref)));
+      if (tasks.length && card?.values.Status !== "Executing") {
         throw new Error("Issue has an open task PR; use review <pr> ask");
       }
+      linked.push(...tasks.map((pr) => this.number(String(pr.number))));
       if (pulls.length < 100) {
         break;
       }
     }
+    for (const pr of linked) {
+      await this.deps.workers?.clearWake?.(pr);
+      if ((await this.status(String(pr))) === "live") {
+        await this.deps.workers?.stop?.(pr);
+      }
+    }
     await this.post(ref, `[orchestrator] OWNER QUESTION\n\n${readFileSync(file, "utf8")}`);
     await this.turn(ref, "owner");
-    await this.card(issue, "In review", "👤❓");
+    await this.card(
+      issue,
+      typeof card?.values.Status === "string" ? card.values.Status : "Scoping",
+      "👤❓"
+    );
     return `Posted OWNER QUESTION on #${ref}`;
   }
 
@@ -830,7 +926,7 @@ export class TaskFlow {
     if (!comments.some((c) => /^\[orchestrator\] GO(?:\s|$)/.test(String(c.body)))) {
       await this.post(ref, "[orchestrator] GO\n\nThe hold is lifted; work may begin.");
     }
-    await this.card(item, "In progress", "🤖🔨");
+    await this.card(item, "Executing", "🤖🔨");
     await this.turn(ref, null);
     const wake = await this.wake(ref, "GO");
     return `Released #${ref}${wake ? `\n${wake}` : ""}`;
@@ -968,7 +1064,7 @@ export class TaskFlow {
     );
     await this.card(
       item,
-      "In progress",
+      "Executing",
       renderProgress({ state: "blocked", round: null, red: false })
     );
     await this.turn(ref, "orchestrator");
@@ -1017,6 +1113,12 @@ export class TaskFlow {
     }
     const git = this.git();
     if (item.state === "OPEN") {
+      if (
+        object(this.config.board).enabled !== false &&
+        (await this.boardCard(item))?.values.Status !== "Approved"
+      ) {
+        throw new Error("merge-task requires an Approved PR");
+      }
       for (const number of taskIssueNumbers(String(item.body)) ?? []) {
         const issue = await this.host.thread(String(number), "issue");
         const marker = /<!-- vmethod-task (\{[^\r\n]*\}) -->\s*$/.exec(String(item.body));

@@ -374,6 +374,24 @@ function fixture(prefix?: string, legacy = false) {
   };
 }
 
+test.each(["pr", "issue"])(
+  "live metadata blocks starting a worker paused by an Executing %s summons",
+  async (target) => {
+    const f = fixture();
+    const projects = object((target === "pr" ? f.pr : f.issue).projectItems);
+    const nodes = projects.nodes as { fieldValues: { nodes: unknown[] } }[];
+    nodes[0].fieldValues.nodes.push(
+      { field: { name: "Status" }, name: "Executing" },
+      { field: { name: "Progress" }, text: "👤❓" }
+    );
+    await expect(f.transport.call("worker", { args: ["start", "31"] }, f.ctx)).rejects.toThrow(
+      "Owner summons is paused"
+    );
+    expect(f.requests.every((request) => !request.includes("/api/session"))).toBe(true);
+    f.done();
+  }
+);
+
 test("session closure preserves all metadata, is idempotent and can be reopened", async () => {
   const f = fixture();
   await f.transport.call("worker", { args: ["start", "31"] }, f.ctx);
@@ -786,7 +804,7 @@ test.each(["auto-", "", "legacy"])(
         w.pulls[0].number = 31;
         object(w.pulls[0].head).ref = "9-task";
         w.issues[1].number = 31;
-        w.cards = [w.card(31, "In progress", "PullRequest")];
+        w.cards = [w.card(31, "Executing", "PullRequest")];
         w.cards[0].id = "CARD31";
         w.history = [
           {
@@ -889,7 +907,7 @@ test.each([false, true])(
         dataType: "SINGLE_SELECT",
         options: [{ id: "O_glm", name: "glm" }],
       });
-      const card = w.card(31, "In progress", "PullRequest");
+      const card = w.card(31, "Executing", "PullRequest");
       card.id = "CARD31";
       w.cards = [card];
       w.issues = [{ number: 31, labels: [] }];

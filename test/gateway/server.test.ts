@@ -31,7 +31,7 @@ test.each(["owner", "worker", "unknown", "untrusted edit"])(
       fieldValues: {
         ...recorded.fieldValues,
         nodes: [
-          { name: "In review", field: { name: "Status" } },
+          { name: "Owner review", field: { name: "Status" } },
           { text: "🧭🔍", field: { name: "Progress" } },
         ],
       },

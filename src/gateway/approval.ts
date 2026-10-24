@@ -27,7 +27,13 @@ export function isIssueOwnerApproved(
   }
   const latestAt = Math.max(...events.map((event) => Date.parse(String(event.createdAt))));
   const latest = events.filter((event) => Date.parse(String(event.createdAt)) === latestAt);
-  if (latest.some((event) => event.status !== "Approved")) {
+  if (
+    latest.some(
+      (event) =>
+        event.status !== "Executing" ||
+        !["Scoping", "Spec review"].includes(String(event.previousStatus))
+    )
+  ) {
     return false;
   }
   if (latest.some((event) => event.actor == null)) {
@@ -97,7 +103,10 @@ export function isOwnerApproved(
       return "unknown";
     }
     const approvals = afterHandover.filter(
-      (event) => event.status === "Approved" && owner(event.actor)
+      (event) =>
+        event.status === "Approved" &&
+        ["Owner review", "In review"].includes(String(event.previousStatus)) &&
+        owner(event.actor)
     );
     if (!approvals.length) {
       return false;
@@ -137,6 +146,11 @@ export function isOwnerApproved(
     return "unknown";
   }
   if (!latest.every((event) => owner(event.actor))) {
+    return false;
+  }
+  if (
+    !latest.every((event) => ["Owner review", "In review"].includes(String(event.previousStatus)))
+  ) {
     return false;
   }
 

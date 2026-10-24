@@ -37,7 +37,7 @@ import { WriteJournal } from "./write-journal.js";
 import { workerWorktree } from "./worker-path.js";
 import { taskIssueNumbers } from "./task-flow-types.js";
 import { taskHeld } from "./task-hold.js";
-import { ScopeReader } from "./scope.js";
+import { ScopeReader, legacyScopeCutoff } from "./scope.js";
 import { setTurn, turnAssignees } from "./turn.js";
 import { resolveSession, type ResolvedSession, type SessionInput } from "./watch-scope.js";
 export { resolveSession, type ResolvedSession, type SessionInput } from "./watch-scope.js";
@@ -146,6 +146,7 @@ interface CardInfo {
   kind: "ISSUE" | "PR";
   state: string;
   stateReason: string;
+  subIssueIds?: string[];
   closedBy: string;
   closedAt: string;
   column: string;
@@ -1866,6 +1867,7 @@ export class EventLoop {
       round?: number | null;
       ci?: string;
       if?: string[];
+      releaseOwner?: boolean;
     }
   ): void {
     if (!this.inScope(number)) {
@@ -2157,7 +2159,7 @@ export class EventLoop {
       if (own && !this.marked(progressKey) && /^\[orchestrator\] (?:ANSWER|GO)\b/.test(firstLine)) {
         this.queueProgress(number, {
           state: taskPr ? "working" : null,
-          ...(taskPr ? { status: "In progress" } : {}),
+          ...(taskPr ? { status: "Executing" } : {}),
         });
         this.mark(progressKey);
       }
@@ -2169,7 +2171,9 @@ export class EventLoop {
       ) {
         this.queueProgress(number, {
           state: firstLine.includes("QUESTION") ? "owner-question" : "owner-review",
-          ...(taskPr ? { status: "In review" } : {}),
+          ...(taskPr
+            ? { status: firstLine.includes("QUESTION") ? "Executing" : "Owner review" }
+            : {}),
         });
         this.mark(progressKey);
       }
@@ -2240,7 +2244,7 @@ export class EventLoop {
         if (!this.host.conflictFixing?.(number)) {
           if (workerTag[1] === "READY") {
             this.queueProgress(number, {
-              status: "In review",
+              status: "Executing",
               state: "ready",
               ...(round ? { round: count(round[1]) } : {}),
             });
@@ -2506,7 +2510,8 @@ export class EventLoop {
     const scopeWaits = await new ScopeReader(
       this.host.github,
       this.host.filter,
-      this.host.config
+      this.host.config,
+      legacyScopeCutoff(cards.readme)
     ).read(ownerWaits.map((card) => card.contentId));
     for (const card of ownerWaits) {
       card.scopePending = scopeWaits.get(card.contentId)?.reviewPending;
@@ -2522,6 +2527,7 @@ export class EventLoop {
     );
     this.inprogress = [];
     const ready: CardInfo[] = [];
+    const specReview: CardInfo[] = [];
     const approved: CardInfo[] = [];
     const currentCards: CardInfo[] = [];
     const present = new Set<string>();
@@ -2547,6 +2553,34 @@ export class EventLoop {
       if (!this.inScope(card.number) || this.muted(card.repo, card.number)) {
         continue;
       }
+      if (
+        !migration &&
+        card.kind === "ISSUE" &&
+        card.column === "Executing" &&
+        card.subIssueIds?.length &&
+        card.subIssueIds.every((id) =>
+          cards.list.some((child) => child.contentId === id && child.column === "Done")
+        ) &&
+        ![...this.taskIssues.values()].some((issues) => issues.includes(card.number))
+      ) {
+        const next = turnAssignees(this.host.filter.people, card.repo, card.assignees, null);
+        await setTurn(this.host.github, card.repo, card.number, card.assignees, next);
+        await this.host.board.set({
+          itemId: card.id,
+          field: "Status",
+          value: "Done",
+          progress: null,
+        });
+        card.assignees = next;
+        card.column = "Done";
+        card.progress = "";
+        atomicWrite(join(this.dir, "board", card.id), "Done\n");
+        this.produceOnce(
+          `epic-done-${card.id}@${key(card.subIssueIds.join(","))}`,
+          "board",
+          `DONE #${card.number}: all sub-issues Done ${this.threadUrl(card.repo, card.number, card.kind)}`
+        );
+      }
       if (card.state === "CLOSED" || card.state === "MERGED") {
         await this.applyClosedCard(card);
         continue;
@@ -2567,7 +2601,7 @@ export class EventLoop {
       }
       const pendingProgress = existsSync(join(this.dir, `pending-progress-${card.number}`));
       await this.applyProgress(card);
-      if (card.kind === "PR" && card.column === "In progress") {
+      if (card.kind === "PR" && card.column === "Executing") {
         this.inprogress.push({
           number: card.number,
           branch: this.branchOf(card.number),
@@ -2603,10 +2637,13 @@ export class EventLoop {
           );
         }
       }
-      if (card.column === "Ready" && card.state === "OPEN") {
+      if (card.column === "Scoping" && card.kind === "ISSUE" && card.state === "OPEN") {
         ready.push(card);
       }
-      if (card.column === "Approved" && card.kind === "ISSUE" && card.state === "OPEN") {
+      if (card.column === "Spec review" && card.kind === "ISSUE" && card.state === "OPEN") {
+        specReview.push(card);
+      }
+      if (card.column === "Executing" && card.kind === "ISSUE" && card.state === "OPEN") {
         approved.push(card);
       }
     }
@@ -2618,7 +2655,7 @@ export class EventLoop {
         remove(join(this.dir, name));
       }
     }
-    await this.watchNext(ready, approved);
+    await this.watchNext(ready, approved, specReview, legacyScopeCutoff(cards.readme));
     // Last step of the poll: absence counters and pruning move only when the
     // whole board poll succeeded, never after a failed or partial one.
     this.pruneBoardBaselines(present);
@@ -2691,7 +2728,10 @@ export class EventLoop {
         card.state !== "OPEN" ||
         card.column === "Done" ||
         (!card.progress.startsWith("🧭") &&
-          !((card.column === "In review" || unanswered) && assigned))
+          !(
+            (card.column === "Executing" || card.column === "Spec review" || unanswered) &&
+            assigned
+          ))
       ) {
         continue;
       }
@@ -2736,7 +2776,7 @@ export class EventLoop {
       for (;;) {
         const data = object(
           await this.host.github.graphql(
-            `query WatchBoard($owner: String!, $number: Int!, $cursor: String) { organization(login: $owner) { projectV2(number: $number) { id readme items(first: 100, after: $cursor) { nodes { id status: fieldValueByName(name: "Status") { ... on ProjectV2ItemFieldSingleSelectValue { name updatedAt } } estimate: fieldValueByName(name: "Estimate") { ... on ProjectV2ItemFieldNumberValue { number } } progress: fieldValueByName(name: "Progress") { ... on ProjectV2ItemFieldTextValue { text } } content { __typename ... on Issue { id number state stateReason closedAt closure: timelineItems(last: 1, itemTypes: [CLOSED_EVENT]) { nodes { ... on ClosedEvent { actor { login } } } } title author { __typename login ... on User { databaseId } ... on Bot { databaseId } } repository { nameWithOwner owner { login } } assignees(first: 10) { nodes { login } } } ... on PullRequest { number state closedAt closure: timelineItems(last: 1, itemTypes: [CLOSED_EVENT, MERGED_EVENT]) { nodes { ... on ClosedEvent { actor { login } } ... on MergedEvent { actor { login } } } } title headRefOid reviews(last: 100) { nodes { id state commit { oid } author { ${actorFields} } } } author { __typename login ... on User { databaseId } ... on Bot { databaseId } } repository { nameWithOwner owner { login } } assignees(first: 10) { nodes { login } } } } } pageInfo { hasNextPage endCursor } } } } }`,
+            `query WatchBoard($owner: String!, $number: Int!, $cursor: String) { organization(login: $owner) { projectV2(number: $number) { id readme items(first: 100, after: $cursor) { nodes { id status: fieldValueByName(name: "Status") { ... on ProjectV2ItemFieldSingleSelectValue { name updatedAt } } estimate: fieldValueByName(name: "Estimate") { ... on ProjectV2ItemFieldNumberValue { number } } progress: fieldValueByName(name: "Progress") { ... on ProjectV2ItemFieldTextValue { text } } content { __typename ... on Issue { id number state stateReason closedAt subIssues(first: 100) { nodes { id } pageInfo { hasNextPage } } closure: timelineItems(last: 1, itemTypes: [CLOSED_EVENT]) { nodes { ... on ClosedEvent { actor { login } } } } title author { __typename login ... on User { databaseId } ... on Bot { databaseId } } repository { nameWithOwner owner { login } } assignees(first: 10) { nodes { login } } } ... on PullRequest { number state closedAt closure: timelineItems(last: 1, itemTypes: [CLOSED_EVENT, MERGED_EVENT]) { nodes { ... on ClosedEvent { actor { login } } ... on MergedEvent { actor { login } } } } title headRefOid reviews(last: 100) { nodes { id state commit { oid } author { ${actorFields} } } } author { __typename login ... on User { databaseId } ... on Bot { databaseId } } repository { nameWithOwner owner { login } } assignees(first: 10) { nodes { login } } } } } pageInfo { hasNextPage endCursor } } } } }`,
             { owner, number, cursor }
           )
         );
@@ -2807,6 +2847,10 @@ export class EventLoop {
       kind,
       state: str(content.state),
       stateReason: str(content.stateReason),
+      subIssueIds:
+        object(object(content.subIssues).pageInfo).hasNextPage === false
+          ? this.list(object(content.subIssues).nodes).map((node) => str(node.id))
+          : undefined,
       closedBy: str(object(this.list(object(content.closure).nodes).at(-1)?.actor).login),
       closedAt: str(content.closedAt),
       column: str(object(node.status).name),
@@ -2860,14 +2904,10 @@ export class EventLoop {
       }
       if (
         this.host.filter.identity(event.actor)?.role === "owner" &&
+        object(event.actor).databaseId === object(event.assignee).databaseId &&
         ["owner-review", "owner-question"].includes(parseProgress(card.progress).state ?? "")
       ) {
-        this.queueProgress(card.number, { state: "verifying" });
-        for (const [pr, issues] of this.taskIssues) {
-          if (issues.includes(card.number)) {
-            this.queueProgress(pr, { state: "verifying" });
-          }
-        }
+        this.queueProgress(card.number, { state: "verifying", releaseOwner: true });
       }
       this.emit(
         `owner-done-${card.id}@${key(`${old}>${next}`)}`,
@@ -2898,8 +2938,10 @@ export class EventLoop {
       remember();
       return true;
     }
-    const queueMove = Boolean(old) && ["Backlog", "Ready"].includes(card.column);
-    const { current, events } = await this.currentBoard(card, queueMove);
+    const queueMove = Boolean(old) && ["Backlog", "Scoping"].includes(card.column);
+    const lifecycleMove =
+      Boolean(old) && ["Scoping", "Spec review", "Executing", "Approved"].includes(card.column);
+    const { current, events } = await this.currentBoard(card, queueMove || lifecycleMove);
     const status = object(current.status);
     // An archived/deleted card is no longer evidence of a current move either.
     if (str(status.name) !== card.column) {
@@ -2917,6 +2959,39 @@ export class EventLoop {
       remember();
       return true;
     }
+    if (lifecycleMove) {
+      const moves = events.filter(
+        (event) =>
+          event.__typename === "ProjectV2ItemStatusChangedEvent" &&
+          object(event.project).number === Number(object(this.host.config.board).number)
+      );
+      const latest = Math.max(...moves.map((event) => Date.parse(str(event.createdAt))));
+      const matched = moves.filter((event) => Date.parse(str(event.createdAt)) === latest);
+      const ownerMove =
+        latest === Date.parse(card.columnAt) &&
+        matched.length > 0 &&
+        matched.every(
+          (event) =>
+            this.host.filter.identity(event.actor)?.role === "owner" &&
+            event.status === card.column &&
+            event.previousStatus === old
+        );
+      if (
+        ownerMove &&
+        (!queueMove || this.queueMoveCancelsTurn(card, current, events)) &&
+        ((card.kind === "ISSUE" && ["Scoping", "Spec review", "Executing"].includes(card.column)) ||
+          (card.kind === "PR" &&
+            ((old === "Owner review" && card.column === "Executing") ||
+              card.column === "Approved")))
+      ) {
+        this.queueProgress(card.number, {
+          state: card.kind === "ISSUE" && card.column === "Executing" ? null : "verifying",
+          round: null,
+          ci: "ok",
+          releaseOwner: true,
+        });
+      }
+    }
     // Only an authenticated person's newer move cancels a turn, not a gateway
     // move or a question asked after the move but before this poll observed it.
     if (queueMove && this.queueMoveCancelsTurn(card, current, events)) {
@@ -2931,7 +3006,7 @@ export class EventLoop {
     const url = this.threadUrl(card.repo, card.number, card.kind);
     const preview = this.previewText(card.person, card.title);
     if (!old) {
-      if (card.column === "Backlog" || card.column === "In progress") {
+      if (card.column === "Backlog" || card.column === "Executing") {
         this.quiet(`NOTE #${card.number} (${card.kind}): new card → ${card.column} ${url}`);
       } else {
         this.emit(
@@ -2943,7 +3018,7 @@ export class EventLoop {
       remember();
       return true;
     }
-    if (card.column === "In progress") {
+    if (card.column === "Executing" && !(card.kind === "PR" && old === "Owner review")) {
       this.quiet(`NOTE #${card.number} (${card.kind}): ${old} → ${card.column} ${url}`);
       remember();
       return true;
@@ -2952,7 +3027,7 @@ export class EventLoop {
       remember();
       return true;
     }
-    // Moves to Ready wake too: the tested rule never silences what could need us.
+    // Scoping moves and delivery-review bounces wake the orchestrator too.
     this.emit(
       `board-${card.id}@${key(`${old}>${card.column}`)}`,
       "board",
@@ -3216,8 +3291,15 @@ export class EventLoop {
     }
     const pending = object(safeJson(readFileSync(path, "utf8")));
     const current = parseProgress(card.progress);
+    const ownerPaused =
+      card.column === "Executing" &&
+      ["owner-review", "owner-question"].includes(current.state ?? "");
     const only = Array.isArray(pending.if) ? pending.if.map(str) : undefined;
-    const stateAllowed = !only || only.includes(current.state ?? "");
+    const stateAllowed =
+      (!only || only.includes(current.state ?? "")) &&
+      (!ownerPaused ||
+        pending.releaseOwner === true ||
+        ["owner-review", "owner-question"].includes(str(pending.state)));
     const state =
       pending.state === undefined || !stateAllowed
         ? current.state
@@ -3233,7 +3315,11 @@ export class EventLoop {
     const red = pending.ci === "red" ? true : pending.ci === "ok" ? false : current.red;
     const text = renderProgress({ state, round, red });
     try {
-      if (pending.status !== undefined && str(pending.status) !== card.column) {
+      if (
+        pending.status !== undefined &&
+        str(pending.status) !== card.column &&
+        (!ownerPaused || pending.releaseOwner === true)
+      ) {
         await this.host.board.set({
           itemId: card.id,
           field: "Status",
@@ -3246,6 +3332,11 @@ export class EventLoop {
         await this.host.board.set({ itemId: card.id, field: "Progress", value: text || null });
       }
       card.progress = text;
+      if (pending.releaseOwner === true && state === null) {
+        const next = turnAssignees(this.host.filter.people, card.repo, card.assignees, null);
+        await setTurn(this.host.github, card.repo, card.number, card.assignees, next);
+        card.assignees = next;
+      }
       remove(path);
     } catch (error) {
       this.host.deps.report(
@@ -3264,9 +3355,7 @@ export class EventLoop {
         this.pendingMergedIssues.has(card.number));
     const role =
       state === "owner-review" || state === "owner-question"
-        ? linkedIssue
-          ? null
-          : "owner"
+        ? "owner"
         : ["ready", "question", "blocked", "verifying", "design", "handoff"].includes(state ?? "")
           ? "orchestrator"
           : state === "working"
@@ -3281,26 +3370,18 @@ export class EventLoop {
       report &&
       !linkedIssue &&
       !this.writes.recentlyWrote(card.repo, card.number, 60_000) &&
-      ((card.column === "In review" && card.assignees.length !== 1) || mismatch)
+      ((["Spec review", "Owner review"].includes(card.column) && card.assignees.length !== 1) ||
+        mismatch)
     ) {
       this.produceOnce(
         `turn-${card.id}@${key(`${card.column}:${card.progress}:${card.assignees.join(",")}`)}`,
         "board-violation",
-        `BOARD VIOLATION #${card.number}: ${card.column === "In review" && !card.assignees.length ? "In review with no assignee" : "Progress and assignee mismatch"} ${this.threadUrl(card.repo, card.number, card.kind)}`
+        `BOARD VIOLATION #${card.number}: ${["Spec review", "Owner review"].includes(card.column) && !card.assignees.length ? `${card.column} with no assignee` : "Progress and assignee mismatch"} ${this.threadUrl(card.repo, card.number, card.kind)}`
       );
     }
     if (next && mismatch) {
       await setTurn(this.host.github, card.repo, card.number, card.assignees, next);
       card.assignees = next;
-    }
-    if (state === "working" && card.column === "In review") {
-      await this.host.board.set({
-        itemId: card.id,
-        field: "Status",
-        value: "In progress",
-        progress: card.progress,
-      });
-      card.column = "In progress";
     }
   }
 
@@ -3324,7 +3405,7 @@ export class EventLoop {
       const issue = cards.find(
         (card) => this.isOwn(card.repo) && card.number === number && card.kind === "ISSUE"
       );
-      if (!issue || !this.inScope(number) || issue.scopePending) {
+      if (!issue || !this.inScope(number) || issue.scopePending || issue.column === "Executing") {
         continue;
       }
       const mirrored = ["owner-review", "owner-question"].includes(
@@ -3363,13 +3444,18 @@ export class EventLoop {
     }
   }
 
-  private async watchNext(ready: CardInfo[], approved: CardInfo[]): Promise<void> {
+  private async watchNext(
+    ready: CardInfo[],
+    approved: CardInfo[],
+    specReview: CardInfo[],
+    legacyBefore: number
+  ): Promise<void> {
     if (this.held()) {
       return;
     }
     const signature = `${ready.map((card) => card.number).join(",")}|${approved
       .map((card) => card.number)
-      .join(",")}`;
+      .join(",")}|${specReview.map((card) => card.number).join(",")}`;
     const recheck = this.marked("recheck-next");
     if (
       signature === this.nextSignature &&
@@ -3383,17 +3469,20 @@ export class EventLoop {
     if (recheck) {
       remove(join(this.dir, "recheck-next"));
     }
-    const next = await this.firstUnblocked(ready);
+    const next = ready[0]
+      ? { number: ready[0].number, kind: ready[0].kind, repo: ready[0].repo }
+      : null;
     const candidates = approved.filter((card) => !this.launchedIssues.has(card.number));
-    const scopes = await new ScopeReader(this.host.github, this.host.filter, this.host.config).read(
-      candidates.map((card) => card.contentId)
-    );
+    const scopes = await new ScopeReader(
+      this.host.github,
+      this.host.filter,
+      this.host.config,
+      legacyBefore
+    ).read([...candidates, ...specReview].map((card) => card.contentId));
     const launch = await this.firstUnblocked(
       candidates.filter((card) => scopes.get(card.contentId)?.approved === true)
     );
-    const scope = candidates.find(
-      (card) => scopes.get(card.contentId)?.ownerApproved && !scopes.get(card.contentId)?.approved
-    );
+    const scope = specReview.find((card) => !scopes.get(card.contentId)?.reviewPending);
     this.recordStartable(
       "scope",
       scope ? { number: scope.number, kind: scope.kind, repo: scope.repo } : null,
@@ -3422,7 +3511,7 @@ export class EventLoop {
         name === "next"
           ? `NEXT #${value.number} (${value.kind})`
           : name === "scope"
-            ? `SCOPE #${value.number}: approved conclusions; rewrite body and request scope review`
+            ? `SCOPE #${value.number}: agreed conclusions; rewrite body, revise Estimate and request scope review`
             : `LAUNCH #${value.number} (${value.kind}): approved and nothing blocks it`;
       this.emit(
         `${name}-${key(stored)}`,
@@ -3610,7 +3699,7 @@ export class EventLoop {
           this.produceOnce(
             `q-${pr.number}-${key(activity)}`,
             "silent",
-            `PR #${pr.number} (${pr.branch}): SILENT: no commit or comment for 40+ min while In progress ${url}`
+            `PR #${pr.number} (${pr.branch}): SILENT: no commit or comment for 40+ min while Executing ${url}`
           )
         ) {
           this.queueProgress(pr.number, { state: "silent", if: ["working"] });

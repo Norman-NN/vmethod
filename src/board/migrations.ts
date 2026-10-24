@@ -57,6 +57,7 @@ export function validateMigrations(migrations: Migration[]): void {
       }
       if (
         ![
+          "workflow_columns",
           "add_field",
           "add_option",
           "rename_option",
@@ -70,7 +71,7 @@ export function validateMigrations(migrations: Migration[]): void {
         throw new Error("Unknown migration operation");
       }
       if (
-        ["remove_field", "remove_option", "rewrite_progress"].includes(op.op) &&
+        ["workflow_columns", "remove_field", "remove_option", "rewrite_progress"].includes(op.op) &&
         !migration.requires
       ) {
         throw new Error("Contract operation requires a minimum vmethod version");

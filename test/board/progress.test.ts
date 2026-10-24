@@ -44,7 +44,7 @@ test("migration history preserves 0003 numeric Cost and dry-runs 0004 text repla
   const board = new FakeBoard();
   board.stamp(2, 1);
   const before = structuredClone(board.card());
-  const migrations = loadMigrations();
+  const migrations = loadMigrations().slice(0, 5);
   expect(migrations[2].up).toEqual([{ op: "add_field", field: "Cost", type: "number" }]);
   expect(migrations[3].up).toEqual([
     { op: "remove_field", field: "Cost" },
@@ -62,7 +62,7 @@ test("migration 0003 dry run on v2 names Cost and the version bump without write
   const board = new FakeBoard();
   board.stamp(2, 1);
   const before = { readme: board.readme, fields: structuredClone(board.fields) };
-  const result = await board.service(loadMigrations()).migrate({ dryRun: true });
+  const result = await board.service(loadMigrations().slice(0, 5)).migrate({ dryRun: true });
   expect(result.message).toBe(
     "Dry run: 2 → 5; v3: add field Cost (number); v4: remove field Cost; v4: add field Cost (text); v5: add option fable to Model"
   );
@@ -79,7 +79,7 @@ test("migration 0005 adds the fable Model option appended after other", async ()
   // Migration 0004's adoption gate reads the pinned vmethod package; the fake
   // satisfies it with the repository's own package-lock.
   board.pinSelf("example/project", "dev");
-  const result = await board.service(loadMigrations()).migrate({ dryRun: false });
+  const result = await board.service(loadMigrations().slice(0, 5)).migrate({ dryRun: false });
   expect(result.message).toBe("Migrated 2→5");
   const model = board.fields.find((field) => field.name === "Model")!;
   expect(model.options.map((option) => option.name)).toEqual([

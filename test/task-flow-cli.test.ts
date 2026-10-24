@@ -2,6 +2,49 @@ import { expect, test } from "vitest";
 import { taskFlowVerb } from "../src/cli/task-flow.js";
 import type { Transport } from "../src/gateway/transport.js";
 
+test("review routes owner agreement independently of the reply target and rejects malformed flags", async () => {
+  const calls: unknown[] = [];
+  const transport: Transport = {
+    call: async (operation, input) => {
+      calls.push({ operation, input });
+      return "ok" as never;
+    },
+  };
+  const agreement = "https://github.com/example/project/pull/27#issuecomment-2";
+  const reply = "https://github.com/example/project/pull/27#issuecomment-1";
+  for (const options of [
+    ["answer.md", "--owner-agreed", agreement, "--in-reply-to", reply],
+    ["--in-reply-to", reply, "--owner-agreed", agreement, "answer.md"],
+  ]) {
+    await taskFlowVerb(transport, "review", ["27", "answer", ...options], {});
+  }
+  expect(calls).toEqual(
+    Array(2).fill({
+      operation: "reviewTask",
+      input: {
+        ref: "27",
+        outcome: "answer",
+        file: "answer.md",
+        ownerAgreed: agreement,
+        replyTo: reply,
+      },
+    })
+  );
+  calls.length = 0;
+  for (const options of [
+    ["answer.md", "--owner-agreed"],
+    ["answer.md", "--owner-agreed", "--in-reply-to", reply],
+    ["answer.md", "--owner-agreed", agreement, "--owner-agreed", agreement],
+    ["answer.md", "--in-reply-to", reply, "--in-reply-to", reply],
+    ["answer.md", "another.md"],
+  ]) {
+    await expect(
+      taskFlowVerb(transport, "review", ["27", "answer", ...options], {})
+    ).rejects.toThrow("Usage: review");
+  }
+  expect(calls).toEqual([]);
+});
+
 test("owner reply accepts the reply flag before the file", async () => {
   const transport: Transport = {
     call: async (operation, input) => {

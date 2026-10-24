@@ -5,28 +5,28 @@ Develop an idea on an issue; build and check one delivery on a task PR.
 ## From idea to delivery
 
 1. Record the idea as an issue with dependencies and an initial Estimate in Backlog.
-   Hand over newly filed issues promptly: estimated, In review, assigned to the
-   owner, with open questions. Do not silently start implementation.
-2. The owner prioritizes work in Ready. The orchestrator takes the first unblocked
-   card, moves it to In review and develops it on the issue.
+   Keep open questions on the issue; do not silently start implementation.
+2. The owner moves Backlog → Scoping. Develop it in comments, including blocked
+   cards whose discussion depends on their blockers. Show the next actor with Progress and assignee.
 3. Read the relevant code and settled decisions. Present the problem, options,
    recommendation, exclusions, observable acceptance cases and verification plan.
-   Resolve ambiguous readings explicitly with the owner before Approved.
-4. An owner Approved move initially agrees with the discussion's conclusions,
-   not permission to start. Move the issue to In progress, rewrite its body into
-   the final scope, then request [scope review](orchestrator-guide.md#scope-review).
-   The owner reads that body and moves it to Approved again. Approval is bound to
+   Resolve ambiguous readings explicitly with the owner before execution.
+4. The owner's Scoping → Spec review move agrees with the discussion's conclusions.
+   Rewrite the body and revise Estimate, then request [scope review](orchestrator-guide.md#scope-review).
+   The owner reads that body and moves Spec review → Executing to give go. Approval is bound to
    the body hash recorded in SCOPE REVIEW; changing the body voids it.
 5. `open-task` (vmethod 1.0, #8) creates a draft task PR whose description is the
    complete worker prompt. Record its issue relation through the wrapper, not
-   closing phrases in agent-authored prose. Move the issue to In progress.
+   closing phrases in agent-authored prose. Both cards are Executing.
 6. One worker implements that PR in its own worktree. Questions stop work;
    authenticated amendments update the prompt. An on-hold task waits for GO.
 7. The worker reports READY with green CI. The orchestrator independently reviews
-   and verifies it. Changes return to the same worker for the next numbered round.
+   and verifies it. Changes return to the same worker for the next numbered round;
+   all these turns stay in Executing.
 8. Hand the delivery to the owner with evidence, try-out instructions and explicit
-   decisions. If feedback changes scope, update the issue as well as the PR prompt.
-9. After approval, verify the exact head against its current base, stop the worker,
+   decisions, moving only the PR to Owner review. Requested changes bounce it to
+   Executing. If feedback changes scope, update the issue as well as the PR prompt.
+9. The owner moves Owner review → Approved. Verify the exact head against its current base, stop the worker,
    then use `merge-task` (vmethod 1.0, #8). Complete board, grading and checkout
    follow-up; act on newly unblocked work rather than waiting for another event.
 
@@ -38,7 +38,8 @@ algorithmic revamp require fresh owner approval, as do ordinary task commits.
 All other merge gates remain in force. See the
 [owner rule and merge procedure](orchestrator-guide.md#merge-and-release).
 
-An issue can have several deliveries. Only its last completed delivery closes it;
+An issue stays in Executing through all its deliveries; an epic waits for every
+sub-issue to be Done. Only its last completed delivery closes it;
 earlier deliveries preserve the open issue relation. A delivery into an integration
 branch does not close the issue until the integration reaches `baseBranch`.
 An unchanged approved body covers every part; only a changed body needs scope
@@ -49,19 +50,20 @@ re-approval. Orchestrator board moves between parts do not revoke that approval.
 - `open-task --direct` (vmethod 1.0, #8): the owner explicitly settled the work and
   said go in their own chat. Capture the entire agreement in the PR description
   because there is no issue specification to consult. If go is ambiguous, ask.
-- `open-task --unapproved` (vmethod 1.0, #8): open before Approved only with the
+- `open-task --unapproved` (vmethod 1.0, #8): open before scope go only with the
   reason recorded on the issue, such as an evidenced bug with a reproducer or
   profile. It is an explicit exception, not a way to turn an investigation into
   an implementation task or to skip delivery approval.
 - An orchestrator-written issue with only trusted orchestrator comments (or no
-  comments) can use its owner's Approved move directly. Trust is per repository:
+  comments) can use its owner's Scoping → Executing move directly when the body is already final. Trust is per repository:
   only comments by the repository's own bound orchestrator count, and a peer
   project orchestrator is never trusted here. A comment from anyone
   else, including an unknown author or editor, voids this trivial shortcut; use
   SCOPE REVIEW instead. The orchestrator folds conclusions into the body, so its
   own OWNER QUESTION handover does not void the shortcut.
 - Projects may configure `scope.fastPath` with label names. A matching issue still
-  needs a current body-bound SCOPE REVIEW, but does not wait for owner scope approval.
+  needs a current body-bound SCOPE REVIEW, but does not wait for owner scope approval;
+  explicitly move its issue to Executing before opening a task.
   This is off by default; vmethod leaves it unset. Delivery approval is unchanged.
 
 Explore, assess and propose issues are orchestrator analysis, not task PRs.
@@ -75,8 +77,9 @@ Set relations with `vmethod issue block <n> <blocker>` and clear them with
 `vmethod issue unblock <n> <blocker>` (`<blocker>` is `#m`, `m` or `org/repo#m`);
 `issue create` and `issue edit` refuse a body whose line consists only of a dependency
 reference. Record relations when filing an issue, including cross-repository blockers
-where needed. A blocked Ready card stays there until its open blockers close; take the
-next unblocked card. Closing a blocker prompts a fresh estimate with
+where needed. A blocked Scoping card stays there while its blockers decide matters
+the discussion depends on; it can still be discussed. Execution waits for open
+blockers to close. Closing a blocker prompts a fresh estimate with
 `vmethod issue estimate <n> <points>`, not automatic subtraction of points.
 
 ## Tracks and packs
