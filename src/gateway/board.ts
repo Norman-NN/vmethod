@@ -487,6 +487,7 @@ export class BoardService implements BoardIO {
       changes.unshift({ id: card.id, field: progress, value: input.progress! });
     }
     await this.setChanges(snapshot.id, changes);
+    await this.orderAfterWrite(card, input.field, input.value, input.progress, snapshot.id);
     return "Board field updated";
   }
   /** Set a single-select/number field or validated Progress by issue content ID.
@@ -586,7 +587,87 @@ export class BoardService implements BoardIO {
       changes.unshift({ id: card.id, field: progressField, value: progressValue ?? null });
     }
     await this.setChanges(snapshot.id, changes);
+    await this.orderAfterWrite(card, name, parsed, progressValue, snapshot.id);
     return "Board field updated";
+  }
+  /** Best-effort ordering on GitHub's single manual order per project
+   * (`updateProjectV2ItemPosition`; `afterId: null` is the top, and the item
+   * listing returns that order). Executing activity belongs at the top and an
+   * Owner review handover at the bottom; every other column keeps the owner's
+   * order. A failed position write is reported and never blocks the verb or
+   * watcher move that triggered it, and the position mutation is journaled with
+   * the write's other board updates at the single GitHub boundary. */
+  async moveToTop(itemId: string, projectId?: string): Promise<void> {
+    try {
+      await this.positionItem(itemId, projectId ?? (await this.guardedProject()).id, null);
+    } catch (error) {
+      this.report(
+        `Board card order update to the top failed for item ${itemId}: ${(error as Error).message}`
+      );
+    }
+  }
+  /** Best-effort: move a card after the column's last card left in Owner review
+   * (after the top when none left), so handovers read oldest-first. */
+  async moveToOwnerReviewBottom(itemId: string, projectId?: string): Promise<void> {
+    try {
+      const project = projectId ?? (await this.guardedProject()).id;
+      const last = (await this.cards(project))
+        .filter(
+          (card) =>
+            card.values.Status === "Owner review" && card.id !== itemId && card.archived !== true
+        )
+        .at(-1);
+      await this.positionItem(itemId, project, last?.id ?? null);
+    } catch (error) {
+      this.report(
+        `Board card order update after Owner review failed for item ${itemId}: ${(error as Error).message}`
+      );
+    }
+  }
+  /** The watch-side order helpers write without a carrying field write, so they
+   * re-check board compatibility exactly like other board writes do. */
+  private async guardedProject(): Promise<Snapshot> {
+    const snapshot = await this.snapshot();
+    compatibility(readState(snapshot.readme), this.boardVersion, this.report);
+    return snapshot;
+  }
+  private async positionItem(
+    itemId: string,
+    projectId: string,
+    afterId: string | null
+  ): Promise<void> {
+    await this.github.graphql(
+      "mutation BoardPosition($input: UpdateProjectV2ItemPositionInput!) { updateProjectV2ItemPosition(input: $input) { clientMutationId } }",
+      { input: { projectId, itemId, afterId } }
+    );
+  }
+  /** Card order caused by a Progress or Status write: a changed Executing-Progress
+   * or a Status entry into Executing moves the card to the top; a Status write into
+   * Owner review queues it after the column's last card. All other target columns
+   * are owner-ordered and never moved. */
+  private async orderAfterWrite(
+    card: Card,
+    field: string,
+    value: string | number | null,
+    progress: string | number | null | undefined,
+    projectId: string
+  ): Promise<void> {
+    if (field !== "Status" && field !== "Progress") {
+      return;
+    }
+    const before = String(card.values.Status ?? "");
+    const status = field === "Status" ? String(value ?? "") : before;
+    const nextProgress = (field === "Status" ? progress : value) ?? null;
+    const changed =
+      (field === "Status" && status !== before) || nextProgress !== (card.values.Progress ?? null);
+    if (!changed) {
+      return;
+    }
+    if (status === "Executing") {
+      await this.moveToTop(card.id, projectId);
+    } else if (field === "Status" && status === "Owner review") {
+      await this.moveToOwnerReviewBottom(card.id, projectId);
+    }
   }
   async archive(itemId: string): Promise<string> {
     this.scope(await this.item(itemId));
