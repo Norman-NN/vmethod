@@ -1,9 +1,18 @@
 import { expect, test } from "vitest";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { parse } from "graphql";
 import { actor, fixtureServer, graph, item, people, sha } from "./helpers.js";
 import developmentLinks from "../fixtures/github/task-development-links.json" with { type: "json" };
-import { scopeIssue, scopeMove, scopeConnection, scopeGraph } from "./scope-fixture.js";
+import {
+  scopeIssue,
+  scopeComment,
+  scopeMove,
+  scopeConnection,
+  scopeGraph,
+} from "./scope-fixture.js";
+import { bodyHash } from "../../src/gateway/scope.js";
+import type { ObjectData } from "../../src/gateway/people.js";
 
 test("workers cannot invoke conflict automation or gain merge authority", async () => {
   const f = fixtureServer([], actor(1));
@@ -113,6 +122,177 @@ test("open-task checks the issue timeline actor at the server, not the card's St
   ]);
   await expect(f.transport.call("openTask", { issue: "8", model: "sol" })).rejects.toThrow(
     "scope not approved: post SCOPE REVIEW first"
+  );
+  f.done();
+});
+
+const editedIssue = (lastEditedAt: string | null, createdAt = "2026-01-05T00:00:00Z") =>
+  graph({
+    node: item({
+      id: "node-1",
+      createdAt,
+      // An edited body is delivered under its editor's identity.
+      editor: lastEditedAt ? actor(0) : null,
+      lastEditedAt,
+    }),
+  });
+
+/** The owner's approval-line meta (identity fields only; the body is fetched separately). */
+const lineMeta = (author: ObjectData, editedBy?: ObjectData) =>
+  item({
+    id: "comment-1",
+    author,
+    editor: editedBy ?? null,
+    ...(editedBy ? { lastEditedAt: "2026-01-08T00:00:00Z" } : { lastEditedAt: null }),
+  });
+
+const lineBody = (createdAt: string, author: ObjectData) => {
+  const comment = item({
+    id: "comment-1",
+    author,
+    editor: null,
+    lastEditedAt: null,
+    createdAt,
+    body: "APPROVE MODEL astra",
+  });
+  return {
+    path: "/graphql",
+    json: { data: { node: comment } },
+    checkQuery(query: string, variables: ObjectData) {
+      parse(query);
+      expect(variables.id).toBe("comment-1");
+      // Approval bodies are read only after the author's identity verifies.
+      expect(query).toContain("body");
+    },
+  };
+};
+
+const approvedSpecScope = () => [
+  graph({ repository: { issue: item() } }),
+  graph({
+    node: item({
+      body: "Approved specification",
+      title: "feat: task",
+      state: "OPEN",
+      labels: { nodes: [], pageInfo: { hasNextPage: false } },
+    }),
+  }),
+  scopeGraph({ nodes: [scopeIssue()] }),
+  scopeGraph({ nodes: [scopeIssue()] }),
+  scopeGraph({
+    n0: scopeIssue({
+      comments: scopeConnection([
+        scopeComment({
+          body: `[orchestrator] SCOPE REVIEW\n\nbody sha256: ${bodyHash("Final scope")}`,
+        }),
+      ]),
+    }),
+  }),
+  scopeGraph({
+    n0: scopeIssue({
+      timelineItems: scopeConnection([scopeMove({ createdAt: "2026-01-04T00:00:00Z" })]),
+    }),
+  }),
+  // The scope reader fetches its trusted comment bodies in a final ScopeNodes call.
+  {
+    path: "/graphql",
+    json: {
+      data: {
+        nodes: [
+          scopeComment({
+            body: `[orchestrator] SCOPE REVIEW\n\nbody sha256: ${bodyHash("Final scope")}`,
+          }),
+        ],
+      },
+    },
+    checkQuery(query: string) {
+      parse(query);
+      expect(query).toContain("body");
+      expect(query).toContain("IssueComment");
+    },
+  },
+];
+
+const imposter = { login: "imposter", databaseId: 4242, __typename: "User" };
+
+/** The gate refuses foreign lines unread; the owner's line authorizes the open flow,
+ * which then stops at the fixture's first git call before any GitHub mutation. */
+test.each([
+  {
+    case: "refuses a line predating the issue body's last edit",
+    edited: "2026-01-06T00:00:00Z",
+    metas: [lineMeta(actor(0))],
+    bodies: [lineBody("2026-01-02T00:00:00Z", actor(0))],
+    authorized: false,
+  },
+  {
+    case: "refuses a line from a peer orchestrator and leaves its body unread",
+    edited: "2026-01-06T00:00:00Z",
+    metas: [lineMeta(actor(2))],
+    bodies: [],
+    authorized: false,
+  },
+  {
+    case: "refuses a line from a pinned worker",
+    edited: "2026-01-06T00:00:00Z",
+    metas: [lineMeta(actor(1))],
+    bodies: [],
+    authorized: false,
+  },
+  {
+    case: "refuses a line from a forged, unpinned author",
+    edited: "2026-01-06T00:00:00Z",
+    metas: [lineMeta(imposter)],
+    bodies: [],
+    authorized: false,
+  },
+  {
+    case: "refuses an owner line edited by a non-owner",
+    edited: "2026-01-06T00:00:00Z",
+    metas: [lineMeta(actor(0), actor(1))],
+    bodies: [],
+    authorized: false,
+  },
+  {
+    case: "accepts an owner line posted after the issue body's last edit",
+    edited: "2026-01-06T00:00:00Z",
+    metas: [lineMeta(actor(0))],
+    bodies: [lineBody("2026-01-07T00:00:00Z", actor(0))],
+    authorized: true,
+  },
+  {
+    case: "accepts an owner line on an issue whose body was never edited",
+    edited: null,
+    metas: [lineMeta(actor(0))],
+    bodies: [lineBody("2026-01-07T00:00:00Z", actor(0))],
+    authorized: true,
+  },
+])("open-task model gate verifies the owner line at the server: $case", async (scenario) => {
+  // The board is off so the flow reaches the model gate with scope metadata reads only.
+  const f = fixtureServer(
+    [
+      ...approvedSpecScope(),
+      graph({ repository: { issue: item() } }),
+      editedIssue(scenario.edited),
+      graph({ node: item({ comments: scopeConnection(scenario.metas) }) }),
+      ...scenario.bodies,
+    ],
+    actor(2),
+    people,
+    (root) => {
+      const file = join(root, "vmethod.yaml");
+      writeFileSync(file, readFileSync(file, "utf8").replace("enabled: true", "enabled: false"));
+    }
+  );
+  await expect(
+    f.transport.call("openTask", { issue: "8", model: "astra", ownerApproved: true })
+  ).rejects.toThrow(
+    scenario.authorized
+      ? // Authorized: the flow continues past the gate; the scripted harness stops it
+        // at the base fetch (the first git call), so "Fetch failed" marks a pass.
+        "Fetch failed"
+      : // Unauthorized: the gate refusal names the owner line.
+        "APPROVE MODEL astra"
   );
   f.done();
 });

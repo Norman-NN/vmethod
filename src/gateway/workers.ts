@@ -53,6 +53,7 @@ import {
 } from "./client.js";
 import { processes, type ProcessIdentity } from "./claude.js";
 import { object, untrusted } from "./people.js";
+import { modelGateError } from "./model-gate.js";
 import { workerWorktree, workerWorktreePrefix } from "./worker-path.js";
 import { workerFirstPrompt } from "./worker-prompt.js";
 
@@ -149,6 +150,8 @@ export interface WorkerHooks {
   workerIdentity(): Promise<NodeJS.ProcessEnv>;
   issue(ref: number): Promise<{ estimate?: number; kind: string }>;
   diffStats?(pr: number, base: string, head: string): Promise<ExactMetrics["diff"]>;
+  /** #218: the pinned owner verified this gated family on the task issue or PR. */
+  modelApproval(pr: number, issue: number | undefined, family: string): Promise<boolean>;
 }
 
 export class WorkerService {
@@ -248,7 +251,12 @@ export class WorkerService {
       rmSync(lock, { recursive: true });
     }
   }
-  private resolve(selected: string, approved: boolean): Model {
+  private async resolve(
+    selected: string,
+    approved: boolean,
+    /** #218: when supplied, a gated selection must also carry the owner's verified line. */
+    gate?: (family: string) => Promise<boolean>
+  ): Promise<Model> {
     let model = this.models.find((m) => m.family === selected || m.model === selected);
     if (!model && typeof selected === "string" && /^[^/\s]+\/[^\s]+$/.test(selected)) {
       const other = this.models.find((m) => m.family === "other" && m.kind === "opencode");
@@ -261,8 +269,15 @@ export class WorkerService {
         `Unknown model ${selected}; configure it in models.yaml (raw ids require an 'other' family policy)`
       );
     }
-    if (model.gate === "owner" && !approved) {
-      throw new Error(`${model.family} requires --owner-approved`);
+    if (model.gate === "owner") {
+      if (!approved) {
+        throw new Error(`${model.family} requires --owner-approved`);
+      }
+      // The orchestrator's own flag is not owner authority; the owner's
+      // APPROVE MODEL line must be verifiable in the task discussion.
+      if (gate && !(await gate(model.family))) {
+        throw modelGateError(model.family);
+      }
     }
     return model;
   }
@@ -855,7 +870,10 @@ export class WorkerService {
         reason ??= switchReasons.includes(why as SwitchReason)
           ? (why as SwitchReason)
           : "orchestrator-judgement";
-        const model = this.resolve(selected, approved);
+        const meta = await this.hooks.metadata(pr);
+        const model = await this.resolve(selected, approved, (family) =>
+          this.hooks.modelApproval(pr, meta.issue, family)
+        );
         if (model.family === record.model.family && model.model === record.model.model) {
           if (record.model.kind === "opencode") {
             await this.setOpenCodeTitle(record);
@@ -863,7 +881,6 @@ export class WorkerService {
           await this.hooks.setModel(pr, model.family);
           return `Model unchanged for ${record.id}; PR Model synchronized`;
         }
-        const meta = await this.hooks.metadata(pr);
         await this.changeModel(record, model, meta, why, undefined, reason);
         await this.hooks.setModel(pr, model.family);
         await this.hooks.modelComment(
@@ -1061,9 +1078,9 @@ export class WorkerService {
     metadata?: TaskMetadata
   ): Promise<boolean> {
     const meta = metadata ?? (await this.hooks.metadata(record.pr));
-    const model = this.resolve(meta.model ?? "", true);
+    const model = await this.resolve(meta.model ?? "", true);
     if (record.model.family !== model.family || record.model.model !== model.model) {
-      this.resolve(meta.model ?? "", false);
+      await this.resolve(meta.model ?? "", false);
       const backendChanged = record.model.kind !== model.kind;
       await this.changeModel(
         record,
@@ -1382,7 +1399,7 @@ export class WorkerService {
     if (!sessionModel) {
       throw new Error("Cannot verify existing session model against models.yaml");
     }
-    const model = this.resolve(meta.model ?? "", true);
+    const model = await this.resolve(meta.model ?? "", true);
     if (model.kind !== "opencode") {
       throw new Error("Adopt requires the PR Model to use opencode");
     }
@@ -1514,7 +1531,9 @@ export class WorkerService {
     if (meta.blocked || taskHeld(meta.title, meta.body)) {
       throw new Error("Task issue is blocked or on hold");
     }
-    const model = this.resolve(selected ?? meta.model ?? "", approved);
+    const model = await this.resolve(selected ?? meta.model ?? "", approved, (family) =>
+      this.hooks.modelApproval(pr, meta.issue, family)
+    );
     if (model.kind === "claude") {
       await this.hooks.workerIdentity();
     }
@@ -1805,6 +1824,6 @@ export class WorkerService {
           .split("\n")
           .find((line) => line.trim() && !line.startsWith("#"))
       : "Shared model learnings not available locally yet";
-    return `${model.family}: Estimate ${meta.estimate ?? "unset"}, kind ${meta.kind}; gate ${model.gate}${model.gate === "owner" ? " (requires --owner-approved)" : ""}\n${untrusted(lesson ?? "No matching learning")}`;
+    return `${model.family}: Estimate ${meta.estimate ?? "unset"}, kind ${meta.kind}; gate ${model.gate}${model.gate === "owner" ? ' (requires --owner-approved and the owner\'s "APPROVE MODEL <family>" line, see gateway.md)' : ""}\n${untrusted(lesson ?? "No matching learning")}`;
   }
 }

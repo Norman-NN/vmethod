@@ -64,6 +64,7 @@ import { backfillCosts } from "./cost-backfill.js";
 import type { Price, PriceTier } from "../cost.js";
 import { ConflictService } from "./conflicts.js";
 import { verifyConflictHead } from "./verify-hook.js";
+import { isModelApproved } from "./model-gate.js";
 
 class GatewayServer {
   private readonly config: Config;
@@ -195,6 +196,7 @@ class GatewayServer {
           { body }
         );
       },
+      modelApproval: (pr, issue, family) => this.modelApproval(family, { pr, issue }),
       submitLearnings: () => this.learningService().command({ action: "submit" }),
       workerIdentity: () => this.workerIdentity(),
       issue: (issue) => this.workerIssue(issue),
@@ -1104,6 +1106,7 @@ class GatewayServer {
         (
           await new ScopeReader(this.github, this.filter, this.config).approved([String(item.id)])
         ).get(String(item.id)) === true,
+      modelApproval: (issue, family) => this.modelApproval(family, { issue }),
     });
   }
   openTask: Handlers["openTask"] = async (input) => this.flow.open(input);
@@ -1157,6 +1160,82 @@ class GatewayServer {
     }
     return output;
   }
+
+  /** One thread's verified-owner comments: bodies are read only after the effective
+   * author (author, or an edited comment's editor) identifies as the pinned owner,
+   * so foreign approval text never leaves the people filter. */
+  private async ownerModelComments(
+    id: string,
+    type: "Issue" | "PullRequest",
+    link: string
+  ): Promise<ObjectData[]> {
+    const output: ObjectData[] = [];
+    for (const meta of await this.collection(id, type, "comments")) {
+      if (this.filter.accept(meta, repoOf(meta).owner, link)?.role !== "owner") {
+        continue;
+      }
+      const comment = await this.node(String(meta.id), "body createdAt", "IssueComment");
+      if (this.filter.accept(comment, repoOf(comment).owner, link)?.role === "owner") {
+        output.push(comment);
+      }
+    }
+    return output;
+  }
+
+  /** The verifiable owner gate (#218): a `gate: owner` family honorably launches or
+   * switches only when the task issue or task PR carries the owner's
+   * `APPROVE MODEL <family>` comment, posted after the issue body's last edit and
+   * verified by identity, not display name. */
+  private async modelApproval(
+    family: string,
+    task: { pr?: number; issue?: number }
+  ): Promise<boolean> {
+    let since: number | undefined;
+    if (task.issue !== undefined) {
+      const { item, link, person } = await this.thread(String(task.issue), "issue");
+      if (!person) {
+        throw new Error("No accepted task issue");
+      }
+      // Re-read edit times so the bound is the issue's current body state
+      // (identityFields already carries lastEditedAt).
+      const current = await this.node(String(item.id), "createdAt", "Issue");
+      if (!this.filter.accept(current, repoOf(current).owner, link)) {
+        throw new Error("Task issue identity changed during read");
+      }
+      // An unedited body has no lastEditedAt; its creation is the last body edit.
+      const edit = String(current.lastEditedAt ?? current.createdAt ?? "");
+      since = Date.parse(edit);
+      if (!Number.isFinite(since)) {
+        throw new Error("Model gate cannot establish the issue body's last edit");
+      }
+      if (
+        isModelApproved(
+          await this.ownerModelComments(String(item.id), "Issue", link),
+          family,
+          since
+        )
+      ) {
+        return true;
+      }
+    }
+    if (task.pr !== undefined) {
+      const { item, link, person } = await this.thread(String(task.pr), "pr");
+      if (!person) {
+        throw new Error("No accepted task thread");
+      }
+      if (
+        isModelApproved(
+          await this.ownerModelComments(String(item.id), "PullRequest", link),
+          family,
+          since
+        )
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   /**
    * The comment with this REST id: its verified pinned author (an editor replaces the
    * author, as PeopleFilter.accept decides for delivery), its issue number and the

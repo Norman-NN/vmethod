@@ -25,6 +25,7 @@ import { liveBaseHead } from "./base-head.js";
 import { approvalCarryFiles } from "./carry-approval.js";
 import type { ConflictPrior, OpenTaskInput, ReviewInput } from "./task-flow-types.js";
 import { taskIssueNumbers, taskRelation } from "./task-flow-types.js";
+import { modelGateError } from "./model-gate.js";
 import { setTurn, turnAssignees } from "./turn.js";
 import { holdBanner, taskHeld, withoutHold } from "./task-hold.js";
 import { runVerifyHook } from "./verify-hook.js";
@@ -46,6 +47,8 @@ interface Host {
   approved(ref: string, historical?: string): Promise<boolean | "unknown">;
   candidates(ref: string): Promise<string[]>;
   issueApproved(item: ObjectData): Promise<boolean | "unknown">;
+  /** #218: did the pinned owner verify this gated family on the task issue? */
+  modelApproval(issue: number, family: string): Promise<boolean>;
   github: GitHubClient;
   board: () => Pick<BoardService, "ensure" | "item" | "set" | "capDone" | "snapshot" | "cards">;
   people: Person[];
@@ -316,8 +319,16 @@ export class TaskFlow {
     if (!model) {
       throw new Error("Unknown model family");
     }
-    if (model.gate === "owner" && input.ownerApproved !== true) {
-      throw new Error("Model requires --owner-approved");
+    if (model.gate === "owner") {
+      if (input.ownerApproved !== true) {
+        throw new Error("Model requires --owner-approved");
+      }
+      // The flag alone is not owner authority (#218): the owner must have posted the
+      // approval line after the issue body's last edit; a direct task has no issue to
+      // verify here, and its launch still re-checks the task PR through worker hooks.
+      if (input.issue && !(await this.host.modelApproval(this.number(input.issue), model.family))) {
+        throw modelGateError(model.family);
+      }
     }
     // The card's Model is the owner's hint; launching on a different family needs a reason.
     const overriding = Boolean(input.model && hint && input.model !== hint);

@@ -5,12 +5,30 @@ import { LineCounter, parseDocument } from "yaml";
 import configSchema from "../schema/vmethod.schema.json" with { type: "json" };
 import peopleSchema from "../schema/people.schema.json" with { type: "json" };
 import modelsSchema from "../schema/models.schema.json" with { type: "json" };
-import baseline from "../board/migrations/0001-baseline.json" with { type: "json" };
+import baselineModels from "../board/migrations/0001-baseline.json" with { type: "json" };
+import { loadMigrations } from "./board/migrations.js";
 import type { Price, PriceTier } from "./cost.js";
 
 type Schema = Record<string, unknown>;
 export type Config = Record<string, unknown>;
 const ajv = new Ajv({ allErrors: true, strict: true, useDefaults: true });
+/**
+ * Ordered board Model options: the migration-added state (fable in 0005), so the
+ * newest family validates without reopening migration history. A built CLI embeds
+ * its migrations; a harness bundle without them falls back to the baseline options.
+ */
+function modelFamilyOptions(): string[] {
+  try {
+    const last = loadMigrations().at(-1);
+    return last?.expect.fields.Model.options ?? baselineModels.expect.fields.Model.options;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return baselineModels.expect.fields.Model.options;
+    }
+    throw error;
+  }
+}
+const modelFamilies = modelFamilyOptions();
 const validators = {
   vmethod: ajv.compile(configSchema),
   people: ajv.compile(peopleSchema),
@@ -20,7 +38,7 @@ const validators = {
       ...modelsSchema.items,
       properties: {
         ...modelsSchema.items.properties,
-        family: { enum: baseline.expect.fields.Model.options },
+        family: { enum: modelFamilies },
       },
     },
   }),

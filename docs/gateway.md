@@ -399,7 +399,14 @@ previous usage segments but not conversation context. Card-driven resume changes
 also enforce model gates; use an explicitly authorized `worker model` command
 before resuming an owner-gated change. Gates apply equally
 to family names and configured raw ids; unconfigured provider/id selections need
-an explicit `other` family policy. `models` lists configured gates/fallbacks and
+an explicit `other` family policy. Owner-gated families verify the owner's
+authorization (#218): `--owner-approved` is honored only when the task issue or
+task PR carries the owner's comment whose first line is exactly
+`APPROVE MODEL <family>`, posted after the issue body's last edit; until then the
+gateway refuses and names that line, and a line from any other identity (worker,
+peer orchestrator, unpinned author) is void. A direct task without an issue has
+no body-edit bound: the task PR hosts the line. `models` lists configured
+gates/fallbacks and
 the models offered by opencode. Suggestions use Estimate and task labels and
 print a local family learning when available; advice cannot override an owner gate.
 
@@ -744,7 +751,10 @@ These commands require `VMETHOD_ROLE=orchestrator`:
   closing link appears in Development and the board's linked-PR field; GitHub closes
   the issue when the completing PR merges into the repository's default branch.
   No closing-keyword or association-reference text is added to the PR description.
-  Gates and expensive-only Handoff breakpoints are enforced server-side.
+  Gates and expensive-only Handoff breakpoints are enforced server-side; an
+  owner-gated `--model` (or its issue-card Model hint) additionally requires the
+  owner's verified `APPROVE MODEL <family>` line on the issue, or the open refuses
+  with that line (see [worker management](#worker-management-orchestrator-only)).
   Existing conforming title prefixes are preserved. An issue-only `bug:` alias
   becomes `fix:`; prose/nonconforming titles receive `feat:` without broadening
   the accepted delivery-title types. `--part` requires an issue and records

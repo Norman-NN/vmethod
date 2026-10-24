@@ -26,6 +26,13 @@
   kind: opencode
   gate: owner
   fallback: [sol]
+- family: fable
+  tier: expensive
+  model: claude-fable-5-1
+  price: { input: 10.0, output: 50.0, cached: 0.25 } # openrouter anthropic/claude-fable-5.1
+  kind: claude
+  gate: owner
+  fallback: [sol]
 - family: glm
   tier: standard
   model: ollama-cloud/glm-5.3
