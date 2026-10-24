@@ -898,12 +898,20 @@ class GatewayServer {
           throw new Error("Missing created issue node ID");
         }
         const board = this.board;
+        // One operation for the board init writes (#199): membership add, then the
+        // Estimate/Status fields in a single ordered mutation.
+        this.github.writes.beginOperation("issue create", [
+          { repo: String(this.config.repo), number: Number(created.number) },
+        ]);
         await board.ensure(created.node_id);
-        if (estimate !== undefined) {
-          await board.setIssueField(created.node_id, "Estimate", String(estimate));
-        }
-        if (status !== undefined) {
-          await board.setIssueField(created.node_id, "Status", status);
+        // One ordered board mutation when the caller passes fields: the verb's board
+        // writes journal as a single operation (#199), Status last with its progress
+        // companion.
+        if (estimate !== undefined || status !== undefined) {
+          await board.setIssueFields(created.node_id, [
+            ...(estimate !== undefined ? [{ name: "Estimate", value: String(estimate) }] : []),
+            ...(status !== undefined ? [{ name: "Status", value: status }] : []),
+          ]);
         }
       } catch (error) {
         throw new Error(
@@ -930,6 +938,9 @@ class GatewayServer {
         "Issue body changed since read (or not read); read issue again before editing"
       );
     }
+    // Journal the body write as the verb's operation (#199) so a poll between it and
+    // a sibling write cannot report the card.
+    this.github.writes.beginOperation("issue edit", [{ repo: String(this.config.repo), number }]);
     await this.github.rest(
       `/repos/${String(this.config.repo)}/issues/${number}`,
       "PATCH",
@@ -982,6 +993,8 @@ class GatewayServer {
       current,
       "owner"
     );
+    // One operation for the assignment, summary comment and board handoff writes (#199).
+    this.github.writes.beginOperation("scope-review", [{ repo: String(this.config.repo), number }]);
     await setTurn(this.github, String(this.config.repo), number, current, next);
     await this.github.rest(
       `/repos/${String(this.config.repo)}/issues/${number}/comments`,

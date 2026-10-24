@@ -51,7 +51,9 @@ test("scope-review publishes the body hash and hands the issue card to the owner
     ...boardReads(recording),
     {
       path: "/graphql",
-      json: { data: { m0: { projectV2Item: { id: card.id } } } },
+      json: {
+        data: { m0: { projectV2Item: { id: card.id } }, m1: { projectV2Item: { id: card.id } } },
+      },
       checkQuery(_query, variables) {
         expect(
           Object.values(variables).map((value) => (value as { value: unknown }).value)
@@ -64,6 +66,25 @@ test("scope-review publishes the body hash and hands the issue card to the owner
   await expect(
     gatewayVerb(f.transport, "scope-review", ["39", file], { VMETHOD_ROLE: "orchestrator" })
   ).resolves.toBe("Scope review requested for #39");
+  // The write journal records the operation first and each write at its landing:
+  // the watcher's violation checks skip exactly this in-flight window (#199).
+  const entries = readFileSync(
+    join(f.env.XDG_STATE_HOME, "vmethod", "example-state", "writes.jsonl"),
+    "utf8"
+  )
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  expect(entries.map((entry) => entry.kind)).toEqual([
+    "operation",
+    "unassigned",
+    "assigned",
+    "comment",
+    "board",
+    "board",
+  ]);
+  expect(entries[0]).toMatchObject({ op: "scope-review", number: 39 });
+  expect(entries.map((entry) => entry.at)).toHaveLength(6);
   f.done();
 });
 
@@ -368,7 +389,7 @@ function createBoardReads(recording = createdCard()) {
   ];
 }
 
-test("issue create applies optional estimate/status without relying on the lagging board listing", async () => {
+test("issue create applies optional estimate/status in one ordered operation without relying on the lagging board listing", async () => {
   const recording = createdCard();
   const card = recording.items.nodes[0];
   const statusField = recording.fields.nodes.find((field) => field.name === "Status")!;
@@ -383,7 +404,13 @@ test("issue create applies optional estimate/status without relying on the laggi
     ...createBoardReads(recording),
     ...boardReads(recording),
     {
-      ...boardGraph({ m0: { projectV2Item: { id: card.id } } }),
+      // Estimate and Status ride one ordered mutation (#199): Estimate first, then
+      // the Status write with its progress companion, Status last.
+      ...boardGraph({
+        m0: { projectV2Item: { id: card.id } },
+        m1: { projectV2Item: { id: card.id } },
+        m2: { projectV2Item: { id: card.id } },
+      }),
       checkQuery(query, variables) {
         expect(query).toContain("mutation BoardSetCards");
         expect(variables).toEqual({
@@ -393,31 +420,19 @@ test("issue create applies optional estimate/status without relying on the laggi
             fieldId: recording.fields.nodes.find((f) => f.name === "Estimate")!.id,
             value: { number: 1 },
           },
-        });
-        stored.Estimate = 1;
-      },
-    },
-    ...boardReads(recording),
-    {
-      ...boardGraph({
-        m0: { projectV2Item: { id: card.id } },
-        m1: { projectV2Item: { id: card.id } },
-      }),
-      checkQuery(query, variables) {
-        expect(query).toContain("mutation BoardSetCards");
-        expect(variables).toEqual({
-          m0: {
+          m1: {
             projectId: recording.id,
             itemId: card.id,
             fieldId: recording.fields.nodes.find((f) => f.name === "Progress")!.id,
           },
-          m1: {
+          m2: {
             projectId: recording.id,
             itemId: card.id,
             fieldId: recording.fields.nodes.find((f) => f.name === "Status")!.id,
-            value: { singleSelectOptionId: "5acf990d" },
+            value: { singleSelectOptionId: ready.id },
           },
         });
+        stored.Estimate = 1;
         stored.Status = "Ready";
       },
     },
@@ -468,6 +483,24 @@ test("issue create applies optional estimate/status without relying on the laggi
     })
   ).toBe("Board field updated");
   expect(stored).toEqual({ Estimate: 2, Status: "Ready" });
+  // The board init journals one operation record (#199) and then each successful
+  // write at its landing: created issue, operation, membership add, ordered fields.
+  const entries = readFileSync(
+    join(f.env.XDG_STATE_HOME, "vmethod", "example-state", "writes.jsonl"),
+    "utf8"
+  )
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  expect(entries.map((entry) => entry.kind)).toEqual([
+    "created",
+    "operation",
+    "addProjectV2ItemById",
+    "board",
+    "board",
+    "board",
+    "board",
+  ]);
   expect(f.sleeps).toEqual([]);
   f.done();
 }, 15000);

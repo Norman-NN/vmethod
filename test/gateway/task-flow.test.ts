@@ -1116,6 +1116,18 @@ test.each([
   f.done();
 });
 
+test("review changes hands the turn back before the board move so no poll reports in flight", async () => {
+  const f = fixture();
+  f.set({ assignees: ["worker", "peer"] });
+  const file = join(f.root, "review.md");
+  writeFileSync(file, "Please address this.\n");
+  await f.flow().review({ ref: "27", outcome: "changes", file });
+  expect(f.events.indexOf("DELETE /repos/example/project/issues/27/assignees")).toBeLessThan(
+    f.events.indexOf("board pr Status Executing")
+  );
+  f.done();
+});
+
 const REPLY_REFUSAL =
   "answer replies to a worker QUESTION or BLOCKED; to reply to the owner use review <pr> ask --in-reply-to <url>";
 
@@ -1324,6 +1336,16 @@ test.each([false, true])("release without session/control still posts GO (%s)", 
     "Released #27" + (control ? "\nno worker session for #27; nothing sent" : "")
   );
   expect(f.writes.some((w) => String(w.body.body).startsWith("[orchestrator] GO"))).toBe(true);
+  f.done();
+});
+
+test("release clears the turn before the board move (issue 199 order)", async () => {
+  const f = fixture();
+  f.set({ body: `${holdBanner}\n\n<!-- vmethod-task {"issues":[8]} -->`, assignees: ["owner"] });
+  await f.flow().release("27");
+  expect(f.events.indexOf("DELETE /repos/example/project/issues/27/assignees")).toBeLessThan(
+    f.events.indexOf("board pr Status Executing")
+  );
   f.done();
 });
 
