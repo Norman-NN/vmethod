@@ -311,8 +311,11 @@ The conflict machinery protects that approval on its own. A conflict dispatch or
 escalation never moves a card out of **Approved**: it reports the approval it
 finds (`owner approval kept`), the escalation keeps the column, the resolution
 carries the approval when it merges, and an owner move in the same watcher cycle
-is still reported. A conflicting PR also refuses `review <pr> owner` and
-`review <pr> approve` before any write, and a handover on an active conflict
+is still reported. The post-resolution restore re-reads the live card first, so an
+owner who moved the card to Approved while the fixer ran keeps that decision —
+the stored pre-conflict turn is restored only when no owner approval intervenes.
+A conflicting PR also refuses `review <pr> owner` and `review <pr> approve`
+before any write, and a handover on an active conflict
 resolution is refused the same way, so the owner's gate never loses a running
 fixer; resolve the conflict first, then hand over.
 

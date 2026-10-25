@@ -3329,7 +3329,7 @@ test("card conflict hands the turn to the fixing worker under 💥", async () =>
 
 test("card restore returns the stored turn to the board and the PR", async () => {
   const f = fixture();
-  f.set({ assignees: ["worker"] });
+  f.set({ assignees: ["worker"], boardValues: { Status: "Executing", Progress: "🤖🔨" } });
   await f.flow().cardRestore("27", {
     status: "Owner review",
     progress: "👤🔍",
@@ -3347,6 +3347,24 @@ test("card restore returns the stored turn to the board and the PR", async () =>
     path: "/repos/example/project/issues/27/assignees",
     body: { assignees: ["owner"] },
   });
+  f.done();
+});
+
+test("card restore keeps an owner approval found while the fixer ran (#244)", async () => {
+  const f = fixture();
+  // The prior was Owner review at dispatch; the owner moved the card to Approved
+  // while the fixer episode ran. The restore must keep the owner's decision.
+  f.set({ boardValues: { Status: "Approved", Progress: "💥" }, assignees: ["worker"] });
+  const outcome = await f.flow().cardRestore("27", {
+    status: "Owner review",
+    progress: "👤🔍",
+    assignees: ["owner"],
+  });
+  expect(outcome).toBe("approval-kept");
+  expect(f.touched).toEqual([expect.objectContaining({ field: "Progress", value: "🧭🔍" })]);
+  // The pre-dispatch ["owner"] turn is not resurrected; the managed turn releases
+  // exactly like the owner's own Approved move does.
+  expect(f.writes.some((write) => write.path.endsWith("/assignees"))).toBe(false);
   f.done();
 });
 

@@ -233,10 +233,24 @@ export class TaskFlow {
     );
     await this.turn(ref, "worker");
   }
-  /** Return the card to its stored pre-dispatch state once the resolution resolves. */
-  async cardRestore(ref: string, prior: ConflictPrior): Promise<void> {
+  /** Return the card to its stored pre-dispatch state once the resolution resolves.
+   * Re-reads the live card first: an owner approval found between dispatch and
+   * resolution is never overwritten (the #244 case). On an Approved card the restore
+   * keeps the Status, restores verifying Progress, clears the interrupted fixer turn
+   * and reports the kept approval; otherwise it returns the stored prior turn. */
+  async cardRestore(ref: string, prior: ConflictPrior): Promise<void | "approval-kept"> {
     const item = await this.pr(ref);
     if (object(this.config.board).enabled !== false) {
+      const card = await this.boardCard(item);
+      if (card?.values.Status === "Approved") {
+        await this.card(
+          item,
+          undefined,
+          renderProgress({ state: "verifying", round: null, red: false })
+        );
+        await this.turn(ref, null);
+        return "approval-kept";
+      }
       if (prior.status) {
         await this.card(item, prior.status, prior.progress ?? null);
       } else {

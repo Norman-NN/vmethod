@@ -935,7 +935,10 @@ or board transitions; only genuine conflicts beyond the limits are escalated.
 A step-2 or step-3 dispatch turns the card over to the fixer: Progress shows 💥
 and the assigned worker holds the assignee. The interrupted card turn (Status,
 Progress and assignees) is stored with the resolution record. On RESOLVED the
-card returns to that stored turn; on BLOCKED the escalation hands the PR to the
+card returns to that stored turn after the live card is re-read: an owner
+approval found between dispatch and resolution is kept, the restore writes
+verifying Progress, releases the managed fixer turn, and the resolution event
+reports `owner approval kept`; on BLOCKED the escalation hands the PR to the
 orchestrator with 🤖🚫 instead. Conflict dispatches and escalations never move a
 card out of **Approved**: the dispatch write changes Progress and the worker turn
 only, an escalation on an approved card keeps the Approved column and reports the

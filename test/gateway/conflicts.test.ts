@@ -253,6 +253,35 @@ test("auto-merge refusal retains the resolution without repeating verification o
   expect(f.hooks.merge).toHaveBeenCalledTimes(2);
 }, 15000);
 
+test("a dispatch re-reads the card and reports an owner approval verification has not seen yet", async () => {
+  const f = await setup(true, false);
+  // The owner moved the card to Approved before the dispatch read it; the exact-head
+  // verification has not caught up, yet the dispatch still reports the kept approval.
+  f.setCard({ status: "Approved", progress: "🧭🔍", assignees: ["owner"] });
+  expect(await f.service.resolve(31)).toBe(
+    "PENDING #31: conflict fixer dispatched (step 3); owner approval kept"
+  );
+  expect(await f.service.resolve(31)).toBe("RESOLVED #31 (step 3)");
+  expect(f.hooks.fix).toHaveBeenCalledOnce();
+}, 15000);
+
+test("a restore that kept an owner approval reports it on the resolution event", async () => {
+  const f = await setup(true, false);
+  f.setCard({ status: "In review", progress: "👤🔍", assignees: ["owner"] });
+  vi.mocked(f.hooks.fix).mockImplementation(async () => 2);
+  expect(await f.service.resolve(31)).toBe("PENDING #31: conflict fixer dispatched (step 2)");
+  await f.makeUpToDate();
+  vi.mocked(f.hooks.cardRestore).mockImplementation(async () => {
+    // The owner approved while the fixer ran: the restore keeps Approved exactly
+    // like the gateway's card restore does, and reports the kept approval.
+    f.setCard({ status: "Approved", progress: "🧭🔍", assignees: ["worker"] });
+    return "approval-kept";
+  });
+  expect(await f.service.resolve(31)).toBe("RESOLVED #31 (step 2); owner approval kept");
+  expect(f.card()).toMatchObject({ status: "Approved", progress: "🧭🔍" });
+  expect(f.service.pending(31)).toBe(false);
+}, 15000);
+
 test.each(["merged", "closed"] as const)(
   "a %s PR closes its conflict record quietly before any snapshot",
   async (lifecycle) => {

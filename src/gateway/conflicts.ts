@@ -40,6 +40,8 @@ interface Resolution {
   prior?: ConflictPrior;
   /** Set once the stored prior card was restored after RESOLVED. */
   restored?: boolean;
+  /** Set by the restore when an owner approval found on the live card was kept. */
+  approvalKept?: boolean;
 }
 
 export interface ConflictHooks {
@@ -60,8 +62,11 @@ export interface ConflictHooks {
   cardPrior(pr: number): Promise<ConflictPrior>;
   /** Show the dispatched fixer: 💥 Progress and the worker holding the turn. */
   cardConflict(pr: number): Promise<void>;
-  /** Return the card to the stored prior once the resolution resolves. */
-  cardRestore(pr: number, prior: ConflictPrior): Promise<void>;
+  /**
+   * Return the card to the stored prior once the resolution resolves; "approval-kept"
+   * reports a live owner approval the restore kept instead of overwriting.
+   */
+  cardRestore(pr: number, prior: ConflictPrior): Promise<void | "approval-kept">;
   /** Tolerant PR lifecycle read: a merged or closed PR closes its record instead of failing. */
   lifecycle(pr: number): Promise<"open" | "merged" | "closed">;
 }
@@ -304,7 +309,10 @@ export class ConflictService {
     record.dispatched = true;
     record.phase = "waiting";
     this.save(pr, record);
-    return `PENDING #${pr}: conflict fixer dispatched (step ${record.step})${record.approved ? "; owner approval kept" : ""}`;
+    // The dispatch's own card read (prior.status) reports a live owner approval even
+    // before it is verified on the exact head; both are kept on the card regardless.
+    const cardApproved = record.approved || record.prior?.status === "Approved";
+    return `PENDING #${pr}: conflict fixer dispatched (step ${record.step})${cardApproved ? "; owner approval kept" : ""}`;
   }
 
   private async finish(pr: number, record: Resolution, snapshot: CiSnapshot): Promise<string> {
@@ -488,7 +496,8 @@ export class ConflictService {
       return;
     }
     try {
-      await this.hooks.cardRestore(pr, record.prior);
+      const outcome = await this.hooks.cardRestore(pr, record.prior);
+      record.approvalKept = outcome === "approval-kept";
     } catch (error) {
       this.deps.report(
         `Conflict #${pr}: card could not return to its previous state: ${error instanceof Error ? error.message : String(error)}`
@@ -507,10 +516,11 @@ export class ConflictService {
       return `MERGED #${pr} (conflict-only, approval carried)`;
     }
     if (record.phase === "resolved") {
+      const kept = record.approvalKept ? "; owner approval kept" : "";
       if (record.reason) {
-        return `RESOLVED #${pr}: ${record.reason}`;
+        return `RESOLVED #${pr}: ${record.reason}${kept}`;
       }
-      return `RESOLVED #${pr} (step ${record.step})`;
+      return `RESOLVED #${pr} (step ${record.step})${kept}`;
     }
     return `PENDING #${pr}: conflict dispatch in progress; inspect gateway state before retrying`;
   }
