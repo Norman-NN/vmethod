@@ -2426,6 +2426,7 @@ test.each([
   "RESOLVED #24 (step 1)",
   "MERGED #24 (conflict-only, approval carried)",
   "BLOCKED #24: conflict escalated (remerge diff is not limited to conflicted hunks)",
+  "conflict on #24 resolved outside the fixer",
 ])("a terminal conflict result %s supersedes the queued card move", async (result) => {
   const f = setup();
   f.task();
@@ -2453,6 +2454,32 @@ test("a pending resolution result keeps its queued conflict card move", async ()
   const events = await f.tick(loop);
   expect(events.filter((event) => event.kind === "conflict-resolution")).toEqual([]);
   expect(f.writes).toContainEqual({ itemId: "PVTI_24", field: "Progress", value: "💥 🔁2️⃣" });
+  await f.ack(loop, events);
+  f.done();
+});
+
+test("an owner move to Approved in the same cycle as a conflict dispatch is reported", async () => {
+  const f = setup();
+  f.task();
+  const loop = f.loop();
+  const baseline = await f.tick(loop);
+  await f.ack(loop, baseline);
+  // The owner moves the card to Approved (Owner review → Approved) while the same
+  // cycle's PR poll dispatches the conflict resolution for the new base.
+  f.cards = [f.card(24, "Approved", "PullRequest")];
+  f.mergeable = false;
+  f.baseMoved = true;
+  f.resolveConflicts = vi.fn(async () => "PENDING #24: conflict fixer dispatched (step 2)");
+  f.advance();
+  const events = await f.tick(loop);
+  expect(
+    events
+      .filter((event) => event.kind === "board")
+      .map((event) => event.line)
+      .filter((line) => line.includes("#24"))
+  ).toEqual(["BOARD #24 (PR): Executing → Approved https://github.com/example/project/pull/24"]);
+  // No conflict-step write changed a Status: the owner's Approved column is kept.
+  expect(f.writes.filter((write) => write.field === "Status")).toEqual([]);
   await f.ack(loop, events);
   f.done();
 });

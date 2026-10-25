@@ -819,7 +819,12 @@ These commands require `VMETHOD_ROLE=orchestrator`:
   posts the protocol header and sets the next actor. Owner review always names the
   full current SHA and marks the draft ready. `approve` posts an orchestrator
   acceptance, **not** owner authority. `owner` moves only the PR to Owner review;
-  changes and answers stay in Executing. `ask` summons the owner in Executing,
+  changes and answers stay in Executing. `owner` and `approve` refuse, before any
+  write, while the PR conflicts with its base (`#n conflicts with <base>; resolve
+before handing over`) or an active conflict resolution record exists (`#n has an
+active conflict record; resolve before handing over`): a handover must never
+  interrupt a dispatched fixer or write over its card turn. Resolve the conflict
+  first, then hand over. `ask` summons the owner in Executing,
   pauses the worker and clears queued wakes. A paused summons requires `answer
 --owner-agreed` and an exact Markdown block quotation from the current, effectively
   owner-authored comment after the summons. The flag attests agreement; a plain owner
@@ -894,6 +899,15 @@ then reconciles the persisted operation without launching another fixer.
 Reconciliation errors are contained per PR and reported once per head; they do
 not interrupt polling other PRs. Inspect the reported gateway state before retrying.
 
+A record whose PR is merged or closed closes quietly with
+`conflict on #n resolved outside the fixer`, removing `conflicts/<n>.json` before
+any snapshot could fail it. A record that dispatched no fixer closes the same way
+once its PR stands mergeable with its current base behind a change the resolution
+cannot attribute — a worker's review-round fix, a manual merge, or the stale state
+of an interrupted process. The report is a terminal conflict result: it supersedes
+the conflicted turn's queued card moves and restarts nothing else, and the same
+watcher cycle still reports the PR normally.
+
 If the head already contains the fetched live base and is not conflicting, the
 command reports `nothing to resolve for #n` without a comment, board change or
 update-branch call. GitHub's specific update-branch 422 response saying there are
@@ -921,8 +935,17 @@ or board transitions; only genuine conflicts beyond the limits are escalated.
 A step-2 or step-3 dispatch turns the card over to the fixer: Progress shows 💥
 and the assigned worker holds the assignee. The interrupted card turn (Status,
 Progress and assignees) is stored with the resolution record. On RESOLVED the
-card returns to that stored turn; on BLOCKED the escalation hands the PR to the
-orchestrator with 🤖🚫 instead. While the dispatched fixer runs, its own comments
+card returns to that stored turn after the live card is re-read: an owner
+approval found between dispatch and resolution is kept, the restore writes
+verifying Progress, releases the managed fixer turn, and the resolution event
+reports `owner approval kept`; on BLOCKED the escalation hands the PR to the
+orchestrator with 🤖🚫 instead. Conflict dispatches and escalations never move a
+card out of **Approved**: the dispatch write changes Progress and the worker turn
+only, an escalation on an approved card keeps the Approved column and reports the
+kept approval, and the dispatch line reports `owner approval kept` when it finds
+the approval the resolution may carry. An owner move to Approved in the same poll
+cycle is therefore still read and reported by the board poll that follows.
+While the dispatched fixer runs, its own comments
 and commits keep that card instead of reviving it, so the resolution stays
 visible where people look; a terminal resolution also supersedes the conflicted
 turn's queued card moves. Each dispatch posts one audit line,
@@ -973,7 +996,8 @@ an orchestrator escalation note rather than impersonating a worker when its own
 independent checks refuse certification.
 
 Watcher terminal events are `RESOLVED #n (step k)`,
-`MERGED #n (conflict-only, approval carried)`, or
+`MERGED #n (conflict-only, approval carried)`,
+`conflict on #n resolved outside the fixer`, or
 `BLOCKED #n: conflict escalated (<reason>)`. Pending work does not wake the
 orchestrator just to repeat CONFLICT. State and locks live under the configured
 per-user state root, not in the package checkout.

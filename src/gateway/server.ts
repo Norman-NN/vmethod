@@ -757,6 +757,7 @@ class GatewayServer {
       cardPrior: (pr) => this.flow.cardPrior(String(pr)),
       cardConflict: (pr) => this.flow.cardConflict(String(pr)),
       cardRestore: (pr, prior) => this.flow.cardRestore(String(pr), prior),
+      lifecycle: (pr) => this.flow.pullLifecycle(String(pr)),
     });
   }
 
@@ -1112,6 +1113,7 @@ class GatewayServer {
         );
       },
       thread: (ref, kind) => this.flowThread(ref, kind),
+      conflictPending: async (ref) => this.conflicts.pending(Number(ref)),
       comments: (id, kind) => this.flowComments(id, kind === "issue" ? "Issue" : "PullRequest"),
       replyTarget: (id) => this.flowComment(id),
       approved: (ref, historical) => this.approvalFor(ref, historical),
@@ -1519,7 +1521,11 @@ class GatewayServer {
     const fields =
       kind === "any"
         ? `__typename ... on Issue { ${identityFields} } ... on PullRequest { ${identityFields} }`
-        : `${identityFields} ${kind === "pr" ? "headRefOid headRefName baseRefName state headRepository { nameWithOwner }" : ""}`;
+        : `${identityFields} ${
+            kind === "pr"
+              ? "headRefOid headRefName baseRefName state mergeable headRepository { nameWithOwner }"
+              : ""
+          }`;
     const result = object(
       await this.github.graphql(
         `query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { ${field}(number: $number) { ${fields} } } }`,
