@@ -58,6 +58,8 @@ interface Host {
   ): Promise<boolean>;
   /** #218: did the pinned owner verify this gated family on the task issue? */
   modelApproval(issue: number, family: string): Promise<boolean>;
+  /** True while a conflict resolution record is starting or waiting for this PR. */
+  conflictPending?(ref: string): Promise<boolean>;
   /** Fresh owner-delegation evidence; never used by the expensive-model gate. */
   autopilot?(ref: string, kind: "pr" | "issue"): Promise<AutopilotState>;
   copyAutopilot?(issue: ObjectData, pr: ObjectData): Promise<void>;
@@ -707,6 +709,20 @@ export class TaskFlow {
     if (item.state !== "OPEN") {
       throw new Error("PR is not open");
     }
+    if (input.outcome === "owner" || input.outcome === "approve") {
+      // Before any write: a handover or approval must neither stop a dispatched
+      // conflict fixer nor write over an active conflict resolution's card turn.
+      if (item.mergeable === "CONFLICTING") {
+        throw new Error(
+          `#${this.number(input.ref)} conflicts with ${String(item.baseRefName)}; resolve before handing over`
+        );
+      }
+      if ((await this.host.conflictPending?.(input.ref)) === true) {
+        throw new Error(
+          `#${this.number(input.ref)} has an active conflict record; resolve before handing over`
+        );
+      }
+    }
     const comments = await this.host.comments(String(item.id));
     const round =
       1 +
@@ -1085,19 +1101,35 @@ export class TaskFlow {
     }
   }
 
+  /**
+   * Tolerant PR lifecycle read for conflict reconciliation: a merged or closed PR
+   * must close its resolution record instead of failing every future reconcile.
+   */
+  async pullLifecycle(ref: string): Promise<"open" | "merged" | "closed"> {
+    const item = await this.pr(ref);
+    return item.state === "MERGED" ? "merged" : item.state === "CLOSED" ? "closed" : "open";
+  }
+
   /** Escalate independent conflict-proof failures without impersonating the fixer. */
   async escalateConflict(ref: string, reason: string, files: string[]): Promise<void> {
     const item = await this.pr(ref);
     if (item.state !== "OPEN") {
       throw new Error("Conflict task is no longer open");
     }
+    // Re-read the live card before writing: an owner approval found between dispatch
+    // and escalation is kept, and the note reports it instead of overwriting Approved.
+    const approved =
+      object(this.config.board).enabled !== false &&
+      (await this.boardCard(item))?.values.Status === "Approved";
     await this.post(
       ref,
-      `[orchestrator] NOTE: conflict escalated (${reason})\n\nConflicting files:\n${files.map((file) => `- ${JSON.stringify(file)}`).join("\n") || "- (none)"}\n\nOwner review is required; no approval carried.`
+      `[orchestrator] NOTE: conflict escalated (${reason})\n\nConflicting files:\n${files.map((file) => `- ${JSON.stringify(file)}`).join("\n") || "- (none)"}\n\n${approved ? "Owner approval kept: the card stays Approved." : "Owner review is required; no approval carried."}`
     );
+    // A Status write would move an Approved card out of the owner's decision; on an
+    // approved card only the blocked Progress rides the escalation write.
     await this.card(
       item,
-      "Executing",
+      approved ? undefined : "Executing",
       renderProgress({ state: "blocked", round: null, red: false })
     );
     await this.turn(ref, "orchestrator");

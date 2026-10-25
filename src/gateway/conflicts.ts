@@ -62,6 +62,8 @@ export interface ConflictHooks {
   cardConflict(pr: number): Promise<void>;
   /** Return the card to the stored prior once the resolution resolves. */
   cardRestore(pr: number, prior: ConflictPrior): Promise<void>;
+  /** Tolerant PR lifecycle read: a merged or closed PR closes its record instead of failing. */
+  lifecycle(pr: number): Promise<"open" | "merged" | "closed">;
 }
 
 /** Durable, bounded conflict workflow. Agents propose; only server-side evidence can carry approval. */
@@ -83,6 +85,8 @@ export class ConflictService {
 
   /** Start once per conflicting head, or reconcile a previously dispatched resolution.
    * Current heads are no-ops; reconciliation errors propagate without conflict escalation.
+   * A record whose PR is no longer open, or that a not-dispatched resolution can no
+   * longer attribute on a mergeable PR, closes quietly as resolved outside the fixer.
    * Auto-merge errors retain resolved state and return actionable manual-merge guidance.
    * The per-pr lock is owned like the watcher's: a dead owner's lock is cleared and the
    * reconcile continues, while a live owner reads as a quiet in-progress pending.
@@ -196,8 +200,15 @@ export class ConflictService {
   }
 
   private async run(pr: number): Promise<string> {
-    const snapshot = await this.hooks.snapshot(pr);
     const old = this.read(pr);
+    if (old) {
+      // A PR that ended outside this workflow closes its record quietly: reading its
+      // CI snapshot would fail every later reconciliation with a not-open error.
+      if ((await this.hooks.lifecycle(pr)) !== "open") {
+        return this.closeOutsideFixer(pr);
+      }
+    }
+    const snapshot = await this.hooks.snapshot(pr);
     const git = new GitTransport(this.config, this.env, this.deps, this.root);
     if (
       !(await git.transfer("fetch", [
@@ -293,10 +304,31 @@ export class ConflictService {
     record.dispatched = true;
     record.phase = "waiting";
     this.save(pr, record);
-    return `PENDING #${pr}: conflict fixer dispatched (step ${record.step})`;
+    return `PENDING #${pr}: conflict fixer dispatched (step ${record.step})${record.approved ? "; owner approval kept" : ""}`;
   }
 
   private async finish(pr: number, record: Resolution, snapshot: CiSnapshot): Promise<string> {
+    // Step-1 records dispatch no fixer, so no fixer session explains a new head. A
+    // healthy PR whose base moved, or whose head a clean-base proof cannot attribute,
+    // was resolved outside the fixer: the record closes quietly instead of failing.
+    // This covers a worker's review-round fix, a manual resolution and the stale
+    // state of an interrupted process, and it runs before the resolution deadline.
+    if (!record.dispatched && !snapshot.conflict && snapshot.branch === record.branch) {
+      if (snapshot.baseSha !== record.base) {
+        return this.closeOutsideFixer(pr);
+      }
+      if (
+        snapshot.head !== record.head &&
+        !(await cleanBaseMerges(
+          (...args) => new GitTransport(this.config, this.env, this.deps, this.root).run(...args),
+          record.head,
+          snapshot.head,
+          record.base
+        ))
+      ) {
+        return this.closeOutsideFixer(pr);
+      }
+    }
     if (this.deps.now() - record.started > 60 * 60_000) {
       return this.block(pr, record, "conflict resolution exceeded the one-hour limit");
     }
@@ -436,6 +468,18 @@ export class ConflictService {
     }
     await this.hooks.blocked(pr, reason, record.files);
     return this.event(pr, record);
+  }
+
+  /** Remove the record for an out-of-band resolution; the report stays quiet, no card write. */
+  private closeOutsideFixer(pr: number): string {
+    try {
+      unlinkSync(join(this.directory, `${pr}.json`));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw error;
+      }
+    }
+    return `conflict on #${pr} resolved outside the fixer`;
   }
 
   /** Return the stored pre-dispatch card exactly once after RESOLVED; retries on reconciliation. */

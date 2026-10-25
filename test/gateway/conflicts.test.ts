@@ -112,6 +112,7 @@ async function setup(conflict: boolean, approved: boolean, bad = false, escalate
     cardRestore: vi.fn(async (_pr, prior) => {
       card = { status: prior.status, progress: prior.progress, assignees: [...prior.assignees] };
     }),
+    lifecycle: vi.fn(async () => "open" as const),
   };
   const deps: EventDeps = {
     fetch: async () => {
@@ -167,6 +168,13 @@ async function setup(conflict: boolean, approved: boolean, bad = false, escalate
       };
     },
     makeUpToDate: resolve,
+    /** A plain commit on the task branch, pushed outside any fixer dispatch. */
+    foreignHead: async (file: string, text: string) => {
+      snapshot.head = await commit(file, text);
+      await git("update-ref", "refs/remotes/origin/task", snapshot.head);
+      snapshot.conflict = false;
+    },
+    record: () => join(env.XDG_STATE_HOME, "vmethod/conflict-test/conflicts/31.json"),
     nextConflict: async () => {
       await git("checkout", "dev");
       snapshot.baseSha = await commit("conflict.txt", "keep prefix\nnew base\nkeep suffix\n");
@@ -243,6 +251,98 @@ test("auto-merge refusal retains the resolution without repeating verification o
   expect(await f.service.resolve(31)).toBe(expected);
   expect(f.deps.report).toHaveBeenCalledTimes(2);
   expect(f.hooks.merge).toHaveBeenCalledTimes(2);
+}, 15000);
+
+test.each(["merged", "closed"] as const)(
+  "a %s PR closes its conflict record quietly before any snapshot",
+  async (lifecycle) => {
+    const f = await setup(true, true);
+    expect(await f.service.resolve(31)).toBe(
+      "PENDING #31: conflict fixer dispatched (step 3); owner approval kept"
+    );
+    const before = Object.fromEntries(
+      Object.entries(f.hooks).map(([name, hook]) => [
+        name,
+        typeof hook === "function" && "mock" in hook ? vi.mocked(hook).mock.calls.length : -1,
+      ])
+    );
+    vi.mocked(f.hooks.lifecycle).mockResolvedValue(lifecycle);
+    vi.mocked(f.hooks.snapshot).mockRejectedValue(new Error("Task PR is not open"));
+    expect(await f.service.resolve(31)).toBe("conflict on #31 resolved outside the fixer");
+    expect(existsSync(f.record())).toBe(false);
+    expect(f.service.pending(31)).toBe(false);
+    expect(vi.mocked(f.hooks.snapshot)).toHaveBeenCalledTimes(before.snapshot);
+    for (const name of [
+      "approved",
+      "update",
+      "wait",
+      "fix",
+      "stop",
+      "status",
+      "workerBlocked",
+      "directory",
+      "verify",
+      "blocked",
+      "merge",
+      "cardPrior",
+      "cardConflict",
+      "cardRestore",
+    ] as const) {
+      expect(vi.mocked(f.hooks[name])).toHaveBeenCalledTimes(before[name]);
+    }
+  },
+  15000
+);
+
+test.each([
+  {
+    name: "a foreign commit resolves the conflict",
+    fix: (f: Awaited<ReturnType<typeof setup>>) => f.foreignHead("hand.txt", "hand fix\n"),
+  },
+  { name: "the base moves on", fix: (f: Awaited<ReturnType<typeof setup>>) => f.moveBase() },
+])(
+  "a not-dispatched resolution on a healthy PR is an out-of-band conflict closure: $name",
+  async ({ fix }) => {
+    const f = await setup(false, true);
+    vi.mocked(f.hooks.wait).mockResolvedValue({ code: 2, text: "checks: pending" });
+    expect(await f.service.resolve(31)).toBe("PENDING #31: waiting for CI");
+    expect(f.service.pending(31)).toBe(true);
+    await fix(f);
+    expect(await f.service.resolve(31)).toBe("conflict on #31 resolved outside the fixer");
+    expect(existsSync(f.record())).toBe(false);
+    expect(f.service.pending(31)).toBe(false);
+    for (const name of [
+      "fix",
+      "stop",
+      "blocked",
+      "merge",
+      "cardConflict",
+      "cardRestore",
+    ] as const) {
+      expect(vi.mocked(f.hooks[name])).not.toHaveBeenCalled();
+    }
+    expect(vi.mocked(f.hooks.approved)).toHaveBeenCalledTimes(1);
+  },
+  15000
+);
+
+test("a clean base update the flow dispatched still completes without out-of-band closure", async () => {
+  const f = await setup(false, false);
+  vi.mocked(f.hooks.wait).mockResolvedValueOnce({ code: 2, text: "checks: pending" });
+  expect(await f.service.resolve(31)).toBe("PENDING #31: waiting for CI");
+  await f.makeUpToDate();
+  expect(await f.service.resolve(31)).toBe("RESOLVED #31 (step 1)");
+  expect(f.hooks.update).toHaveBeenCalledTimes(1);
+  expect(f.hooks.blocked).not.toHaveBeenCalled();
+}, 15000);
+
+test("a dispatch on an approved PR reports the approval the resolution will carry", async () => {
+  const f = await setup(true, true);
+  expect(await f.service.resolve(31)).toBe(
+    "PENDING #31: conflict fixer dispatched (step 3); owner approval kept"
+  );
+  expect(await f.service.resolve(31)).toBe("MERGED #31 (conflict-only, approval carried)");
+  expect(f.hooks.cardConflict).toHaveBeenCalledOnce();
 }, 15000);
 
 test("no-hook notice is durable across retries within a resolution", async () => {
@@ -455,7 +555,9 @@ test.each([true, false])(
   "real conflict, approved=%s: bounded fixer and verified completion",
   async (approved) => {
     const f = await setup(true, approved);
-    expect(await f.service.resolve(31)).toBe("PENDING #31: conflict fixer dispatched (step 3)");
+    expect(await f.service.resolve(31)).toBe(
+      `PENDING #31: conflict fixer dispatched (step 3)${approved ? "; owner approval kept" : ""}`
+    );
     expect(f.hooks.fix).toHaveBeenCalledWith(31, "dev", ["conflict.txt"]);
     expect(await f.service.resolve(31)).toBe(
       approved ? "MERGED #31 (conflict-only, approval carried)" : "RESOLVED #31 (step 3)"
@@ -516,7 +618,9 @@ test("a lock left by a dead owner is cleared and the reconcile completes", async
   const f = await setup(true, true);
   // The seeded holder is not our pid, and the default readProc knows no other pid.
   f.seedLock(`${JSON.stringify({ pid: 5432, start: 6, at: new Date(0).toISOString() })}\n`);
-  expect(await f.service.resolve(31)).toBe("PENDING #31: conflict fixer dispatched (step 3)");
+  expect(await f.service.resolve(31)).toBe(
+    "PENDING #31: conflict fixer dispatched (step 3); owner approval kept"
+  );
   expect(existsSync(f.lock)).toBe(false);
   expect(await f.createService().resolve(31)).toBe("MERGED #31 (conflict-only, approval carried)");
 }, 15000);
@@ -524,7 +628,9 @@ test("a lock left by a dead owner is cleared and the reconcile completes", async
 test("a reused pid with a different recorded start reads as a dead owner", async () => {
   const f = await setup(true, true);
   f.seedLock(`${JSON.stringify({ pid: f.deps.pid, start: 6, at: new Date(0).toISOString() })}\n`);
-  expect(await f.service.resolve(31)).toBe("PENDING #31: conflict fixer dispatched (step 3)");
+  expect(await f.service.resolve(31)).toBe(
+    "PENDING #31: conflict fixer dispatched (step 3); owner approval kept"
+  );
   expect(existsSync(f.lock)).toBe(false);
 }, 15000);
 
@@ -546,7 +652,9 @@ test("a live lock owner reads as an in-progress pending instead of a failure", a
 test("a legacy empty-directory lock counts as a dead owner and is cleared", async () => {
   const f = await setup(true, true);
   f.seedLock(null);
-  expect(await f.service.resolve(31)).toBe("PENDING #31: conflict fixer dispatched (step 3)");
+  expect(await f.service.resolve(31)).toBe(
+    "PENDING #31: conflict fixer dispatched (step 3); owner approval kept"
+  );
   expect(existsSync(f.lock)).toBe(false);
   expect(await f.createService().resolve(31)).toBe("MERGED #31 (conflict-only, approval carried)");
 }, 15000);
@@ -568,7 +676,9 @@ test("the held lock is mode 0700 and is released even when the run fails", async
     heldMode = statSync(f.lock).mode & 0o777;
     return { ...f.snapshot };
   });
-  expect(await f.service.resolve(31)).toBe("PENDING #31: conflict fixer dispatched (step 3)");
+  expect(await f.service.resolve(31)).toBe(
+    "PENDING #31: conflict fixer dispatched (step 3); owner approval kept"
+  );
   expect(heldMode).toBe(0o700);
   expect(existsSync(f.lock)).toBe(false);
   vi.mocked(f.hooks.snapshot).mockRejectedValue(new Error("snapshot unavailable"));

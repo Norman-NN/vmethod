@@ -35,7 +35,10 @@ checking that the resolution changes no behaviour, the orchestrator uses
 `merge-task <pr> --carry-approval "<reason>"` to certify the carry on the PR;
 only base-merge commits may follow the approved head. Behaviour changes or an
 algorithmic revamp require fresh owner approval, as do ordinary task commits.
-All other merge gates remain in force. See the
+All other merge gates remain in force. The conflict workflow's own guards are on
+the delivery: handovers over a conflicting PR are refused, dispatches and
+escalations never overwrite an Approved card, and out-of-band conflict fixes
+close their records quietly. See the
 [owner rule and merge procedure](orchestrator-guide.md#merge-and-release).
 
 An issue stays in Executing through all its deliveries; an epic waits for every

@@ -775,6 +775,8 @@ function fixture() {
   let prState = "OPEN",
     actualBase = "dev",
     branch = "8-task";
+  let mergeable = "MERGEABLE",
+    conflictPending = false;
   let body = '<!-- vmethod-task {"issues":[8]} -->';
   let issueNumber = 8;
   let isDraft = true;
@@ -1086,7 +1088,7 @@ function fixture() {
         body,
         state: prState,
         closingIssuesReferences: references,
-        mergeable: "MERGEABLE",
+        mergeable,
         isDraft,
         headRepository: { nameWithOwner: "example/project" },
         labels: { nodes: [] },
@@ -1104,6 +1106,7 @@ function fixture() {
       events.push(`model-approval ${issue} ${family}`);
       return modelApproval;
     },
+    conflictPending: async () => conflictPending,
   };
   return {
     root,
@@ -1140,6 +1143,8 @@ function fixture() {
       assignees?: string[];
       boardValues?: Record<string, string | number | null>;
       replyTarget?: ReplyTarget;
+      mergeable?: string;
+      conflictPending?: boolean;
     }) => {
       approved = values.approved ?? approved;
       issueApproved = values.issueApproved ?? issueApproved;
@@ -1162,6 +1167,8 @@ function fixture() {
       assignees = values.assignees ?? assignees;
       boardValues = values.boardValues ?? boardValues;
       replyTarget = values.replyTarget ?? replyTarget;
+      mergeable = values.mergeable ?? mergeable;
+      conflictPending = values.conflictPending ?? conflictPending;
     },
     red: () => {
       checks = checks.map((c) => ({ ...c, conclusion: "failure" }));
@@ -1213,6 +1220,73 @@ test.each([
     f.done();
   }
 );
+
+test.each(["owner", "approve"] as const)(
+  "review %s on a PR conflicting with its base is refused before any write",
+  async (outcome) => {
+    const f = fixture();
+    f.set({ mergeable: "CONFLICTING" });
+    const file = join(f.root, "review.md");
+    writeFileSync(file, "Handover.\n");
+    await expect(f.flow().review({ ref: "27", outcome, file })).rejects.toThrow(
+      "#27 conflicts with dev; resolve before handing over"
+    );
+    expect(f.touched).toEqual([]);
+    expect(f.events).not.toContain("draft false");
+    expect(f.events).not.toContain("worker-resume");
+    expect(
+      f.writes.filter(
+        (write) =>
+          write.path.endsWith("/comments") ||
+          write.path.endsWith("/merge") ||
+          write.path.endsWith("/assignees") ||
+          write.path.endsWith("/labels")
+      )
+    ).toEqual([]);
+    f.done();
+  }
+);
+
+test("review owner over an active conflict record is refused before any write", async () => {
+  const f = fixture();
+  // The PR itself is mergeable again; the record still owns the card.
+  f.set({ conflictPending: true });
+  const file = join(f.root, "review.md");
+  writeFileSync(file, "Handover.\n");
+  await expect(f.flow().review({ ref: "27", outcome: "owner", file })).rejects.toThrow(
+    "#27 has an active conflict record; resolve before handing over"
+  );
+  expect(f.touched).toEqual([]);
+  expect(
+    f.writes.filter(
+      (write) =>
+        write.path.endsWith("/comments") ||
+        write.path.endsWith("/merge") ||
+        write.path.endsWith("/assignees")
+    )
+  ).toEqual([]);
+  f.done();
+});
+
+test("conflicting PR reviews other than owner handovers and approvals stay allowed", async () => {
+  const f = fixture();
+  f.set({ mergeable: "CONFLICTING", isDraft: true });
+  const file = join(f.root, "review.md");
+  writeFileSync(file, "Please merge origin/dev first.\n");
+  await f.flow().review({ ref: "27", outcome: "changes", file });
+  expect(f.writes.find((write) => write.path.endsWith("/comments"))?.body.body).toMatch(
+    /^\[orchestrator\] REVIEW round 1/
+  );
+  f.done();
+});
+
+test("card conflict on an owner-approved card keeps Approved", async () => {
+  const f = fixture();
+  f.set({ boardValues: { Status: "Approved", Progress: "🧭🔍" }, assignees: ["owner"] });
+  await f.flow().cardConflict("27");
+  expect(f.touched).toEqual([expect.objectContaining({ field: "Progress", value: "💥" })]);
+  f.done();
+});
 
 test.each([
   [
@@ -3199,6 +3273,7 @@ test.each([
 
 test("independent conflict rejection names files and gives the blocked PR back to the orchestrator", async () => {
   const f = fixture();
+  f.set({ boardValues: { Status: "Executing", Progress: "🤖🔨" } });
   await f
     .flow()
     .escalateConflict("27", "escalated path requires owner review", ["src/conflict.ts"]);
@@ -3210,6 +3285,20 @@ test("independent conflict rejection names files and gives the blocked PR back t
   );
   expect(f.writes.some((write) => write.path.endsWith("/merge"))).toBe(false);
   expect(f.writes.some((write) => write.path.endsWith("/assignees"))).toBe(true);
+  f.done();
+});
+
+test("conflict escalation on an owner-approved card keeps Approved and reports it", async () => {
+  const f = fixture();
+  f.set({ boardValues: { Status: "Approved", Progress: "🧭🔍" } });
+  await f
+    .flow()
+    .escalateConflict("27", "escalated path requires owner review", ["src/conflict.ts"]);
+  const note = f.writes.find((write) => write.path.endsWith("/comments"))?.body.body;
+  expect(String(note)).toContain("escalated path requires owner review");
+  expect(String(note)).toContain("Owner approval kept: the card stays Approved.");
+  expect(f.touched).toEqual([expect.objectContaining({ field: "Progress", value: "🤖🚫" })]);
+  expect(f.writes.some((write) => write.path.endsWith("/merge"))).toBe(false);
   f.done();
 });
 

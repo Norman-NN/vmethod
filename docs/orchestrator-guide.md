@@ -307,6 +307,15 @@ changes behaviour or revamps the algorithm, re-ask the owner instead of carrying
 approval. Keep conflict-only fixes in Approved. The automatic clean-base exception remains unchanged; see
 [approval and testing](gateway.md#approval-and-testing).
 
+The conflict machinery protects that approval on its own. A conflict dispatch or
+escalation never moves a card out of **Approved**: it reports the approval it
+finds (`owner approval kept`), the escalation keeps the column, the resolution
+carries the approval when it merges, and an owner move in the same watcher cycle
+is still reported. A conflicting PR also refuses `review <pr> owner` and
+`review <pr> approve` before any write, and a handover on an active conflict
+resolution is refused the same way, so the owner's gate never loses a running
+fixer; resolve the conflict first, then hand over.
+
 After merge, complete issue relations, board state, Done-6, grading, branch/worktree
 cleanup and main-checkout fast-forward. Reinstall dependencies when `postMerge.trigger`
 changes, using `postMerge.install`, **last**, after package-owned work finishes.

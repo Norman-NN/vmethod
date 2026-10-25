@@ -2426,6 +2426,7 @@ test.each([
   "RESOLVED #24 (step 1)",
   "MERGED #24 (conflict-only, approval carried)",
   "BLOCKED #24: conflict escalated (remerge diff is not limited to conflicted hunks)",
+  "conflict on #24 resolved outside the fixer",
 ])("a terminal conflict result %s supersedes the queued card move", async (result) => {
   const f = setup();
   f.task();

@@ -1575,7 +1575,10 @@ export class EventLoop {
       return;
     }
     this.produceOnce(`conflict-result-${pr.number}-${pr.sha}`, "conflict-resolution", result);
-    if (/^(?:RESOLVED|MERGED|BLOCKED)\b/.test(result)) {
+    if (
+      /^(?:RESOLVED|MERGED|BLOCKED)\b/.test(result) ||
+      /^conflict on #\d+ resolved outside the fixer$/.test(result)
+    ) {
       remove(join(this.dir, `pending-progress-${pr.number}`));
     }
   }
