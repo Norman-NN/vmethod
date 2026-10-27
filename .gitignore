@@ -5,3 +5,4 @@ dist/
 *.tgz
 coverage/
 .vmethod/model-log.jsonl
+.claude/
