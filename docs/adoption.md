@@ -31,6 +31,11 @@ Adopt the pinned package in one reviewed change without copying shared methodolo
       worker's gh login, `GIT_SSH_COMMAND` and the worker's git identity. Give the
       orchestrator's OpenCode permissions access to the worker checkout and
       OpenCode's worktree directory (`external_directory`).
+- [ ] Install the [opencode-monitor](https://github.com/rndmcnlly/opencode-monitor)
+      plugin on the orchestrator's OpenCode, pinned to a reviewed commit
+      (`opencode plugin add github:rndmcnlly/opencode-monitor#<commit>`). It
+      delivers `watch` output live; see
+      [watching](orchestrator-guide.md#watch-without-wasting-budget).
 - [ ] Set `board.repos` to **every** repository sharing the board. Set
       `learningsPrivacy` before any submission. Keep concrete paths, hosts, commands
       and domain rules local. Port behavioral differences into reviewed project hooks.

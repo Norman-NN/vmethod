@@ -419,7 +419,15 @@ so changes to the methodology and your own cards always reach you. Follow
 [tooling budget rules](tooling-rules.md).
 
 Run `watch` unwrapped, with no filtering pipe: filtering can hide the wake line
-while still acknowledging its batch. A `quiet since the last wake-up:` digest
+while still acknowledging its batch.
+
+`watch` never exits on its own, so a plain background shell never wakes you. Run
+it as a monitored background shell with a 30-minute timeout (`background: true`,
+`monitor: true`, `timeout: 1800000` with the [opencode-monitor](adoption.md)
+plugin), so each line reaches you as it prints and the timeout is the expiry.
+The plugin stops forwarding after 100 lines while the command keeps running and
+acknowledging; treat its `[monitor stopped …]` line as an expiry: stop that
+watch and re-arm. A `quiet since the last wake-up:` digest
 always rides on a wake event. A digest without its wake line means a lost event:
 replay it with `watch --replay previous`.
 
