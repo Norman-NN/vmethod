@@ -208,6 +208,96 @@ test.each([0, 1, 2, 3])(
   5000
 );
 
+test("worker status listing prints every record and exits non-zero when a record failed", () => {
+  const f = cliFixture();
+  writeFileSync(join(f.root, "people.yaml"), stringify(people));
+  const state = join(f.root, "state", "vmethod", "example-state", "workers");
+  mkdirSync(state, { recursive: true });
+  const record = (pr: number, id: string) => ({
+    version: 1,
+    repo: "example/project",
+    pr,
+    issue: 9,
+    directory: join(f.root, ".worktrees", "9-task"),
+    id,
+    model: {
+      family: "glm",
+      model: "example/replace-glm",
+      kind: "opencode",
+      gate: "none",
+      tier: "cheap",
+    },
+    points_open: 3,
+    segments: [
+      {
+        family: "glm",
+        model: "example/replace-glm",
+        rounds: [1],
+        why: "start",
+        at: "1970-01-01T00:00:00.000Z",
+        usage: { tokens: { input: 12, output: 30, cached: 8 }, reportedUsd: 0 },
+        usd: 0.000326,
+      },
+    ],
+  });
+  writeFileSync(join(state, "31.json"), JSON.stringify(record(31, "ses_gone")));
+  writeFileSync(join(state, "41.json"), JSON.stringify(record(41, "ses_ok")));
+  writeFileSync(join(state, "42.json"), JSON.stringify(record(42, "ses_die")));
+  const preload = join(f.root, "opencode.mjs");
+  writeFileSync(
+    preload,
+    `import assert from 'node:assert/strict';
+    const actives = [{}, { ses_ok: {} }, { status: 503 }];
+    const reads = new Map([
+      ['/api/session/ses_gone', { body: { data: { id: 'ses_gone' } } }],
+      ['/api/session/ses_gone/permission', { error: { error: { message: 'Location not found: /example/project/.worktrees/9-task' } }, status: 404 }],
+      ['/api/session/ses_ok', { body: { data: { id: 'ses_ok' } } }],
+      ['/api/session/ses_ok/permission', { body: { data: [] } }],
+      ['/api/session/ses_ok/message', { body: { data: [] } }],
+    ]);
+    let identities = 0;
+    globalThis.fetch = async (url, init) => {
+      const target = new URL(String(url));
+      if (target.origin === 'https://api.github.com') {
+        assert.equal(++identities, 1);
+        assert.equal(init.method, 'POST');
+        assert.equal(JSON.parse(init.body).query, 'query GatewayIdentity { viewer { databaseId login __typename } }');
+        return Response.json({ data: { viewer: ${JSON.stringify(actor(2))} } });
+      }
+      assert.equal(target.origin, 'http://opencode.invalid');
+      assert.equal(init.headers.authorization, 'Basic ' + Buffer.from('fake-user:secret-password').toString('base64'));
+      if (target.pathname === '/api/session/active') {
+        const next = actives.shift();
+        if (next.status) {
+          return Response.json({ error: { message: 'unavailable' } }, { status: 503 });
+        }
+        return Response.json(next.body ?? next);
+      }
+      const read = reads.get(target.pathname);
+      assert.ok(read, 'Unexpected opencode GET ' + target.pathname);
+      return read.status ? Response.json(read.error, { status: read.status }) : Response.json(read.body);
+    };
+    process.on('exit', () => { assert.equal(identities, 1); assert.equal(actives.length, 0); assert.equal(reads.size, 5); });`
+  );
+  const result = f.run(["worker", "status"], ["--import", preload], {
+    VMETHOD_ROLE: "orchestrator",
+    GH_CONFIG_DIR: ghConfig("fake-token"),
+    OPENCODE_BASE_URL: "http://opencode.invalid",
+    OPENCODE_SERVER_USERNAME: "fake-user",
+    OPENCODE_SERVER_PASSWORD: "secret-password",
+    XDG_STATE_HOME: join(f.root, "state"),
+  });
+  expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(1);
+  expect(result.stderr).toBe("");
+  const lines = result.stdout.trim().split("\n");
+  expect(lines).toHaveLength(3);
+  expect(lines[0]).toContain("#31 ses_gone worktree gone");
+  expect(lines[0]).toContain("tokens input 12 output 30 cached 8");
+  expect(lines[0]).toContain("USD $0.000326");
+  expect(lines[1]).toContain("#41 ses_ok running");
+  expect(lines[2]).toMatch(/^#42 error: opencode HTTP 503 on GET \/api\/session\/active/);
+}, 5000);
+
 function peers(root: string) {
   const mermaid = join(root, "node_modules/mermaid");
   const jsdom = join(root, "node_modules/jsdom");

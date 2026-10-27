@@ -130,7 +130,12 @@ try {
           ? await taskFlowVerb(transport, verb, args, env)
           : await gatewayVerb(transport, verb, args, env);
       if (output) {
-        console.log(output);
+        if (typeof output === "string") {
+          console.log(output);
+        } else {
+          console.log(output.text);
+          process.exitCode = output.code;
+        }
       }
       break;
     }

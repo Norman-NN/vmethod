@@ -45,6 +45,7 @@ import {
   type WorkerSessionStatus,
 } from "./client.js";
 import { object, untrusted } from "./people.js";
+import type { WorkerResult } from "./transport.js";
 import { modelGateError } from "./model-gate.js";
 import { workerWorktreePrefix } from "./worker-path.js";
 import { workerFirstPrompt } from "./worker-prompt.js";
@@ -414,7 +415,9 @@ export class WorkerService {
       drainWake &&
       record.pendingConflict &&
       !status.active &&
-      !["permission-wait", "session unknown"].includes(status.reason)
+      // #286: a stopped worktree-gone session is skipped like an unknown one;
+      // its prompt would 404 against the gone location directory.
+      !["permission-wait", "session unknown", "worktree gone"].includes(status.reason)
     ) {
       if ((await this.hooks.metadata(record.pr)).ownerPaused) {
         return status;
@@ -430,7 +433,7 @@ export class WorkerService {
       drainWake &&
       record.pendingWake?.length &&
       !status.active &&
-      !["permission-wait", "session unknown"].includes(status.reason)
+      !["permission-wait", "session unknown", "worktree gone"].includes(status.reason)
     ) {
       const queued = await this.filterStaleWakes(record);
       if (!queued.length) {
@@ -618,6 +621,9 @@ export class WorkerService {
       if (status.reason === "session unknown") {
         throw new Error("session unknown; prompt not sent");
       }
+      if (status.reason === "worktree gone") {
+        throw new Error("worktree gone; prompt not sent");
+      }
       if (!status.active && status.reason !== "permission-wait") {
         return status;
       }
@@ -630,6 +636,13 @@ export class WorkerService {
   private async prompt(record: Session, text: string, delivery = "steer") {
     await this.client().request("POST", `${this.idPath(record)}/prompt`, { text, delivery });
   }
+  /** One rendered status line for a recorded session; a failed read throws. */
+  private async statusLine(pr: number): Promise<string> {
+    return this.locked(pr, async () => {
+      const record = this.read(pr);
+      return record ? this.render(record, await this.status(record)) : `#${pr} session unknown`;
+    });
+  }
   /** Execute worker management. Legacy adoption reads only configured state-root
    * directories, verifies existing opencode sessions and reports every skipped
    * entry; Claude records of the removed backend are reported with a relaunch route.
@@ -638,7 +651,7 @@ export class WorkerService {
    * `reopen <pr>` restores only OpenChamber list visibility, without restarting
    * the worker or recreating a removed worktree.
    */
-  async command(args: string[]): Promise<string> {
+  async command(args: string[]): Promise<string | WorkerResult> {
     const [verb, ref, ...rest] = args;
     if (verb === "models" || verb === "health") {
       if (args.length !== 1) {
@@ -675,11 +688,23 @@ export class WorkerService {
       if (!existsSync(this.state)) {
         return "No worker sessions";
       }
-      const lines = [];
-      for (const file of readdirSync(this.state).filter((f) => /^\d+\.json$/.test(f))) {
-        lines.push(await this.command(["status", file.slice(0, -5)]));
+      // #286: the listing handles each record on its own; a failed record
+      // prints its redacted error and every later record is still listed. The
+      // command exits non-zero when any record failed.
+      const lines: string[] = [];
+      let failed = 0;
+      for (const file of readdirSync(this.state)
+        .filter((f) => /^\d+\.json$/.test(f))
+        .sort()) {
+        const label = file.slice(0, -5);
+        try {
+          lines.push(await this.statusLine(Number(label)));
+        } catch (error) {
+          failed++;
+          lines.push(`#${label} error: ${this.redact((error as Error).message)}`);
+        }
       }
-      return lines.join("\n");
+      return failed ? { text: lines.join("\n"), code: 1 } : lines.join("\n");
     }
     if (verb === "adopt" && ref === "--from-legacy") {
       if (rest.length) {
@@ -711,10 +736,7 @@ export class WorkerService {
       if (rest.length) {
         throw new Error("Usage: worker status [pr]");
       }
-      return this.locked(pr, async () => {
-        const record = this.read(pr);
-        return record ? this.render(record, await this.status(record)) : `#${pr} session unknown`;
-      });
+      return this.statusLine(pr);
     }
     return this.locked(pr, async () => {
       if (verb === "start") {
@@ -1530,9 +1552,13 @@ export class WorkerService {
               throw error;
             }
           }
-          if (status.reason === "session unknown") {
+          if (["session unknown", "worktree gone"].includes(status.reason)) {
             if (!this.storedUsage(session)) {
-              throw this.gradeWithoutUsage(session, lastUnresolvable, lastUnresolvable?.message);
+              throw this.gradeWithoutUsage(
+                session,
+                lastUnresolvable,
+                lastUnresolvable?.message ?? status.reason
+              );
             }
             storedFallback = true;
           }

@@ -460,7 +460,7 @@ test.each([
         },
       },
     ],
-    detail: "opencode HTTP 404 on GET /api/session/ses_fake/permission: Location not found",
+    detail: "worktree gone",
   },
   {
     name: "opencode no longer knows the session",
@@ -581,6 +581,134 @@ test.each([
   expect(vi.mocked(f.hooks.gradeComment!).mock.calls[0]?.[1] ?? "").toContain(
     "USD $0.000326; usage from the last stored poll (session unresolvable)"
   );
+  f.done();
+});
+
+/** A status poll for the same session that 404s on permission after the worktree went. */
+const gonePoll: Request[] = [
+  { path: "/api/session/active", data: {} },
+  { path: "/api/session/ses_fake", data: { id: "ses_fake" } },
+  {
+    path: "/api/session/ses_fake/permission",
+    status: 404,
+    error: {
+      error: { message: "Location not found: /example/project/.worktrees/9-task" },
+    },
+  },
+];
+
+test("status reports worktree gone with the record's stored tokens and USD, creating no directory", async () => {
+  const f = fixture(
+    [...start, ...usagePoll({ input: 12, output: 30, cached: 8 }), ...gonePoll],
+    true
+  );
+  await f.service.command(["start", "31"]);
+  expect(await f.service.captureUsage(31)).toBe(true);
+  rmSync(f.directory, { recursive: true, force: true });
+  const output = await f.service.command(["status", "31"]);
+  expect(output).toContain("#31 ses_fake worktree gone");
+  expect(output).toContain("tokens input 12 output 30 cached 8");
+  expect(output).toContain("USD ≥ $0.000326");
+  expect(existsSync(f.directory)).toBe(false);
+  f.done();
+});
+
+test("a location 404 on an existing worktree still aborts a single-session status", async () => {
+  const f = fixture([...start, ...gonePoll]);
+  await f.service.command(["start", "31"]);
+  await expect(f.service.command(["status", "31"])).rejects.toThrow(
+    "opencode HTTP 404 on GET /api/session/ses_fake/permission: Location not found"
+  );
+  f.done();
+});
+
+test("merge status treats a worktree-gone recorded session as stopped", async () => {
+  const f = fixture([...start, ...gonePoll, ...gonePoll]);
+  await f.service.command(["start", "31"]);
+  rmSync(f.directory, { recursive: true, force: true });
+  expect(await f.service.mergeStatus(31, true)).toBe("stopped");
+  expect(await f.service.mergeStatus(31)).toBe("stopped");
+  f.done();
+});
+
+test("wake queues are skipped and wait refuses to prompt a worktree-gone session", async () => {
+  const f = fixture([...start, ...gonePoll, ...gonePoll]);
+  await f.service.command(["start", "31"]);
+  rmSync(f.directory, { recursive: true, force: true });
+  const saved = f.record();
+  saved.pendingWake = [wake];
+  saved.pendingConflict = {
+    model: { family: "glm", model: "fake/glm", kind: "opencode", gate: "none", tier: "cheap" },
+    base: "dev",
+  };
+  writeFileSync(join(f.root, "state/vmethod/example-state/workers/31.json"), JSON.stringify(saved));
+  expect(await f.service.watchStatus(31)).toMatchObject({
+    reason: "worktree gone",
+    active: false,
+  });
+  // The queued wake and conflict drain stay untouched: prompting would 404.
+  expect(f.record().pendingWake).toEqual([wake]);
+  expect(f.record().pendingConflict?.base).toBe("dev");
+  await expect(f.service.command(["wait", "31", "3"])).rejects.toThrow(
+    "worktree gone; prompt not sent"
+  );
+  expect(f.prompts).toHaveLength(1);
+});
+
+/** A usable record for a session whose worktree is gone, with stored usage for pricing. */
+const storedRecord = {
+  version: 1 as const,
+  repo: "example/project",
+  issue: 9,
+  directory: "",
+  id: "",
+  model: { family: "glm", model: "fake/glm", kind: "opencode", gate: "none", tier: "cheap" },
+  points_open: 3,
+  segments: [
+    { family: "glm", model: "fake/glm", rounds: [1], why: "start", at: "1970-01-01T00:00:00.000Z" },
+  ],
+};
+
+test("the all-session listing continues after a gone record, prints error lines and exits non-zero", async () => {
+  const f = fixture(
+    [
+      ...start,
+      ...usagePoll({ input: 12, output: 30, cached: 8 }),
+      ...gonePoll,
+      // #41: a good record listed after the bad one.
+      { path: "/api/session/active", data: { ses_ok: {} } },
+      { path: "/api/session/ses_ok", data: { id: "ses_ok" } },
+      { path: "/api/session/ses_ok/permission", data: [] },
+      { path: "/api/session/ses_ok/message", data: [] },
+      // #42: a record that fails for another reason keeps the listing going.
+      { path: "/api/session/active", status: 503, error: { error: { message: "unavailable" } } },
+    ],
+    true
+  );
+  await f.service.command(["start", "31"]);
+  await f.service.captureUsage(31);
+  rmSync(f.directory, { recursive: true, force: true });
+  const state = join(f.root, "state/vmethod/example-state/workers");
+  writeFileSync(
+    join(state, "41.json"),
+    JSON.stringify({ ...storedRecord, pr: 41, id: "ses_ok", directory: f.directory })
+  );
+  writeFileSync(
+    join(state, "42.json"),
+    JSON.stringify({ ...storedRecord, pr: 42, id: "ses_die", directory: f.directory })
+  );
+  const listing = await f.service.command(["status"]);
+  if (typeof listing === "string") {
+    throw new Error("The listing must report the failed record and exit non-zero");
+  }
+  expect(listing.code).toBe(1);
+  const lines = listing.text.split("\n");
+  expect(lines[0]).toContain("#31 ses_fake worktree gone");
+  expect(lines[0]).toContain("tokens input 12 output 30 cached 8");
+  expect(lines[0]).toContain("USD ≥ $0.000326");
+  expect(lines[1]).toContain("#41 ses_ok running");
+  expect(lines[2]).toMatch(/^#42 error: opencode HTTP 503 on GET \/api\/session\/active/);
+  expect(lines).toHaveLength(3);
   f.done();
 });
 
@@ -1843,7 +1971,7 @@ test("reports probe, malformed and non-file records instead of silently ignoring
   writeFileSync(join(directory, probe.key), probe.content);
   writeFileSync(join(directory, "31.json"), "{bad json");
   writeFileSync(join(directory, "32.json"), JSON.stringify({ id: "bad id" }));
-  const output = await f.service.command(["adopt", "--from-legacy"]);
+  const output = (await f.service.command(["adopt", "--from-legacy"])) as string;
   for (const key of [probe.key, "31.json", "32.json", "subdirectory"]) {
     expect(output).toContain(key);
   }

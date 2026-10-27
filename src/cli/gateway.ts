@@ -1,4 +1,9 @@
-import { context, type Transport, type CallContext } from "../gateway/transport.js";
+import {
+  context,
+  type Transport,
+  type CallContext,
+  type WorkerResult,
+} from "../gateway/transport.js";
 import type { ReadInput } from "../gateway/server.js";
 
 export async function gatewayVerb(
@@ -6,7 +11,7 @@ export async function gatewayVerb(
   verb: string,
   args: string[],
   env: NodeJS.ProcessEnv = {}
-): Promise<string> {
+): Promise<string | WorkerResult> {
   const ctx = context(env);
   switch (verb) {
     case "issue": {
