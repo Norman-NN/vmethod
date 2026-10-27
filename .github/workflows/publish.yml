@@ -37,9 +37,10 @@ jobs:
       - run: npm run format:check
       - run: npm run lint
       - run: npm run typecheck
+      # Tests run the built CLI, so build first (as ci.yml does).
+      - run: npm run build
       - run: npm test
         timeout-minutes: 5
-      - run: npm run build
       - run: npm run knip
       - run: npm run smoke
       - name: Publish with OIDC and provenance, then tag (no bump commit)
