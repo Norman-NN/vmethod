@@ -6,3 +6,4 @@ dist/
 coverage/
 .vmethod/model-log.jsonl
 .claude/
+opencode.jsonc
