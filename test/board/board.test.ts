@@ -1660,20 +1660,16 @@ test("new operations use the same orchestrator policy and board CLI transport se
     ).rejects.toThrow("denied");
   }
   expect(board.requests).toEqual([]);
-  const statusOutput = JSON.parse(
-    await gatewayVerb(transport, "board", ["status"], {
-      VMETHOD_ROLE: "orchestrator",
-    })
-  );
-  expect(statusOutput.state.version).toBe(0);
-  expect(statusOutput.mismatches[0].summary).toBe("#71: closed, Status Backlog");
-  expect(
-    JSON.parse(
-      await gatewayVerb(transport, "board", ["migrate", "--dry-run"], {
-        VMETHOD_ROLE: "orchestrator",
-      })
-    ).dryRun
-  ).toBe(true);
+  // The board verb's output stays a string; only the worker listing may carry an exit code.
+  const boardStatus = (await gatewayVerb(transport, "board", ["status"], {
+    VMETHOD_ROLE: "orchestrator",
+  })) as string;
+  expect(JSON.parse(boardStatus).state.version).toBe(0);
+  expect(JSON.parse(boardStatus).mismatches[0].summary).toBe("#71: closed, Status Backlog");
+  const migrate = (await gatewayVerb(transport, "board", ["migrate", "--dry-run"], {
+    VMETHOD_ROLE: "orchestrator",
+  })) as string;
+  expect(JSON.parse(migrate).dryRun).toBe(true);
   for (const args of [
     [],
     ["status", "--steal"],

@@ -408,9 +408,10 @@ and migrate the board as described in [worker cost accounting](learnings.md#work
 Grade reads the stored segment usage from the worker record without resolving
 the session when the delivery's merge-time capture exists (#262, see
 [task worktree cleanup](#task-worktree-cleanup)). Otherwise grade refreshes usage
-from the live session first; when the session can no longer be resolved (opencode
-404 or `session unknown`), grading falls back to the record's last stored poll and
-the GRADE output notes `usage from the last stored poll (session unresolvable)`.
+from the live session first; when the session can no longer be resolved
+(`session unknown` or the stopped `worktree gone`), grading falls back to the
+record's last stored poll and the GRADE output notes
+`usage from the last stored poll (session unresolvable)`.
 Only a record with nothing stored refuses with
 `Cannot grade #<pr>: no usage was stored …` naming the delivery instead of
 forwarding opencode's raw 404; without a stored poll its cost, usage and learning
@@ -443,14 +444,32 @@ Start and review wakes resolve the model from the PR card's Model field, never a
 body line; migrate in-flight cards before adoption.
 
 Status distinguishes running, permission-wait, quota, provider-error, idle,
-idle without reply, and session unknown. Provider errors include their diagnostic
-text. “Idle without reply” means no authenticated worker protocol comment follows
-the latest authenticated orchestrator protocol comment. A 404 is session unknown,
-not idle; network/authentication failures remain errors. Quota/provider failures
+idle without reply, session unknown, and worktree gone. Provider errors include
+their diagnostic text. “Idle without reply” means no authenticated worker
+protocol comment follows the latest authenticated orchestrator protocol comment.
+A 404 is session unknown, not idle; network/authentication failures remain
+errors. A 404 on a permission or message read is different: those reads resolve
+through the session's location directory, so a recorded session whose worktree
+no longer exists (the normal end of every removed task tree) still answers
+`GET /api/session/:id` but answers 404 `Location not found` on the later reads.
+With the recorded worktree gone and the session not listed active, status
+reports the stopped reason `worktree gone` and keeps the record's stored tokens
+and USD; with the worktree present or the session listed active, the error still
+propagates. A status read never creates a placeholder directory; `reopen <pr>`
+keeps the write-side placeholder workaround. The guards treat `worktree gone`
+as stopped, not unknown: `mergeStatus` reports `stopped` so `merge-task`
+follow-up and `worktrees` cleanup proceed, closure proceeds, queued wakes and
+conflict drains are skipped as for `session unknown`, prompt submission refuses
+with `worktree gone; prompt not sent`, and usage capture plus grading fall back
+to the record's stored usage. Quota/provider failures
 print `QUOTA <family>` plus that family's ordered `fallback` list from `models.yaml`.
 They never trigger an automatic switch. The shared `OpencodeClient.status`
 preserves the watcher's directory-only permission/failure contract; its explicit
-session-id overload returns the detailed worker-control reasons.
+session-id overload returns the detailed worker-control reasons. `worker status`
+without a PR never aborts on one failing record: each record is read and
+rendered on its own, a failed record prints `#<pr> error: <reason>` and the loop
+continues to the later records, and the command exits non-zero when any record
+failed.
 
 Use `worker send` only for permission prompts and recovery, never free-text task
 steering. When the PR card's Progress is BLOCKED, QUESTION, READY or DESIGN, every
@@ -1144,7 +1163,10 @@ Before any removal, cleanup also captures the stopped worker session's final usa
 one status poll stores tokens, USD and the model segments in the PR's worker record
 under the gateway state directory, and the record is marked captured (#262). A failed
 capture reports `usage not captured: <reason>` and retains the tree, so removal is
-retried together with the capture. Every cleanup path (merge follow-up, `worker stop
+retried together with the capture. For a record whose worktree is already gone,
+the status poll reports the stopped `worktree gone` and the capture succeeds from
+the record's stored usage, so cleanup proceeds to remove the tree. Every cleanup
+path (merge follow-up, `worker stop
 --cleanup` and `worktrees --prune`) runs the same capture through its hook.
 
 OpenCode requires the session's location directory for PATCH. If an old task's
@@ -1183,7 +1205,8 @@ such as `node_modules` and `.tmp/` may be removed. Local commits must be reachab
 from the merged PR head or the base branch (local or `origin/`); for an unmerged closed PR, only
 the base proves containment. Otherwise cleanup reports unpushed work and retains
 the tree. A live or unresolvable recorded session, unavailable commit objects or
-failed safety read also retains data; a PR without any worker record is treated
+failed safety read also retains data; a worktree-gone recorded session is
+stopped, so its cleanup proceeds. A PR without any worker record is treated
 as absent (#275), not unknown, and never retains data for a session that does not
 exist. Inspect the reported reason before retrying; do not bypass
 these checks with a manual forced removal.

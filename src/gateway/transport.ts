@@ -35,7 +35,7 @@ export interface Operations {
     input: { ref: string; value: "owner" | "orchestrator" | null };
     output: string;
   };
-  worker: { input: { args: string[] }; output: string };
+  worker: { input: { args: string[] }; output: string | WorkerResult };
   suggestModel: { input: { ref: string }; output: string };
   grade: { input: { ref: string; points?: number }; output: string };
   openTask: { input: OpenTaskInput; output: string };
@@ -132,6 +132,12 @@ export function context(env: NodeJS.ProcessEnv): CallContext {
 export interface Verdict {
   text: string;
   code: 0 | 1 | 2 | 3;
+}
+
+/** CLI-ready worker listing: the text always prints; a non-zero code fails the command. */
+export interface WorkerResult {
+  text: string;
+  code: 0 | 1;
 }
 
 export interface Transport {

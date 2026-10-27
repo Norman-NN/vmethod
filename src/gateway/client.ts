@@ -1,4 +1,11 @@
-import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
 import { join, resolve } from "node:path";
 import {
   addTokens,
@@ -699,53 +706,72 @@ export class OpencodeClient {
     if (!session.id) {
       return { reason: "session unknown", active: false };
     }
-    const permissions = opencodeData(
-      await this.request(
-        "GET",
-        `/api/session/${encodeURIComponent(id)}/permission`,
-        undefined,
-        deadline
-      )
-    );
     let usage = opencodeUsage(session);
-    const messageEnvelope = await this.request(
-      "GET",
-      `/api/session/${encodeURIComponent(id)}/message${usage ? "?limit=20" : ""}`,
-      undefined,
-      deadline
-    );
-    const messages = opencodeData(messageEnvelope);
-    if (!Array.isArray(permissions) || !Array.isArray(messages)) {
-      throw new Error("Invalid opencode status response");
-    }
-    const seen = new Set(known);
-    let pageMessages = messages;
-    let cursor = object(object(messageEnvelope).cursor).next;
-    for (let page = 0; typeof cursor === "string" && cursor; page++) {
-      if (usage && pageMessages.some((message) => seen.has(String(object(message).id)))) {
-        break;
-      }
-      if (page === 99) {
-        throw new Error("OpenCode cost history exceeds pagination limit");
-      }
-      const query = new URLSearchParams({ limit: "200", cursor });
-      const envelope = await this.request(
+    const permissions: unknown[] = [];
+    const messages: unknown[] = [];
+    // #286: the permission and message reads resolve through the session's
+    // location directory; a removed worktree answers 404 Location not found
+    // although GET /api/session/:id still succeeds. With the recorded
+    // directory gone and the session not listed active, that 404 reports a
+    // stopped session instead of aborting every later record. A status read
+    // never creates directories: setWorkState's placeholder workaround stays
+    // a write-only path.
+    try {
+      const rawPermissions = opencodeData(
+        await this.request(
+          "GET",
+          `/api/session/${encodeURIComponent(id)}/permission`,
+          undefined,
+          deadline
+        )
+      );
+      const messageEnvelope = await this.request(
         "GET",
-        `/api/session/${encodeURIComponent(id)}/message?${query}`,
+        `/api/session/${encodeURIComponent(id)}/message${usage ? "?limit=20" : ""}`,
         undefined,
         deadline
       );
-      const next = opencodeData(envelope);
-      if (!Array.isArray(next)) {
-        throw new Error("Invalid opencode cost message response");
+      const rawMessages = opencodeData(messageEnvelope);
+      if (!Array.isArray(rawPermissions) || !Array.isArray(rawMessages)) {
+        throw new Error("Invalid opencode status response");
       }
-      messages.push(...next);
-      const older = object(object(envelope).cursor).next;
-      if (!next.length || older === cursor) {
-        break;
+      permissions.push(...rawPermissions);
+      messages.push(...rawMessages);
+      const seen = new Set(known);
+      let pageMessages = rawMessages;
+      let cursor = object(object(messageEnvelope).cursor).next;
+      for (let page = 0; typeof cursor === "string" && cursor; page++) {
+        if (usage && pageMessages.some((message) => seen.has(String(object(message).id)))) {
+          break;
+        }
+        if (page === 99) {
+          throw new Error("OpenCode cost history exceeds pagination limit");
+        }
+        const query = new URLSearchParams({ limit: "200", cursor });
+        const envelope = await this.request(
+          "GET",
+          `/api/session/${encodeURIComponent(id)}/message?${query}`,
+          undefined,
+          deadline
+        );
+        const next = opencodeData(envelope);
+        if (!Array.isArray(next)) {
+          throw new Error("Invalid opencode cost message response");
+        }
+        messages.push(...next);
+        const older = object(object(envelope).cursor).next;
+        if (!next.length || older === cursor) {
+          break;
+        }
+        pageMessages = next;
+        cursor = older;
       }
-      pageMessages = next;
-      cursor = older;
+    } catch (error) {
+      const gone = this.worktreeGone(directory, id, active, error);
+      if (gone) {
+        return gone;
+      }
+      throw error;
     }
     const uniqueMessages = [
       ...new Map(
@@ -807,6 +833,25 @@ export class OpencodeClient {
     return { ...classifyTurn(latest ?? session), ...detail };
   }
 
+  /** #286: permission and message reads resolve through the session's location
+   * directory, so a removed worktree answers 404 Location not found although
+   * the session itself still exists. Without the recorded directory and
+   * without an active listing this is a stopped session, not an unknown one;
+   * a status read never creates a placeholder directory. */
+  private worktreeGone(
+    directory: string,
+    id: string,
+    active: ObjectData,
+    error: unknown
+  ): WorkerSessionStatus | undefined {
+    return error instanceof OpencodeError &&
+      error.status === 404 &&
+      !active[id] &&
+      !existsSync(directory)
+      ? { reason: "worktree gone", active: false }
+      : undefined;
+  }
+
   private redact(text: string): string {
     for (const secret of this.secrets) {
       text = text.split(secret).join("[redacted]");
@@ -835,7 +880,8 @@ export interface WorkerSessionStatus {
     | "provider-error"
     | "idle"
     | "idle without reply"
-    | "session unknown";
+    | "session unknown"
+    | "worktree gone";
   active: boolean;
   error?: string;
   title?: string;
