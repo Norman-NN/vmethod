@@ -9,6 +9,13 @@ All agent GitHub reads and writes go through named vmethod wrappers. Never call
 `gh-read` are the filtered entry points described in [Gateway](gateway.md), not
 permission to invent a fallback. If a required wrapper is absent, ask the owner.
 
+Until 1.0 locks it down, direct `gh` stays an escape hatch so a missing wrapper or a
+vmethod bug never stops work. Run it only with the identity's gh login, never a
+token: `env -u GH_TOKEN GH_CONFIG_DIR=<identity's gh dir> gh …`. vmethod does not
+use `GH_TOKEN`, and an inherited value (even a placeholder) takes precedence over
+the login and makes `gh` act as the wrong identity or fail. Each use is a gap:
+file an issue so vmethod gains the corresponding wrapper.
+
 `gh-read` permits GET and GraphQL queries only, refuses mutations, filters known
 author-bearing fields and labels output untrusted. Named write wrappers enforce
 repository scope, [posting checks](protocol.md) and auditability. Administration of
