@@ -28,9 +28,9 @@
   fallback: [sol]
 - family: fable
   tier: expensive
-  model: claude-fable-5-1
+  model: claude-code/claude-fable-5-1[1m]
   price: { input: 10.0, output: 50.0, cached: 0.25 } # openrouter anthropic/claude-fable-5.1
-  kind: claude
+  kind: opencode
   gate: owner
   fallback: [sol]
 - family: glm

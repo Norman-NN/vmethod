@@ -1,6 +1,5 @@
 import { expect, test } from "vitest";
 import {
-  claudeUsage,
   opencodeRequests,
   boardCost,
   dollars,
@@ -10,13 +9,11 @@ import {
   usageDelta,
   zeroTokens,
   requestCost,
-  claudeRequests,
   type RequestCosts,
 } from "../src/cost.js";
 import { learningReport } from "../src/learnings.js";
 import { validateYaml } from "../src/config.js";
 import session from "./fixtures/usage/opencode-session.json" with { type: "json" };
-import results from "./fixtures/usage/claude-results.json" with { type: "json" };
 
 const base = { input: 0.1, output: 0.5, cached: 0.01 };
 const tiers = [{ minPrompt: 272000, input: 0.2, output: 0.75, cached: 0.02 }];
@@ -123,23 +120,6 @@ test("totals-only and incomplete histories stay base-price lower bounds; unknown
 
 // Derived from the recorded vecs usage block; the assistant envelope/id is the
 // stream-json projection documented in issue 132, not a new raw capture.
-test("Claude assistant usage is per request, deduplicated by message.id rather than result totals", () => {
-  const first = { type: "assistant", message: { id: "msg-1", usage: results[0].usage } };
-  const second = {
-    type: "assistant",
-    message: { id: "msg-2", usage: { ...results[1].usage, cache_read_input_tokens: 300000 } },
-  };
-  const events = [first, first, second, results[0], { ...results[1], usage: second.message.usage }];
-  const requests = claudeRequests(events);
-  expect(requests).toHaveLength(2);
-  const usage = claudeUsage(events)!;
-  expect(usage.tokens).toEqual({ input: 24357, output: 6, cached: 310873 });
-  expect(usage.reportedUsd).toBeCloseTo(0.1027202, 8);
-  expect(requestCost(usage.tokens, requests, () => ({ price: base, tiers }), base)).toEqual({
-    usd: expect.closeTo(0.00967068, 8),
-    lowerBound: false,
-  });
-});
 
 test.each([
   [{ minPrompt: 0, ...base }],
@@ -231,34 +211,6 @@ test("recorded OpenCode cumulative totals use API prices, not reported subscript
     )?.tokens
   ).toEqual({ input: 6, output: 5, cached: 30 });
   expect(() => opencodeUsage({ tokens: { input: "bad" } })).toThrow("Invalid provider");
-});
-
-test("real vecs Claude results sum per-turn usage but retain the latest cumulative reported cost", () => {
-  const usage = claudeUsage([{ type: "assistant" }, ...results])!;
-  expect(usage.tokens).toEqual({ input: 24357, output: 6, cached: 26201 });
-  expect(usage.reportedUsd).toBeCloseTo(0.1027202, 8);
-  expect(dollars(usage.tokens, { input: 3, output: 15, cached: 0.3 })).toBeCloseTo(0.0810213, 8);
-});
-
-test("Claude reported totals retain the latest per session across replacement sessions", () => {
-  // Restore synthetic session ids removed by upstream sanitization; usage/cost stay recorded.
-  const usage = claudeUsage([
-    ...results.map((result) => ({ ...result, session_id: "first" })),
-    { ...results[0], session_id: "replacement" },
-  ])!;
-  expect(usage.reportedUsd).toBeCloseTo(0.1574488, 8);
-  expect(usage.tokens).toEqual({ input: 37489, output: 9, cached: 37074 });
-});
-
-test("Claude running requests count after earlier results, then reconcile when their result arrives", () => {
-  const events = results.map((result, index) => ({
-    type: "assistant",
-    message: { id: `running-${index}`, usage: result.usage },
-  }));
-  const running = [events[0], results[0], events[0], events[1], events[1]];
-  expect(claudeUsage(running)?.tokens).toEqual({ input: 24357, output: 6, cached: 26201 });
-  expect(claudeUsage([...running, results[1]])?.tokens).toEqual(claudeUsage(running)?.tokens);
-  expect(claudeUsage(events)?.tokens).toEqual(claudeUsage(running)?.tokens);
 });
 
 test("tier order is independent of configuration order and tiers require base prices", () => {

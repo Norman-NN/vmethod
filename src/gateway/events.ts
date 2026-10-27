@@ -35,7 +35,6 @@ import { stateRoot, type Digest } from "./digest.js";
 import { object, type ObjectData, type PeopleFilter, type Person } from "./people.js";
 import { repoOf, restActor, actorFields } from "./queries.js";
 import { WriteJournal } from "./write-journal.js";
-import { workerWorktree } from "./worker-path.js";
 import { taskIssueNumbers } from "./task-flow-types.js";
 import { taskHeld } from "./task-hold.js";
 import { ScopeReader, legacyScopeCutoff } from "./scope.js";
@@ -111,6 +110,8 @@ export interface LoopHost {
   filter: PeopleFilter;
   github: GitHubClient;
   workerStatus: (pr: number) => Promise<WorkerSessionStatus>;
+  /** Registered worktrees of the worker checkout by branch; a PR without one has no worker. */
+  workerTrees?: () => Promise<{ path: string; branch: string }[]>;
   workerSend?: (pr: number, text: string) => Promise<string | void>;
   workerMetric?: (pr: number, event: import("../learning-metrics.js").MetricEvent) => Promise<void>;
   resolveConflicts?: (pr: number) => Promise<string>;
@@ -400,6 +401,8 @@ export class EventLoop {
   private opencodeError = "";
   private launchedIssues = new Set<number>();
   private workerPollErrors = new Map<number, Set<string>>();
+  /** One report per distinct failure to list the worker checkout's worktrees. */
+  private workerTreeErrors = new Set<string>();
   private reportedFailures = new Map<
     string,
     { message: string; since: number; reminded: number; step: string }
@@ -3992,6 +3995,22 @@ export class EventLoop {
       return;
     }
     const costs = new Map<number, { usd: number | null; lowerBound?: boolean }>();
+    let trees: Map<string, string>;
+    try {
+      trees = new Map(
+        (await (this.host.workerTrees?.() ?? Promise.resolve([]))).map((tree) => [
+          tree.branch,
+          tree.path,
+        ])
+      );
+    } catch (error) {
+      const message = `watcher: worker worktrees unavailable: ${(error as Error).message}`;
+      if (!this.workerTreeErrors.has(message)) {
+        this.workerTreeErrors.add(message);
+        this.host.deps.report(message);
+      }
+      trees = new Map();
+    }
     for (const pr of this.inprogress) {
       if (this.muted(this.own, pr.number)) {
         continue;
@@ -4017,8 +4036,8 @@ export class EventLoop {
       if (!pr.branch) {
         continue;
       }
-      const dir = workerWorktree(this.host.root, this.host.config, pr.branch);
-      if (!existsSync(dir)) {
+      const dir = trees.get(pr.branch);
+      if (!dir) {
         continue;
       }
       let status: WorkerStatus;

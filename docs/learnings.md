@@ -257,16 +257,12 @@ old window-only caches are rescanned. Later polls stop at an already priced id
 (but still recheck its usage in case streaming counts changed).
 Input includes cache writes, output includes reasoning, and cached means cache reads. Model switches snapshot
 the cumulative baseline so each segment pays only its delta at its family's rate.
-Claude prices each `assistant` event's `message.usage`, deduplicated by `message.id`,
-including cache creation in input. Result-event usage supplies cumulative token
-totals (or assistant totals when no result exists), never request tier selection.
-When only totals or partial history remain, unmeasured tokens use base rates and
+Claude models run through OpenCode's `claude-code` provider, which reports a session
+cost of 0: cost always comes from tokens at the configured API prices. When only totals or partial history remain, unmeasured tokens use base rates and
 the board/status/GRADE cost is marked `≥ $0.00`. The model log carries
 `costCoverage: "partial"`; missing usage remains unknown. Polling and grading
 share the request-pricing function in `src/cost.ts`.
-Provider cost is retained only as `segments[].reportedUsd`. Claude's reported cost
-is cumulative over resumed turns: keep its latest value per session, never sum
-those repeated cumulative values. Its `modelUsage` totals are not per-turn usage.
+Provider cost is retained only as `segments[].reportedUsd`.
 
 `worker status` shows tokens and USD so far. `grade` snapshots final segment
 `tokens: { input, output, cached }`, segment `usd`, and delivery `usd`, and posts a

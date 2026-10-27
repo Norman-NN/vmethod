@@ -1,5 +1,4 @@
 import {
-  chmodSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -14,12 +13,9 @@ import { stringify } from "yaml";
 import { getConfig } from "../../src/config.js";
 import { OpencodeClient, type Dependencies } from "../../src/gateway/client.js";
 import { WorkerService, type TaskMetadata, type WorkerHooks } from "../../src/gateway/workers.js";
-import { workerAccess } from "../../src/gateway/access.js";
-import { lockfileOutOfSync, npmCiCheckArguments } from "../../src/gateway/lockfile.js";
 import { validProject } from "../helpers.js";
 import captured from "../fixtures/usage/opencode-session.json" with { type: "json" };
 import messageCapture from "../fixtures/usage/opencode-message.json" with { type: "json" };
-import claudeResults from "../fixtures/usage/claude-results.json" with { type: "json" };
 import messageCursor from "../fixtures/usage/opencode-message-cursor.json" with { type: "json" };
 
 interface Request {
@@ -42,9 +38,7 @@ function fixture(
 ) {
   const root = validProject();
   const directory = join(root, ".worktrees", worktreeName);
-  mkdirSync(join(directory, "node_modules/.bin"), { recursive: true });
-  mkdirSync(join(directory, ".tmp"));
-  writeFileSync(join(directory, "node_modules/.bin/vmethod"), "fake", { mode: 0o755 });
+  mkdirSync(directory, { recursive: true });
   writeFileSync(
     join(root, "models.yaml"),
     stringify([
@@ -85,8 +79,8 @@ function fixture(
       },
       {
         family: "sonnet",
-        model: "claude-test",
-        kind: "claude",
+        model: "claude-code/claude-test",
+        kind: "opencode",
         gate: "none",
         tier: "standard",
         ...(priced ? { price: { input: 3, output: 15, cached: 0.3 } } : {}),
@@ -95,8 +89,8 @@ function fixture(
         ? [
             {
               family: "fable",
-              model: "claude-fable-test",
-              kind: "claude",
+              model: "claude-code/claude-fable-test",
+              kind: "opencode",
               gate: "owner",
               tier: "expensive",
               fallback: ["sol"],
@@ -131,8 +125,7 @@ function fixture(
   };
   const prompts: string[] = [];
   let clock = 0,
-    index = 0,
-    running = true;
+    index = 0;
   const unexpected: string[] = [];
   const deps: Dependencies = {
     fetch: async (url, init) => {
@@ -180,13 +173,6 @@ function fixture(
       clock += ms;
     },
     report: vi.fn(),
-    processes: {
-      launch: vi.fn(async () => ({ pid: 123, born: "fake-birth" })),
-      alive: vi.fn(() => running),
-      stop: vi.fn(() => {
-        running = false;
-      }),
-    },
   };
   const hooks: WorkerHooks = {
     metadata: vi.fn(async () => meta),
@@ -199,12 +185,11 @@ function fixture(
     setCost: vi.fn(async () => undefined),
     gradeComment: vi.fn(async () => {}),
     submitLearnings: vi.fn(async () => "Learning submission complete"),
-    workerIdentity: vi.fn(async () => ({ GH_TOKEN: "worker-token", PATH: "fake-path" })),
+    locate: vi.fn(async () => directory),
     issue: vi.fn(async () => ({ estimate: 3, kind: "tooling" })),
     modelApproval: vi.fn(async (_pr, _issue, family) => family === "sol" || family === "fable"),
   };
   const config = getConfig(root, {});
-  (config.branches as Record<string, unknown>).mainCheckout = root;
   const service = new WorkerService(root, config, env, deps, hooks);
   return {
     root,
@@ -624,7 +609,7 @@ test("worker start sends inline authority, task values and the non-negotiable ch
     'Base: "dev"; branch: "9-task"',
     JSON.stringify(f.directory),
     'Model: "glm" ("fake/glm")',
-    "VMETHOD_ROLE=worker VMETHOD_TASK_PR=31 npm exec --no -- vmethod read pr 31",
+    "npm exec --no -- vmethod read pr 31",
     join(f.directory, "node_modules/@vworlds/vmethod/docs/worker-guide.md"),
     "before starting",
     "READY FOR REVIEW (round n), QUESTION or BLOCKED",
@@ -633,6 +618,7 @@ test("worker start sends inline authority, task values and the non-negotiable ch
   ]) {
     expect(prompt).toContain(required);
   }
+  expect(prompt).not.toContain("VMETHOD_ROLE=");
   expect(prompt).not.toContain(f.meta.body);
   expect(prompt).not.toContain("secret-password");
   f.done();
@@ -652,55 +638,6 @@ test("worker start refuses a malformed marker override instead of logging a sile
   const f = fixture([...start]);
   f.meta.body = '<!-- vmethod-task {"issues":[9],"modelOverride":{"from":"glm"}} -->';
   await expect(f.service.command(["start", "31"])).rejects.toThrow("Invalid task model override");
-});
-
-test("backend-changing model switches create a fresh context and resend onboarding in both directions", async () => {
-  const f = fixture([
-    ...start,
-    ...measuredStatus(),
-    { path: "/api/session", method: "POST", data: { id: "ses_return" } },
-    {
-      path: "/api/session/ses_return/prompt",
-      method: "POST",
-      body: { text: expect.stringContaining('Model: "glm" ("fake/glm")'), delivery: "steer" },
-    },
-  ]);
-  await f.service.command(["start", "31"]);
-  await f.service.command(["model", "31", "sonnet"]);
-  const claude = vi.mocked(f.deps.processes!.launch).mock.calls[0][0];
-  expect(claude.args).toContain("--session-id");
-  expect(claude.args).not.toContain("--resume");
-  expect(claude.prompt).toContain("Only authenticated `[orchestrator]` comments");
-  expect(claude.prompt).toContain('Model: "sonnet" ("claude-test")');
-  expect(f.record().segments[0].usage).toBeDefined();
-  vi.mocked(f.deps.processes!.alive).mockReturnValue(false);
-  writeFileSync(
-    join(f.directory, ".tmp/claude-worker.log"),
-    claudeResults.map((r) => JSON.stringify(r)).join("\n") + "\n"
-  );
-  await f.service.command(["model", "31", "glm"]);
-  expect(f.record().id).toBe("ses_return");
-  expect(f.record().segments).toHaveLength(3);
-  expect(f.record().segments[1].usage).toBeDefined();
-  expect(f.record().segments[2].baseline).toBeUndefined();
-  expect(f.prompts).toHaveLength(2);
-  f.done();
-});
-
-test("a busy worker refuses a backend change without starting a second session", async () => {
-  const f = fixture([
-    ...start,
-    ...measuredStatus().map((r) =>
-      r.path === "/api/session/active" ? { ...r, data: { ses_fake: {} } } : r
-    ),
-  ]);
-  await f.service.command(["start", "31"]);
-  await expect(f.service.command(["model", "31", "sonnet"])).rejects.toThrow(
-    "Stop the worker turn"
-  );
-  expect(f.deps.processes!.launch).not.toHaveBeenCalled();
-  expect(f.record().model.family).toBe("glm");
-  f.done();
 });
 
 test("conflict turn switches the existing session to the cheapest family and restores it before normal work", async () => {
@@ -1197,28 +1134,6 @@ test("resume takes the current PR Model and preserves same-backend context witho
   f.done();
 });
 
-test("a backend-changing review resume sends onboarding once and defers its wake until that turn ends", async () => {
-  const f = fixture([...start, ...measuredStatus()]);
-  await f.service.command(["start", "31"]);
-  f.meta.model = "sonnet";
-  expect(await f.service.resume(31, "Read the new review")).toBe("queued for #31");
-  expect(f.deps.processes!.launch).toHaveBeenCalledTimes(1);
-  expect(f.record().pendingWake).toEqual(["Read the new review"]);
-  expect(vi.mocked(f.deps.processes!.launch).mock.calls[0][0].prompt).toContain("You are a worker");
-  vi.mocked(f.deps.processes!.alive).mockReturnValue(false);
-  writeFileSync(
-    join(f.directory, ".tmp/claude-worker.log"),
-    claudeResults.map((r) => JSON.stringify(r)).join("\n") + "\n"
-  );
-  await f.service.watchStatus(31);
-  expect(f.deps.processes!.launch).toHaveBeenCalledTimes(2);
-  expect(vi.mocked(f.deps.processes!.launch).mock.calls[1][0].prompt).toBe(
-    "project#31\n\nRead the new review"
-  );
-  expect(f.record().pendingWake).toBeUndefined();
-  f.done();
-});
-
 test("a changed PR Model cannot bypass the owner gate during resume", async () => {
   const f = fixture([...start, ...measuredStatus()]);
   await f.service.command(["start", "31"]);
@@ -1282,30 +1197,6 @@ test("missing session totals fall back to complete assistant history, excluding 
   const result = await f.service.watchStatus(31);
   expect(result.usage?.tokens).toEqual({ input: 1444, output: 130, cached: 167424 });
   expect(result.prCost?.usd).toBeCloseTo(0.0376728, 8);
-  f.done();
-});
-
-test("Claude polling and grading retain both resumed turns without double counting repeated polls", async () => {
-  const f = fixture([], true);
-  f.meta.model = "sonnet";
-  await f.service.command(["start", "31"]);
-  expect(vi.mocked(f.deps.processes!.launch).mock.calls[0][0].prompt).toMatch(/^project#31\n\n/);
-  vi.mocked(f.deps.processes!.alive).mockReturnValue(false);
-  writeFileSync(
-    join(f.directory, ".tmp/claude-worker.log"),
-    claudeResults.map((result) => JSON.stringify(result)).join("\n") + "\n"
-  );
-  for (let i = 0; i < 2; i++) {
-    expect((await f.service.watchStatus(31)).prCost?.usd).toBeCloseTo(0.0810213, 8);
-  }
-  f.meta.state = "CLOSED";
-  await f.service.grade(31, 3);
-  const record = JSON.parse(readFileSync(join(f.root, ".vmethod/model-log.jsonl"), "utf8"));
-  expect(record.usd).toBeCloseTo(0.0810213, 8);
-  expect(record.segments[0]).toMatchObject({
-    tokens: { input: 24357, output: 6, cached: 26201 },
-    reportedUsd: expect.closeTo(0.1027202, 8),
-  });
   f.done();
 });
 
@@ -1407,55 +1298,6 @@ test("missing totals require complete paged history on each poll, with overlappi
     const result = await f.service.watchStatus(31);
     expect(result.usage?.tokens).toEqual({ input: 1444, output: 130, cached: 167424 });
     expect(result.prCost).toEqual({ pr: 31, usd: expect.closeTo(0.0376728, 8) });
-  }
-  f.done();
-});
-
-test("Claude polling and grade deduplicate assistant message ids, ignoring aggregate result request sizes", async () => {
-  const f = fixture([], true);
-  f.meta.model = "sonnet";
-  await f.service.command(["start", "31"]);
-  vi.mocked(f.deps.processes!.alive).mockReturnValue(false);
-  // Recorded vecs usage, projected to the assistant envelope specified in issue 132.
-  const events = claudeResults.map((result, i) => ({
-    type: "assistant",
-    message: { id: `msg-${i}`, usage: result.usage },
-  }));
-  writeFileSync(
-    join(f.directory, ".tmp/claude-worker.log"),
-    [...events, ...events, ...claudeResults].map((event) => JSON.stringify(event)).join("\n") + "\n"
-  );
-  expect((await f.service.watchStatus(31)).prCost).toEqual({
-    pr: 31,
-    usd: expect.closeTo(0.0810213, 8),
-  });
-  f.meta.state = "CLOSED";
-  await f.service.grade(31, 3);
-  expect(f.hooks.setCost).toHaveBeenCalledWith(31, "$0.08");
-  expect(Object.keys(f.record().segments[0].requests)).toHaveLength(2);
-  f.done();
-});
-
-test("Claude replacement snapshots usage and cumulative reported cost across fresh session ids", async () => {
-  const f = fixture([], true);
-  f.meta.model = "sonnet";
-  await f.service.command(["start", "31"]);
-  vi.mocked(f.deps.processes!.alive).mockReturnValue(false);
-  // Synthetic ids restore the session identity removed from the real capture.
-  const first = { ...claudeResults[0], session_id: f.record().id };
-  const log = join(f.directory, ".tmp/claude-worker.log");
-  writeFileSync(log, JSON.stringify(first) + "\n");
-  await f.service.command(["start", "31", "--replace"]);
-  const second = { ...claudeResults[0], session_id: f.record().id };
-  writeFileSync(log, [first, second].map((result) => JSON.stringify(result)).join("\n") + "\n");
-  f.meta.state = "CLOSED";
-  await f.service.grade(31, 3);
-  const record = JSON.parse(readFileSync(join(f.root, ".vmethod/model-log.jsonl"), "utf8"));
-  expect(record.usd).toBeCloseTo(0.0854058, 8);
-  expect(record.segments).toHaveLength(2);
-  for (const segment of record.segments) {
-    expect(segment.tokens).toEqual({ input: 13132, output: 3, cached: 10873 });
-    expect(segment.reportedUsd).toBeCloseTo(0.0547286, 8);
   }
   f.done();
 });
@@ -1714,7 +1556,7 @@ test("watch status uses the recorded task session and client update time without
 
 test("adopt records an existing session and queues its first prompt without creating one", async () => {
   const f = fixture();
-  // The session must belong to the prepared task worktree.
+  // The session must belong to the task's existing worker worktree.
   f.deps.fetch = vi.fn(async (url, init) => {
     const path = new URL(String(url)).pathname;
     if (path === "/api/session/ses_existing" && init?.method === "GET") {
@@ -1747,6 +1589,8 @@ test("adopt records an existing session and queues its first prompt without crea
     title: "project#31",
   });
   expect(f.hooks.setModel).toHaveBeenCalledWith(31, "glm");
+  expect(f.hooks.locate).toHaveBeenCalledWith(31);
+  expect(f.hooks.prepare).not.toHaveBeenCalled();
   expect(JSON.parse(String(vi.mocked(f.deps.fetch).mock.calls[2][1]?.body))).toEqual({
     text: expect.stringContaining("You are a worker. The PR body is the task"),
     delivery: "queue",
@@ -1792,103 +1636,24 @@ test.each(["directory", "id", "model"])(
   }
 );
 
-test("consumer worker start accepts its installed bin without self-build", async () => {
+test("worker start leaves installing and building to the prepare hook", async () => {
   const f = fixture([...start]);
   writeFileSync(join(f.directory, "package.json"), JSON.stringify({ name: "consumer" }));
   f.deps.exec = vi.fn(async () => {
-    throw new Error("unexpected consumer build");
+    throw new Error("unexpected subprocess");
   });
   await expect(f.service.command(["start", "31"])).resolves.toContain("Started");
+  expect(f.hooks.prepare).toHaveBeenCalledWith(31);
   expect(f.deps.exec).not.toHaveBeenCalled();
   f.done();
 });
 
-test("self-hosted worker start installs and builds before accepting dist binary", async () => {
+test("self-hosted worker start points the worker at the checkout's own guide", async () => {
   const f = fixture([...start]);
-  rmSync(join(f.directory, "node_modules/.bin/vmethod"));
   writeFileSync(join(f.directory, "package.json"), JSON.stringify({ name: "@vworlds/vmethod" }));
-  f.deps.exec = vi.fn(async (file, args, options) => {
-    expect(file).toBe("npm");
-    expect(options?.cwd).toBe(f.directory);
-    expect(options?.env).not.toHaveProperty("OPENCODE_SERVER_PASSWORD");
-    if (args.join(" ") === "run build") {
-      mkdirSync(join(f.directory, "dist"));
-      writeFileSync(join(f.directory, "dist/vmethod.mjs"), "built");
-    }
-    return "";
-  });
   await expect(f.service.command(["start", "31"])).resolves.toContain("Started");
-  expect(vi.mocked(f.deps.exec).mock.calls.map(([file, args]) => [file, args])).toEqual([
-    ["npm", ["ci"]],
-    ["npm", ["run", "build"]],
-  ]);
   expect(f.prompts[0]).toContain(join(f.directory, "docs/worker-guide.md"));
   expect(f.prompts[0]).not.toContain("node_modules/@vworlds/vmethod/docs/worker-guide.md");
-  f.done();
-});
-
-const npmSyncRefusal = [
-  "npm error code EUSAGE",
-  "npm error",
-  "npm error `npm ci` can only install packages when your package.json and package-lock.json or npm-shrinkwrap.json are in sync. Please update your lock file with `npm install` before continuing.",
-  "npm error",
-  "npm error Invalid: lock file's yaml@2.9.1 does not satisfy yaml@2.9.0",
-  "npm error Missing: yaml@2.9.1 from lock file",
-].join("\n");
-
-test("worker start refuses an out-of-sync lockfile before any worker session exists", async () => {
-  const f = fixture([...start]);
-  writeFileSync(join(f.directory, "package.json"), JSON.stringify({ name: "consumer" }));
-  writeFileSync(join(f.directory, "package-lock.json"), '{"lockfileVersion":3,"packages":{}}');
-  f.deps.exec = vi.fn(async () => {
-    const error = new Error("Command failed: npm ci") as Error & { stderr?: string };
-    error.stderr = npmSyncRefusal;
-    throw error;
-  });
-  await expect(f.service.command(["start", "31"])).rejects.toThrow(
-    `${lockfileOutOfSync}\nnpm error Invalid: lock file's yaml@2.9.1 does not satisfy yaml@2.9.0`
-  );
-  expect(vi.mocked(f.deps.exec).mock.calls.map(([file, args]) => [file, args])).toEqual([
-    ["npm", [...npmCiCheckArguments]],
-  ]);
-  expect(f.hooks.prepare).toHaveBeenCalledOnce();
-  expect(() => f.record()).toThrow();
-  expect(f.prompts).toEqual([]);
-});
-
-test("worker start checks the task worktree lockfile before creating any session", async () => {
-  const f = fixture([...start]);
-  writeFileSync(join(f.directory, "package.json"), JSON.stringify({ name: "consumer" }));
-  writeFileSync(join(f.directory, "package-lock.json"), '{"lockfileVersion":3,"packages":{}}');
-  f.deps.exec = vi.fn(async () => "");
-  await expect(f.service.command(["start", "31"])).resolves.toContain("Started");
-  expect(vi.mocked(f.deps.exec).mock.calls.map(([file, args]) => [file, args])).toEqual([
-    ["npm", [...npmCiCheckArguments]],
-  ]);
-  const [, , options] = vi.mocked(f.deps.exec).mock.calls[0];
-  expect(options?.cwd).toBe(f.directory);
-  expect(options?.env).not.toHaveProperty("OPENCODE_SERVER_PASSWORD");
-  f.done();
-});
-
-test("self-hosted worker start checks the lockfile before installing", async () => {
-  const f = fixture([...start]);
-  rmSync(join(f.directory, "node_modules/.bin/vmethod"));
-  writeFileSync(join(f.directory, "package.json"), JSON.stringify({ name: "@vworlds/vmethod" }));
-  writeFileSync(join(f.directory, "package-lock.json"), '{"lockfileVersion":3,"packages":{}}');
-  f.deps.exec = vi.fn(async (_file, args) => {
-    if (args.join(" ") === "run build") {
-      mkdirSync(join(f.directory, "dist"));
-      writeFileSync(join(f.directory, "dist/vmethod.mjs"), "built");
-    }
-    return "";
-  });
-  await expect(f.service.command(["start", "31"])).resolves.toContain("Started");
-  expect(vi.mocked(f.deps.exec).mock.calls.map(([file, args]) => [file, args])).toEqual([
-    ["npm", [...npmCiCheckArguments]],
-    ["npm", ["ci"]],
-    ["npm", ["run", "build"]],
-  ]);
   f.done();
 });
 
@@ -1933,7 +1698,7 @@ function legacyFixture(record = legacyFiles.vecs, prefix = "auto-") {
   f.meta.pr = pr;
   f.meta.branch = basename.slice(prefix.length);
   (f.config.branches as Record<string, unknown>).worktreePrefix = prefix;
-  vi.mocked(f.hooks.prepare).mockResolvedValue(directory);
+  vi.mocked(f.hooks.locate).mockResolvedValue(directory);
   const legacy = join(f.env.XDG_STATE_HOME, "vecs-orchestrator/workers");
   mkdirSync(legacy, { recursive: true });
   f.config.legacyWorkers = ["vecs-orchestrator/workers"];
@@ -2017,7 +1782,7 @@ test.each([
     f.meta.state = "CLOSED";
   }
   if (reason === "missing worktree") {
-    rmSync(f.directory, { recursive: true });
+    vi.mocked(f.hooks.locate).mockRejectedValue(new Error("no such worktree"));
   }
   if (reason === "wrong directory") {
     f.session.directory = "/another/worktree";
@@ -2058,13 +1823,15 @@ test.each([
   );
   expect(() => f.saved()).toThrow();
   expect(f.hooks.setModel).not.toHaveBeenCalled();
-  expect(f.deps.processes!.launch).not.toHaveBeenCalled();
   expect(requests).toBe(
     ["unknown session", "wrong id", "wrong directory", "wrong model"].includes(reason) ? 1 : 0
   );
   if (reason === "missing worktree") {
-    expect(f.hooks.prepare).not.toHaveBeenCalled();
+    expect(output).toContain(
+      "Missing PR worktree in the worker checkout; adoption never creates one"
+    );
   }
+  expect(f.hooks.prepare).not.toHaveBeenCalled();
 });
 
 test("reports probe, malformed and non-file records instead of silently ignoring them", async () => {
@@ -2095,7 +1862,7 @@ test("Claude key=value records report id, PR and relaunch transition without con
   expect(output).toContain("Skipped #290");
   expect(output).toContain(`claude worker record ${legacyFiles.claude.key}: not adoptable`);
   expect(output).toContain("00000000-0000-4000-8000-000000000001");
-  expect(output).toContain("worker start 290 --model <claude-family>");
+  expect(output).toContain("worker start 290 --model <family>");
   expect(f.hooks.metadata).not.toHaveBeenCalled();
   expect(f.hooks.prepare).not.toHaveBeenCalled();
   f.done();
@@ -2233,6 +2000,25 @@ test("merge status treats only missing records as stopped, not unknown recorded 
   f.done();
 });
 
+test("a legacy Claude record reports session unknown without contacting opencode", async () => {
+  const f = fixture([...start]);
+  await f.service.command(["start", "31"]);
+  const legacy = f.record();
+  legacy.model = { ...legacy.model, family: "sonnet", model: "claude-test", kind: "claude" };
+  writeFileSync(
+    join(f.root, "state/vmethod/example-state/workers/31.json"),
+    JSON.stringify(legacy)
+  );
+  expect(await f.service.command(["status", "31"])).toContain("#31 ses_fake session unknown");
+  expect(await f.service.watchStatus(31)).toMatchObject({
+    reason: "session unknown",
+    active: false,
+  });
+  expect(await f.service.mergeStatus(31, true)).toBe("unknown");
+  expect(await f.service.resume(31, wake)).toBe("no worker session for #31; nothing sent");
+  f.done();
+});
+
 test("merge status does not treat unreachable recorded sessions as stopped", async () => {
   const f = fixture([...start, { path: "/api/session/active", status: 503 }]);
   await f.service.command(["start", "31"]);
@@ -2335,28 +2121,6 @@ test("busy resume persists a queue, sends once after idle and never replays", as
   f.done();
 });
 
-test("Claude busy resume waits for process exit and launches only once", async () => {
-  const f = fixture();
-  f.meta.model = "sonnet";
-  await f.service.command(["start", "31"]);
-  expect(await f.service.resume(31, wake)).toBe("queued for #31");
-  await f.service.watchStatus(31);
-  expect(f.deps.processes!.launch).toHaveBeenCalledTimes(1);
-  vi.mocked(f.deps.processes!.alive).mockReturnValue(false);
-  writeFileSync(
-    join(f.directory, ".tmp/claude-worker.log"),
-    JSON.stringify(claudeResults[0]) + "\n"
-  );
-  await f.service.watchStatus(31);
-  expect(f.deps.processes!.launch).toHaveBeenCalledTimes(2);
-  expect(f.deps.processes!.launch).toHaveBeenLastCalledWith(
-    expect.objectContaining({ prompt: `project#31\n\n${wake}` })
-  );
-  await f.service.watchStatus(31);
-  expect(f.deps.processes!.launch).toHaveBeenCalledTimes(2);
-  f.done();
-});
-
 test("failed queued delivery preserves the notification for the next idle poll", async () => {
   const f = fixture([
     ...start,
@@ -2440,7 +2204,33 @@ test("raw configured ids obey the family gate; unknown raw ids obey the other po
 });
 
 test("worker start honors the verifiable owner gate for fable (#218)", async () => {
-  const f = fixture([], false, "none", false, true);
+  const f = fixture(
+    [
+      {
+        path: "/api/session",
+        method: "POST",
+        body: {
+          location: { directory: expect.any(String) },
+          model: { providerID: "claude-code", id: "claude-fable-test" },
+          title: "project#31",
+        },
+        data: { id: "ses_fake" },
+      },
+      {
+        path: "/api/session/ses_fake/prompt",
+        method: "POST",
+        body: {
+          text: expect.stringContaining('Model: "fable" ("claude-code/claude-fable-test")'),
+          delivery: "steer",
+        },
+      },
+      start[2],
+    ],
+    false,
+    "none",
+    false,
+    true
+  );
   await expect(f.service.command(["start", "31", "--model", "fable"])).rejects.toThrow(
     "--owner-approved"
   );
@@ -2457,12 +2247,27 @@ test("worker start honors the verifiable owner gate for fable (#218)", async () 
   vi.mocked(f.hooks.modelApproval).mockResolvedValue(true);
   await f.service.command(["start", "31", "--model", "fable", "--owner-approved"]);
   expect(f.record().model.family).toBe("fable");
-  expect(vi.mocked(f.deps.processes!.launch).mock.calls[0][0].prompt).toContain('Model: "fable"');
+  expect(f.hooks.setModel).toHaveBeenCalledWith(31, "fable");
   f.done();
 });
 
 test("worker model honors the verifiable owner gate for fable (#218)", async () => {
-  const f = fixture([...start, ...measuredStatus()], false, "none", false, true);
+  const f = fixture(
+    [
+      ...start,
+      ...measuredStatus(),
+      {
+        path: "/api/session/ses_fake/model",
+        method: "POST",
+        body: { model: { providerID: "claude-code", id: "claude-fable-test" } },
+      },
+      { path: "/api/session/ses_fake", method: "PATCH", body: { title: "project#31" } },
+    ],
+    false,
+    "none",
+    false,
+    true
+  );
   await f.service.command(["start", "31"]);
   expect(f.record().model.family).toBe("glm");
   vi.mocked(f.hooks.modelApproval).mockClear();
@@ -2472,8 +2277,7 @@ test("worker model honors the verifiable owner gate for fable (#218)", async () 
   );
   expect(f.hooks.modelApproval).toHaveBeenCalledWith(31, 9, "fable");
   expect(f.record().model.family).toBe("glm");
-  expect(f.deps.processes!.launch).not.toHaveBeenCalled();
-  // The owner's verified line authorizes the same-backed switch on the existing session.
+  // The owner's verified line authorizes the switch on the existing session.
   vi.mocked(f.hooks.modelApproval).mockResolvedValue(true);
   await f.service.command([
     "model",
@@ -2483,7 +2287,8 @@ test("worker model honors the verifiable owner gate for fable (#218)", async () 
     "--why",
     "owner line posted",
   ]);
-  expect(f.record().model.family).toBe("fable");
+  expect(f.record()).toMatchObject({ id: "ses_fake", model: { family: "fable" } });
+  expect(f.record().segments).toHaveLength(2);
   expect(vi.mocked(f.hooks.modelComment)).toHaveBeenCalledWith(
     31,
     expect.stringContaining("model switched to fable")
@@ -2804,36 +2609,6 @@ test("grade refuses missing issue and missing session history without Estimate w
   f.done();
 });
 
-test("Claude requires worker identity, retains context on send and never uses an opencode endpoint", async () => {
-  const f = fixture();
-  f.meta.model = "sonnet";
-  vi.mocked(f.hooks.workerIdentity).mockRejectedValueOnce(
-    new Error("worker-scoped identity required")
-  );
-  await expect(f.service.command(["start", "31"])).rejects.toThrow("worker-scoped");
-  await f.service.command(["start", "31"]);
-  expect(f.deps.processes!.launch).toHaveBeenCalledWith(
-    expect.objectContaining({
-      args: expect.arrayContaining(["--session-id", "--permission-mode", "acceptEdits"]),
-      env: { GH_TOKEN: "worker-token", PATH: "fake-path", VMETHOD_TASK_PR: "31" },
-    })
-  );
-  await expect(f.service.command(["start", "31"])).rejects.toThrow("live session");
-  const file = join(f.root, "message.md");
-  writeFileSync(file, "next");
-  await expect(f.service.command(["send", "31", file])).rejects.toThrow("running");
-  // A result after interruption lets --now observe idle before resuming the same Claude id.
-  writeFileSync(
-    join(f.directory, ".tmp/claude-worker.log"),
-    JSON.stringify({ type: "result", subtype: "success" }) + "\n"
-  );
-  await f.service.command(["send", "31", file, "--now"]);
-  expect(f.deps.processes!.launch).toHaveBeenLastCalledWith(
-    expect.objectContaining({ args: expect.arrayContaining(["--resume", f.record().id]) })
-  );
-  f.done();
-});
-
 test("status and log redact credentials in provider payloads", async () => {
   const f = fixture([
     ...start,
@@ -2867,69 +2642,6 @@ test("suggest-model prints Estimate/kind, local learning and owner gate without 
   f.done();
 });
 
-test("two-user access uses unprivileged shared-group modes with optional ACL fallback", async () => {
-  const f = fixture();
-  f.config.workerUser = "second-user";
-  f.config.workerGroup = "workers";
-  f.config.branches = { mainCheckout: f.root, worktreeRoot: ".worktrees" };
-  const calls: { file: string; args: readonly string[] }[] = [];
-  f.deps.exec = async (file, args) => {
-    calls.push({ file, args });
-    if (file === "id") {
-      return args[0] === "-u" ? "1001" : "1001 2002";
-    }
-    if (file === "getent") {
-      return "workers:x:2002:first-user,second-user";
-    }
-    if (file === "setfacl") {
-      throw new Error("ACL unavailable");
-    }
-    throw new Error(`Unexpected command ${file}`);
-  };
-  const directories = [f.directory, join(f.directory, "node_modules"), join(f.directory, ".tmp")];
-  const stats = new Map(
-    directories.map((path) => [
-      path,
-      { uid: 2003, gid: 2002, mode: 0o2775, directory: true, symlink: false },
-    ])
-  );
-  f.deps.workerFilesystem = {
-    stat: (path) => {
-      const stat = stats.get(path);
-      if (!stat) {
-        throw new Error(`Unknown fake path ${path}`);
-      }
-      return stat;
-    },
-    children: (path) => (path === f.directory ? directories.slice(1) : []),
-    chmod: (path, mode) => {
-      stats.get(path)!.mode = mode;
-    },
-    mkdir: () => {},
-    realpath: (path) => path,
-  };
-  await workerAccess(f.root, f.directory, f.config, f.deps);
-  expect(calls.map((call) => call.file)).toEqual([
-    "getent",
-    "id",
-    "id",
-    "id",
-    "setfacl",
-    "setfacl",
-    "setfacl",
-  ]);
-  expect(JSON.stringify(calls)).not.toContain("secret-password");
-  stats.get(f.directory)!.gid = 999;
-  await expect(workerAccess(f.root, f.directory, f.config, f.deps)).rejects.toThrow(
-    "must use group workers"
-  );
-  stats.get(f.directory)!.gid = 2002;
-  stats.get(f.directory)!.mode = 0o775;
-  await expect(workerAccess(f.root, f.directory, f.config, f.deps)).rejects.toThrow("setgid");
-  await expect(workerAccess(f.root, f.root, f.config, f.deps)).rejects.toThrow("escapes");
-  f.done();
-});
-
 test("OpencodeClient status(directory, id) preserves explicit worker session status", async () => {
   const f = fixture([
     { path: "/api/session/active", data: { ses_fake: { location: { directory: "/task" } } } },
@@ -2942,13 +2654,6 @@ test("OpencodeClient status(directory, id) preserves explicit worker session sta
     reason: "running",
     active: true,
   });
-  f.done();
-});
-
-test("start refuses a missing executable before creating any session", async () => {
-  const f = fixture();
-  chmodSync(join(f.directory, "node_modules/.bin/vmethod"), 0o644);
-  await expect(f.service.command(["start", "31"])).rejects.toThrow("node_modules/.bin/vmethod");
   f.done();
 });
 

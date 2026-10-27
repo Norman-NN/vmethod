@@ -15,8 +15,9 @@ locally.
   issues, plans work, dispatches worker agents, reviews and merges their PRs. This repo's
   orchestrator is **Vimes**.
 - **Worker:** an agent that takes one task, delivers one PR, and iterates on review feedback.
-  vmethod's workers are opencode sessions reached through the `OPENCODE_*` env vars; they act
-  on GitHub as `alfredjpr79`.
+  vmethod's workers are opencode sessions reached through the `OPENCODE_*` env vars, running in
+  worktrees of their own checkout (`workerCheckout`, `~/src/vmethod-worker`); they act on GitHub
+  as `alfredjpr79`. This checkout is the orchestrator's only.
 - **Merging:** the orchestrator merges with the owner's approval; it may merge unimportant PRs
   (typos, its own bootstrap helpers) on its own review.
 - **Collaborator:** anyone else who opens issues or PRs, including other projects'

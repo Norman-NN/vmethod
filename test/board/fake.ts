@@ -1,5 +1,5 @@
 import { expect } from "vitest";
-import { fixture } from "../helpers.js";
+import { fixture, ghConfig } from "../helpers.js";
 import { Kind, parse, visit } from "graphql";
 import { BoardService } from "../../src/gateway/board.js";
 import { GitHubClient, type Dependencies } from "../../src/gateway/client.js";
@@ -75,7 +75,6 @@ export class FakeBoard {
       repos: ["example/project"] as string[],
       announce: undefined as string | undefined,
     },
-    credentials: { githubToken: "FAKE_TOKEN" },
     gateway: { maxRetries: 0 },
   };
   deps: Dependencies = {
@@ -657,7 +656,7 @@ export class FakeBoard {
       this.config,
       new GitHubClient(
         this.config,
-        { FAKE_TOKEN: "offline", XDG_STATE_HOME: this.state },
+        { GH_CONFIG_DIR: ghConfig("offline"), XDG_STATE_HOME: this.state },
         this.deps
       ),
       this.deps,

@@ -87,28 +87,6 @@ export function opencodeRequests(messages: readonly unknown[]): CostRequest[] {
   });
 }
 
-/** Claude stream-json can repeat an assistant message for multiple content blocks. */
-export function claudeRequests(events: readonly unknown[]): CostRequest[] {
-  const requests = new Map<string, CostRequest>();
-  for (const event of events) {
-    const source = object(event);
-    const message = object(source.message);
-    if (source.type !== "assistant" || typeof message.id !== "string" || !message.usage) {
-      continue;
-    }
-    const usage = object(message.usage);
-    requests.set(message.id, {
-      id: message.id,
-      tokens: {
-        input: count(usage.input_tokens) + count(usage.cache_creation_input_tokens ?? 0),
-        output: count(usage.output_tokens),
-        cached: count(usage.cache_read_input_tokens ?? 0),
-      },
-    });
-  }
-  return [...requests.values()];
-}
-
 export const zeroTokens = (): Tokens => ({ input: 0, output: 0, cached: 0 });
 
 /** Add normalized counts without conflating cached input with uncached input. */
@@ -217,53 +195,6 @@ export function opencodeUsage(value: unknown, fallback?: Usage): Usage | undefin
         : { reportedUsd: fallback.reportedUsd }
       : { reportedUsd: count(source.cost) }),
   };
-}
-
-/** Sum Claude result usage (assistant fallback); reported USD is latest per session, never summed per turn. */
-export function claudeUsage(results: readonly unknown[]): Usage | undefined {
-  let total: Usage | undefined;
-  const reported = new Map<string, number | undefined>();
-  const completed = new Set<string>();
-  const seen = new Set<string>();
-  for (const value of results) {
-    const result = object(value);
-    const message = object(result.message);
-    if (result.type === "assistant" && typeof message.id === "string") {
-      seen.add(message.id);
-    }
-    if (result.type !== "result" || result.usage === undefined) {
-      continue;
-    }
-    for (const id of seen) {
-      completed.add(id);
-    }
-    const usage = object(result.usage);
-    const tokens = {
-      input: count(usage.input_tokens) + count(usage.cache_creation_input_tokens),
-      output: count(usage.output_tokens),
-      cached: count(usage.cache_read_input_tokens),
-    };
-    reported.set(
-      typeof result.session_id === "string" ? result.session_id : "",
-      result.total_cost_usd === undefined ? undefined : count(result.total_cost_usd)
-    );
-    const reportedUsd = sumUsd([...reported.values()]);
-    total = {
-      tokens: addTokens(total?.tokens ?? zeroTokens(), tokens),
-      ...(reportedUsd === null ? {} : { reportedUsd }),
-    };
-  }
-  const requests = claudeRequests(results).filter((request) => !completed.has(request.id));
-  if (requests.length) {
-    total = {
-      ...total,
-      tokens: requests.reduce(
-        (sum, request) => addTokens(sum, request.tokens),
-        total?.tokens ?? zeroTokens()
-      ),
-    };
-  }
-  return total;
 }
 
 function count(value: unknown): number {

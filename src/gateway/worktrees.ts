@@ -1,10 +1,11 @@
 import { existsSync, realpathSync } from "node:fs";
-import { relative, resolve, sep } from "node:path";
+import { basename, join, resolve } from "node:path";
 import type { Config } from "../config.js";
 import type { Dependencies } from "./client.js";
 import { GitTransport, validateBranch } from "./git.js";
 import { object } from "./people.js";
-import { workerWorktreePrefix } from "./worker-path.js";
+import { WorkerWorktrees } from "./worker-launch.js";
+import { workerWorktreeName } from "./worker-path.js";
 
 /** Same-repository task metadata, authenticated by the gateway before cleanup. */
 export interface WorktreeTask {
@@ -16,12 +17,12 @@ export interface WorktreeTask {
 }
 
 /** Shared, conservative cleanup for merge recovery, explicit stop and backlog pruning.
- * Unknown sessions/objects and unsafe paths retain data; ignored files alone may be removed.
+ * Task worktrees live in the worker checkout; OpenCode removes them, git there deletes
+ * the branch. Unknown sessions/objects and unsafe paths retain data; ignored files
+ * alone may be removed.
  */
 export class WorktreeService {
-  private main: string;
-  private parent: string;
-  private prefix: string;
+  private workerTrees?: WorkerWorktrees;
 
   constructor(
     private root: string,
@@ -31,16 +32,24 @@ export class WorktreeService {
     private status: (pr: number) => Promise<"live" | "stopped" | "unknown">,
     private closeSession?: (pr: number) => Promise<boolean>,
     private captureUsage?: (pr: number) => Promise<boolean>
-  ) {
-    const branches = object(config.branches);
-    this.main = resolve(String(branches.mainCheckout ?? root));
-    this.parent = resolve(this.main, String(branches.worktreeRoot ?? ".worktrees"));
-    this.prefix = workerWorktreePrefix(config);
+  ) {}
+
+  /** Read lazily: verbs that never touch worker worktrees need no worker checkout. */
+  private get worker(): WorkerWorktrees {
+    return (this.workerTrees ??= new WorkerWorktrees(this.root, this.config, this.env, this.deps));
   }
 
-  /** List only registered prefixed trees inside this project's root. */
+  /** Without a worker checkout no task worktree or task branch can exist to clean. */
+  private get cloned(): boolean {
+    return existsSync(join(this.worker.checkout, ".git"));
+  }
+
+  /** Task worktrees of the worker checkout: registered, on a branch, named for it. */
   async trees(): Promise<{ path: string; branch: string }[]> {
-    return (await this.registered()).filter((tree) => this.safePath(tree.path, tree.branch));
+    if (!this.cloned) {
+      return [];
+    }
+    return (await this.worker.registered()).filter((tree) => this.safePath(tree.path, tree.branch));
   }
 
   /** Print sizes/reasons and optionally remove eligible trees and close their
@@ -86,7 +95,6 @@ export class WorktreeService {
   /** Return false for a safety skip so merge recovery does not checkpoint unfinished cleanup. */
   async cleanup(task: WorktreeTask): Promise<boolean> {
     validateBranch(task.branch);
-    const path = resolve(this.parent, `${this.prefix}${task.branch}`);
     if (!(await this.eligible(task))) {
       return false;
     }
@@ -102,15 +110,19 @@ export class WorktreeService {
         return false;
       }
     }
-    // An absent directory may be a retry after removal but before prune/branch deletion.
+    if (!this.cloned) {
+      return true;
+    }
+    const path = await this.worker.find(task.branch);
+    // An absent tree may be a retry after removal but before prune/branch deletion.
     const localHead = (
       await this.git().run("for-each-ref", "--format=%(objectname)", `refs/heads/${task.branch}`)
     ).trim();
-    if (!existsSync(path) && !localHead) {
+    if (!path && !localHead) {
       return true;
     }
-    if (existsSync(path)) {
-      await this.git().run("worktree", "remove", "--force", path);
+    if (path) {
+      await this.worker.remove(path);
       this.deps.report(`${path}: removed`);
     }
     await this.git().run("worktree", "prune");
@@ -120,7 +132,7 @@ export class WorktreeService {
     if (head) {
       // Recheck the branch immediately before deletion (including crash recovery).
       if (await this.uncontained(head, task)) {
-        this.deps.report(`${path}: local branch retained: unpushed work`);
+        this.deps.report(`${task.branch}: local branch retained: unpushed work`);
         return false;
       }
       // Compare-and-delete: a commit racing this safety check must retain its ref.
@@ -132,22 +144,22 @@ export class WorktreeService {
   /** Apply the same non-destructive safety guard before session closure. */
   async eligible(task: WorktreeTask): Promise<boolean> {
     validateBranch(task.branch);
-    const path = resolve(this.parent, `${this.prefix}${task.branch}`);
+    const path = this.cloned ? await this.worker.find(task.branch) : undefined;
     const reason = await this.reason(path, task);
     if (reason) {
-      this.deps.report(`${path}: skipped: ${reason}`);
+      this.deps.report(`${path ?? task.branch}: skipped: ${reason}`);
       return false;
     }
     return true;
   }
 
-  private git(path = this.main): GitTransport {
+  private git(path = this.worker.checkout): GitTransport {
     return new GitTransport(this.config, this.env, this.deps, path);
   }
 
-  private async reason(path: string, task: WorktreeTask): Promise<string | undefined> {
-    if (!this.safePath(path, task.branch)) {
-      return "outside project worktree root/prefix or protected checkout";
+  private async reason(path: string | undefined, task: WorktreeTask): Promise<string | undefined> {
+    if (path !== undefined && !this.safePath(path, task.branch)) {
+      return "not a task worktree of the worker checkout";
     }
     if (!["MERGED", "CLOSED"].includes(task.state)) {
       return "PR is still open";
@@ -170,11 +182,13 @@ export class WorktreeService {
       if ((await this.status(task.pr)) !== "stopped") {
         return "worker session live or unknown; stop it first";
       }
-      if (existsSync(path)) {
+      if (path !== undefined && existsSync(path)) {
         const git = this.git(path);
         const common = (await git.run("rev-parse", "--git-common-dir")).trim();
         const own = (await this.git().run("rev-parse", "--git-common-dir")).trim();
-        if (realpathSync(resolve(path, common)) !== realpathSync(resolve(this.main, own))) {
+        if (
+          realpathSync(resolve(path, common)) !== realpathSync(resolve(this.worker.checkout, own))
+        ) {
           return "worktree belongs to another repository";
         }
         if (
@@ -185,18 +199,17 @@ export class WorktreeService {
         if ((await git.run("status", "--porcelain", "--untracked-files=all")).trim()) {
           return "uncommitted work";
         }
-        const registered = await this.registered();
-        if (!registered.some((tree) => tree.path === path && tree.branch === task.branch)) {
-          return "not a registered project worktree";
-        }
       }
-      const head = (
-        await this.git().run("for-each-ref", "--format=%(objectname)", `refs/heads/${task.branch}`)
-      ).trim();
-      if (
-        head &&
-        (await this.registered()).some((tree) => tree.branch === task.branch && tree.path !== path)
-      ) {
+      const head = this.cloned
+        ? (
+            await this.git().run(
+              "for-each-ref",
+              "--format=%(objectname)",
+              `refs/heads/${task.branch}`
+            )
+          ).trim()
+        : "";
+      if (head && (await this.checkedOut(task.branch)).length > (path === undefined ? 0 : 1)) {
         return "branch belongs to another worktree";
       }
       if (head && (await this.uncontained(head, task))) {
@@ -208,38 +221,31 @@ export class WorktreeService {
     return undefined;
   }
 
-  private async registered(): Promise<{ path: string; branch: string }[]> {
+  /** Every worktree of the worker checkout, the checkout itself included, on this branch. */
+  private async checkedOut(branch: string): Promise<string[]> {
     const output = await this.git().run("worktree", "list", "--porcelain", "-z");
     return output.split("\0\0").flatMap((record) => {
       const fields = record.split("\0");
       const path = fields.find((field) => field.startsWith("worktree "))?.slice(9);
-      const branch = fields.find((field) => field.startsWith("branch refs/heads/"))?.slice(18);
-      return path && branch ? [{ path, branch }] : [];
+      return path && fields.includes(`branch refs/heads/${branch}`) ? [path] : [];
     });
   }
 
+  /** A task tree is named for its branch and is neither checkout nor a symlink alias. */
   private safePath(path: string, branch: string): boolean {
-    const child = relative(this.parent, resolve(path));
-    if (
-      !child ||
-      child.startsWith(`..${sep}`) ||
-      child === ".." ||
-      child !== `${this.prefix}${branch}`
-    ) {
+    const target = resolve(path);
+    if (basename(target) !== workerWorktreeName(this.config, branch)) {
       return false;
     }
-    if (resolve(path) === this.main || resolve(path) === resolve(this.root)) {
+    const protectedPaths = [this.worker.checkout, resolve(this.root)];
+    if (protectedPaths.includes(target)) {
       return false;
     }
-    if (existsSync(this.parent) && realpathSync(this.parent) !== this.parent) {
-      return false;
-    }
-    if (existsSync(path)) {
-      // Refuse symlinks and aliases even if they point back inside the root.
+    if (existsSync(target)) {
+      const real = realpathSync(target);
       return (
-        realpathSync(path) === resolve(realpathSync(this.parent), child) &&
-        realpathSync(path) !== realpathSync(this.main) &&
-        realpathSync(path) !== realpathSync(this.root)
+        real === target &&
+        protectedPaths.every((checkout) => !existsSync(checkout) || realpathSync(checkout) !== real)
       );
     }
     return true;
@@ -249,7 +255,7 @@ export class WorktreeService {
     try {
       // Measurement has its own two-minute budget, independent of the CLI verb's default.
       const output = await this.deps.exec("du", ["-sk", "--", path], {
-        cwd: this.main,
+        cwd: this.worker.checkout,
         timeout: 120000,
       });
       const match = /^(\d+)\s/.exec(output);
@@ -266,11 +272,25 @@ export class WorktreeService {
     }
   }
 
+  /** The worker checkout's local base lags; its origin ref is refreshed by every launch. */
   private async uncontained(head: string, task: WorktreeTask): Promise<boolean> {
     if (!/^[a-f\d]{40}$/i.test(head) || !/^[a-f\d]{40}$/i.test(task.head)) {
       throw new Error("Invalid cleanup commit");
     }
     validateBranch(task.base);
+    const bases = (
+      await this.git().run(
+        "for-each-ref",
+        "--format=%(refname)",
+        `refs/heads/${task.base}`,
+        `refs/remotes/origin/${task.base}`
+      )
+    )
+      .split("\n")
+      .filter(Boolean);
+    if (!bases.length) {
+      throw new Error("Base branch unavailable in the worker checkout");
+    }
     return Boolean(
       (
         await this.git().run(
@@ -279,7 +299,7 @@ export class WorktreeService {
           head,
           "--not",
           ...(task.state === "MERGED" ? [task.head] : []),
-          `refs/heads/${task.base}`,
+          ...bases,
           "--"
         )
       ).trim()

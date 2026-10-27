@@ -8,7 +8,7 @@ import { createGateway } from "../../src/gateway/server.js";
 import { actor, fakeServer, people } from "./helpers.js";
 import type { Person } from "../../src/gateway/people.js";
 import actionsViewer from "../fixtures/github/actions-viewer.json" with { type: "json" };
-import { validProject } from "../helpers.js";
+import { validProject, ghConfig } from "../helpers.js";
 
 function fixture(viewer: unknown, env: NodeJS.ProcessEnv = {}, pins: Person[] = people) {
   const root = validProject();
@@ -22,7 +22,7 @@ function fixture(viewer: unknown, env: NodeJS.ProcessEnv = {}, pins: Person[] = 
   ]);
   const gateway = createGateway(
     root,
-    { EXAMPLE_GITHUB_TOKEN: "fake-token", XDG_STATE_HOME: join(root, "state"), ...env },
+    { GH_CONFIG_DIR: ghConfig("fake-token"), XDG_STATE_HOME: join(root, "state"), ...env },
     {
       fetch: fake.fetch,
       exec: async () => {

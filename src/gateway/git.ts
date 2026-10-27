@@ -1,6 +1,7 @@
 import { accessSync, constants } from "node:fs";
 import type { Config } from "../config.js";
 import type { Dependencies } from "./client.js";
+import { githubToken } from "./github-token.js";
 
 export const gitIdentityVariables = [
   "GIT_AUTHOR_NAME",
@@ -32,10 +33,7 @@ export class GitTransport {
 
   async transfer(command: "fetch" | "push", refs: string[]): Promise<boolean> {
     const credentials = this.config.credentials as Record<string, string> | undefined;
-    const token = this.env[credentials?.githubToken ?? ""];
-    if (!token) {
-      throw new Error("Missing configured GitHub token environment variable");
-    }
+    const token = githubToken(this.env);
     const repo = String(this.config.repo);
     const httpsEnv = this.localEnvironment();
     httpsEnv.VMETHOD_GIT_TOKEN = token;

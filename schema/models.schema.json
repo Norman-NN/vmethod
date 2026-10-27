@@ -9,7 +9,7 @@
     "dependencies": { "tiers": ["price"] },
     "properties": {
       "family": { "type": "string" },
-      "model": { "type": "string", "minLength": 1 },
+      "model": { "type": "string", "pattern": "^[^/\\s]+/[^\\s]+$" },
       "price": {
         "type": "object",
         "additionalProperties": false,
@@ -35,7 +35,7 @@
           }
         }
       },
-      "kind": { "enum": ["opencode", "claude"] },
+      "kind": { "const": "opencode" },
       "gate": { "enum": ["none", "owner"] },
       "fallback": {
         "type": "array",
@@ -43,15 +43,6 @@
         "uniqueItems": true
       },
       "tier": { "enum": ["expensive", "standard", "cheap"] }
-    },
-    "if": { "properties": { "kind": { "const": "opencode" } } },
-    "then": {
-      "properties": {
-        "model": { "type": "string", "pattern": "^[^/\\s]+/[^\\s]+$" }
-      }
-    },
-    "else": {
-      "properties": { "model": { "type": "string", "pattern": "^[^/\\s]+$" } }
     }
   }
 }

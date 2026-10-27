@@ -48,14 +48,14 @@ an exactly pinned devDependency (`"@vworlds/vmethod": "1.2.0"`). Both current co
   and `vmethod check` fails if the installed peer differs. A peer range would let consumers
   drift, and the check is only useful if it parses as GitHub does.
 - **State and caches live per OS user**, under `$XDG_STATE_HOME` / `$XDG_CACHE_HOME`, never
-  inside `node_modules`. Workers and the orchestrator can be different OS users (vecs: `jm` and
-  `vecsmaster`). Each user runs vmethod from the `node_modules` of its own checkout, never from
-  another user's tree.
+  inside `node_modules`. Workers and the orchestrator each run vmethod from the `node_modules` of
+  their own checkout: workers in worktrees of the **worker checkout**, a separate clone named by
+  `workerCheckout`, never the orchestrator's checkout.
 - **Docs, board migrations and templates ship in the package.** A consumer's `AGENTS.md` routes to
   `node_modules/@vworlds/vmethod/docs/…`; `vmethod docs <topic>` prints them. The human-readable
   copy is the vmethod repo at the pinned tag.
-- **Worktrees:** every worktree runs `npm ci` before using `vmethod`, which workers already do to
-  run tests. `start-task` and `open-task` guarantee it.
+- **Worktrees:** every worktree runs `npm ci` before using `vmethod`. `worker start` does it for
+  each task worktree before the worker's session exists.
 
 **What npm gives us for free** (it replaces the vendored-copy design of earlier drafts):
 
@@ -94,14 +94,14 @@ no project prefixes: every orchestrator runs with a private environment, and con
 
 | Group | Keys (indicative) |
 |---|---|
-| Identity | `repo`, `org`, `baseBranch`, `releaseBranch`, worker OS user |
+| Identity | `repo`, `org`, `baseBranch`, `releaseBranch`, `workerCheckout` (the workers' own clone) |
 | Board | `board.owner`, `board.number`, `board.repos` (all repos on the board; more than one = shared). The shape comes from the package's board migrations |
 | Branches | task-branch pattern, worktree root, main checkout path, pack and track prefixes |
 | Checks | verify steps, release pre-check steps, docs Markdown glob, CI check names |
 | Post-merge | dependency install command and its trigger file (e.g. `npm ci` / `package-lock.json`) |
 | Changelog | fragment directory (e.g. `architecture/unreleased/`), tag vocabulary |
 | State | `stateName`: watcher state directory name (vecs: `vecs`, SpaceRocks: `spacerocks`), so existing `once` / `graded` / `merged` markers and the lock survive adoption without replaying old events. The merged watcher reads both projects' marker names (vecs `graded-<n>`, SpaceRocks `grade-<n>`) |
-| Credentials | env var **names** only (GH token, SSH key, opencode server password). Never values |
+| Credentials | none: each checkout's gitignored `.claude/settings.local.json` sets `GH_CONFIG_DIR` (the identity's gh login), git author and SSH command; `credentials.sshKey` optionally names an SSH key variable |
 | Learnings | `learningsPrivacy`: `public` or `private`; `learningsTimeoutSeconds` generation wait (default 900) |
 
 `models.yaml` stays a project file (today's `models.tsv`): provider/id, kind and `gate` (e.g.
@@ -459,7 +459,8 @@ central project authorization, privacy reduction and report semantics.
 ## Security
 
 vmethod and some consumers (vecs) are public. vmethod's scripts run in every consumer with the
-orchestrator's credentials: GitHub token, SSH key, opencode password.
+orchestrator's credentials: its gh login (`GH_CONFIG_DIR`), SSH key, opencode password. Workers run
+with their own, from the worker checkout's environment.
 
 **Untrusted text.** Issues, PRs, comments, branch names and titles can be written by anyone.
 - **Authority comes from the author's login and role, never the tag** (`people.yaml`;
@@ -506,7 +507,7 @@ jpeletier           owner         decides
 spacerocks79        orchestrator  SpaceRocks orchestrator
 VecsMaster          orchestrator  vecs orchestrator
 vimescmd            orchestrator  vmethod orchestrator
-alfredjpr79         worker        opencode workers
+alfredjpr79         worker        workers (opencode sessions)
 github-actions[bot] system        CI and release automation
 ```
 
@@ -730,9 +731,11 @@ them. Their test suites are ported as vitest cases.
 
 1. **vmethod is public.**
 2. **Workers** are opencode sessions reached through the `OPENCODE_*` environment variables
-   loaded into the orchestrator's session (base URL, server username and password). They act on
-   GitHub as `alfredjpr79`. Today they share the orchestrator's machine and repo, but scripts
-   must reach opencode only through those variables, never by assuming a local host.
+   loaded into the orchestrator's session (base URL, server username and password); Claude
+   models run through OpenCode too. They act on GitHub as `alfredjpr79`. They share the
+   orchestrator's machine but never its checkout: each runs in a worktree of the worker
+   checkout, whose environment carries the worker identity. Scripts reach opencode only through
+   those variables, never by assuming a local host.
 3. **Scope of 1.0** is parity + config + distribution. The rest comes later, step by step.
 4. **Merging:** the orchestrator merges with the owner's approval. The orchestrator may merge
    unimportant PRs on its own review.

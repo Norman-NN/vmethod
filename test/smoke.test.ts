@@ -122,16 +122,16 @@ test("built CLI initializes and checks the verbatim public vecs TSV registry off
       },
       {
         family: "sonnet",
-        model: "claude-sonnet-5-5",
+        model: "claude-code/claude-sonnet-5-5",
         tier: "standard",
-        kind: "claude",
+        kind: "opencode",
         gate: "none",
       },
       {
         family: "opus",
-        model: "claude-opus-5-5",
+        model: "claude-code/claude-opus-5-5",
         tier: "standard",
-        kind: "claude",
+        kind: "opencode",
         gate: "none",
       },
     ])
@@ -168,8 +168,7 @@ test("offline CLI verbs need no identity while check --online reports missing cr
     timeout: 3000,
   });
   expect(online.status, online.stderr).toBe(1);
-  expect(online.stdout).toContain("credentials.githubToken: Missing configured GitHub token");
-  expect(online.stdout).toContain("credentials.workerGithubToken: Missing configured GitHub token");
+  expect(online.stdout).toContain("GH_CONFIG_DIR: Missing GH_CONFIG_DIR");
 }, 15000);
 
 test("online checking composes with prerelease permission deferral and preserves CODEOWNERS warnings", () => {
@@ -192,7 +191,7 @@ test("online checking composes with prerelease permission deferral and preserves
     expect(result.status, result.stderr).toBe(1);
     expect(result.stdout).toContain("WARN permissions deferred");
     expect(result.stdout).toContain("CODEOWNERS");
-    expect(result.stdout).toContain("credentials.githubToken: Missing configured GitHub token");
+    expect(result.stdout).toContain("GH_CONFIG_DIR: Missing GH_CONFIG_DIR");
     expect(result.stdout).not.toContain("Install owner-approved");
     expect(result.stderr).toBe("");
   }

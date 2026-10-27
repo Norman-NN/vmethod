@@ -4,6 +4,8 @@ org: vworlds
 baseBranch: dev
 releaseBranch: master
 stateName: vmethod
+# Workers run in their own clone; VMETHOD_WORKER_CHECKOUT overrides it per machine.
+workerCheckout: ../vmethod-worker
 branches:
   taskPattern: "<number>-<slug>"
   worktreeRoot: .worktrees
@@ -33,9 +35,3 @@ postMerge:
 changelog:
   directory: changes/unreleased
   kinds: [breaking, feature, fix]
-credentials:
-  githubToken: GH_TOKEN
-  # Claude families (fable) launch with a separate worker token; the variable must
-  # be populated with a token pinned as a worker in people.yaml at launch time.
-  workerGithubToken: WORKER_GITHUB_TOKEN
-  workerPassword: OPENCODE_SERVER_PASSWORD

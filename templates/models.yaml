@@ -13,10 +13,10 @@
   kind: opencode
   gate: owner
   tier: expensive
-# Claude families require credentials.workerGithubToken naming a provisioned worker token.
+# Claude models run through OpenCode's claude-code provider like any other model.
 - family: sonnet
-  model: replace-with-installed-model-id
-  kind: claude
+  model: claude-code/replace-with-installed-model-id
+  kind: opencode
   gate: none
   tier: standard
 - family: glm

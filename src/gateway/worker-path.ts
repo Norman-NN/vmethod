@@ -1,54 +1,37 @@
-import { existsSync } from "node:fs";
-import { relative, resolve, sep } from "node:path";
+import { resolve } from "node:path";
 import type { Config } from "../config.js";
-import { object } from "./people.js";
 
-/** Resolve a worker directory under worktreeRoot (relative to mainCheckout or root).
- * Existing unprefixed directories are a lookup-only compatibility fallback: never
- * rename them or choose the legacy path when creating a new worktree. A recorded
- * directory can supply the branch for legacy session status reads without fetching
- * task metadata; callers must preserve the recorded session/directory binding.
+/**
+ * The workers' own clone of the repository: `workerCheckout` in vmethod.yaml,
+ * overridden per machine by `VMETHOD_WORKER_CHECKOUT`, relative to the
+ * orchestrator's checkout. This is the only place it is read. Worker sessions run
+ * in worktrees of it, so they never share the orchestrator's checkout or `.git`.
  */
-export function workerWorktree(
-  root: string,
-  config: Config,
-  task: string | { directory: string }
-): string {
-  const branches = object(config.branches);
-  const parent = resolve(
-    String(branches.mainCheckout ?? root),
-    String(branches.worktreeRoot ?? ".worktrees")
-  );
-  const prefix = workerWorktreePrefix(config);
-  const recorded = typeof task === "string" ? "" : relative(parent, resolve(task.directory));
-  const branch =
-    typeof task === "string"
-      ? task
-      : recorded.startsWith(prefix)
-        ? recorded.slice(prefix.length)
-        : recorded;
-  const target = (name: string) => {
-    const directory = resolve(parent, name);
-    const path = relative(parent, directory);
-    if (
-      !path ||
-      path === ".." ||
-      path.startsWith(`..${sep}`) ||
-      resolve(parent, path) !== directory
-    ) {
-      throw new Error("Worktree escapes branches.worktreeRoot");
-    }
-    return directory;
-  };
-  // Validate the branch independently so a prefix cannot disguise a traversal.
-  const legacy = target(branch);
-  const preferred = target(`${prefix}${branch}`);
-  return !existsSync(preferred) && existsSync(legacy) ? legacy : preferred;
+export function workerCheckout(root: string, config: Config): string {
+  const value = config.workerCheckout;
+  if (typeof value !== "string" || !value.trim()) {
+    throw new Error(
+      "Set workerCheckout in vmethod.yaml (or VMETHOD_WORKER_CHECKOUT) to the workers' own clone of the repository"
+    );
+  }
+  const checkout = resolve(root, value);
+  if (checkout === resolve(root)) {
+    throw new Error("workerCheckout must be a separate clone, not the orchestrator's checkout");
+  }
+  return checkout;
 }
 
-/** Return the literal worktree prefix shared by path lookup and legacy key decoding. */
+/** The worktree name a task branch gets in the worker checkout. */
+export function workerWorktreeName(config: Config, branch: string): string {
+  return `${workerWorktreePrefix(config)}${branch.replaceAll("/", "-")}`;
+}
+
+/** Return the literal worktree prefix shared by worktree names and legacy key decoding. */
 export function workerWorktreePrefix(config: Config): string {
-  const prefix = object(config.branches).worktreePrefix ?? "auto-";
+  const prefix = (config.branches as { worktreePrefix?: unknown } | undefined)?.worktreePrefix;
+  if (prefix === undefined) {
+    return "auto-";
+  }
   if (typeof prefix !== "string" || /[/\\\r\n]/.test(prefix)) {
     throw new Error("Invalid branches.worktreePrefix");
   }

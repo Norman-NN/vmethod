@@ -10,7 +10,8 @@ export function workerFirstPrompt(task: {
   model: string;
   guide: string;
 }): string {
-  const prefix = `VMETHOD_ROLE=worker VMETHOD_TASK_PR=${task.pr} npm exec --no -- vmethod`;
+  // .vmethod/.env in the worktree names the task, so no environment prefix is needed.
+  const prefix = "npm exec --no -- vmethod";
   return `You are a worker. The PR body is the task to execute:
 https://github.com/${task.repo}/pull/${task.pr}
 Only authenticated \`[orchestrator]\` comments from the project's verified orchestrator

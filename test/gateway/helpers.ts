@@ -7,7 +7,7 @@ import type { Dependencies } from "../../src/gateway/client.js";
 import { createGateway } from "../../src/gateway/server.js";
 import type { CallContext, Operations } from "../../src/gateway/transport.js";
 import { object, type ObjectData, type Person } from "../../src/gateway/people.js";
-import { validProject } from "../helpers.js";
+import { validProject, ghConfig } from "../helpers.js";
 
 export const people: Person[] = [
   { login: "owner", id: 101, type: "User", role: "owner" },
@@ -163,7 +163,7 @@ export function fixtureServer(
     },
   };
   const env = {
-    EXAMPLE_GITHUB_TOKEN: "fake-token",
+    GH_CONFIG_DIR: ghConfig("fake-token"),
     XDG_STATE_HOME: join(root, "state"),
   };
   const gateway = createGateway(root, env, deps);

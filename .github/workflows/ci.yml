@@ -27,9 +27,14 @@ jobs:
       - run: npm run build
       - name: Validate learning submission and require other PR changelog fragments
         env:
-          GH_TOKEN: ${{ github.token }}
+          TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: node scripts/changelog.mjs "$PR_NUMBER"
+        # vmethod reads GitHub credentials only from the gh login in GH_CONFIG_DIR.
+        run: |
+          export GH_CONFIG_DIR="$RUNNER_TEMP/gh"
+          mkdir -p "$GH_CONFIG_DIR"
+          printf 'github.com:\n    oauth_token: %s\n' "$TOKEN" > "$GH_CONFIG_DIR/hosts.yml"
+          node scripts/changelog.mjs "$PR_NUMBER"
       - run: npm run format:check
       - run: npm run lint
       - run: npm run typecheck

@@ -2,7 +2,6 @@ import { runChild } from "./child-process.js";
 import {
   chmodSync,
   copyFileSync,
-  existsSync,
   mkdirSync,
   readFileSync,
   symlinkSync,
@@ -12,8 +11,8 @@ import { dirname, join } from "node:path";
 import { createRequire } from "node:module";
 import { build } from "esbuild";
 import { beforeAll, expect, test } from "vitest";
-import { fixture, validProject } from "./helpers.js";
-import { actor, item, people } from "./gateway/helpers.js";
+import { fixture, validProject, ghConfig } from "./helpers.js";
+import { actor, people } from "./gateway/helpers.js";
 import { parse, stringify } from "yaml";
 import recorded from "./fixtures/github/learnings-recorded.json" with { type: "json" };
 import { stub } from "../src/registry.js";
@@ -100,7 +99,7 @@ test("annotation batch failures reach the real CLI with a summary and non-zero e
   );
   const result = f.run(["learnings", "annotate"], ["--import", preload], {
     VMETHOD_ROLE: "orchestrator",
-    EXAMPLE_GITHUB_TOKEN: "fake-token",
+    GH_CONFIG_DIR: ghConfig("fake-token"),
     XDG_STATE_HOME: join(f.root, "state"),
   });
   expect(result.status).toBe(1);
@@ -109,7 +108,7 @@ test("annotation batch failures reach the real CLI with a summary and non-zero e
   expect(result.stderr).toContain("#32:");
 });
 
-test("generated stub uses cached worktree context through the CLI; explicit task PR wins", () => {
+test("generated stub takes the task from .vmethod/.env through the CLI; explicit task PR wins", () => {
   const f = cliFixture();
   writeFileSync(join(f.root, "people.yaml"), stringify(people));
   const preload = join(f.root, "worker-identity.mjs");
@@ -124,35 +123,15 @@ test("generated stub uses cached worktree context through the CLI; explicit task
       assert.equal(JSON.parse(init.body).query,'query GatewayIdentity { viewer { databaseId login __typename } }');
       return Response.json({data:{viewer:${JSON.stringify(actor(1))}}});
     };
-    if (!process.argv[1].endsWith('/git')) process.on('exit',()=>assert.equal(calls,1));`
+    process.on('exit',()=>assert.equal(calls,1));`
   );
-  const bin = join(f.root, "fake-bin");
-  mkdirSync(bin);
-  const git = join(bin, "git");
-  writeFileSync(
-    git,
-    `#!${process.execPath}
-const command = process.argv.slice(2).join(' ');
-const responses = {
-  'rev-parse --git-dir': '.git/worktrees/task',
-  'rev-parse --git-common-dir': '.git',
-  'rev-parse --abbrev-ref HEAD': '64-task',
-  'rev-parse HEAD': '${"a".repeat(40)}',
-};
-if (!(command in responses)) throw new Error('Unexpected git command: ' + command);
-console.log(responses[command]);
-`
-  );
-  chmodSync(git, 0o755);
-  mkdirSync(join(f.root, ".tmp"));
-  writeFileSync(
-    join(f.root, ".tmp", "worker-context.json"),
-    JSON.stringify({ branch: "64-task", head: "a".repeat(40), taskPr: 65 })
-  );
+  // worker start writes the task once; every verb in the worktree reads it.
+  mkdirSync(join(f.root, ".vmethod"));
+  writeFileSync(join(f.root, ".vmethod/.env"), "VMETHOD_ROLE=worker\nVMETHOD_TASK_PR=65\n");
   mkdirSync(join(f.root, "node_modules", ".bin"), { recursive: true });
   symlinkSync(f.cli, join(f.root, "node_modules", ".bin", "vmethod"));
   chmodSync(f.cli, 0o755);
-  // The generated stub delegates inference to the same CLI used by direct invocations.
+  // The generated stub delegates to the same CLI used by direct invocations.
   const script = join(f.root, "post.sh");
   writeFileSync(script, stub("post"));
   const run = (env: NodeJS.ProcessEnv) =>
@@ -160,18 +139,18 @@ console.log(responses[command]);
       cwd: f.root,
       env: {
         VMETHOD_ROOT: f.root,
-        PATH: `${bin}:${dirname(process.execPath)}`,
-        EXAMPLE_GITHUB_TOKEN: "fake-token",
+        PATH: dirname(process.execPath),
+        GH_CONFIG_DIR: ghConfig("fake-token"),
         NODE_OPTIONS: `--import=${preload}`,
         ...env,
       },
       encoding: "utf8",
       timeout: 3000,
     });
-  const inferred = run({});
-  expect(inferred.status, inferred.stderr).toBe(1);
-  expect(inferred.stderr).toContain("ENOENT");
-  expect(inferred.stderr).not.toContain("own taskPr");
+  const fromFile = run({});
+  expect(fromFile.status, fromFile.stderr).toBe(1);
+  expect(fromFile.stderr).toContain("ENOENT");
+  expect(fromFile.stderr).not.toContain("own taskPr");
   const explicit = run({ VMETHOD_TASK_PR: "90" });
   expect(explicit.status, explicit.stderr).toBe(1);
   expect(explicit.stderr).toContain("own taskPr");
@@ -220,7 +199,7 @@ test.each([0, 1, 2, 3])(
     );
     const result = f.run(["wait-checks", "3", "0"], ["--import", preload], {
       VMETHOD_TASK_PR: "3",
-      EXAMPLE_GITHUB_TOKEN: "fake-token",
+      GH_CONFIG_DIR: ghConfig("fake-token"),
     });
     expect(result.status, result.stderr).toBe(code);
     expect(result.stdout.trim().split("\n").at(-1)).toMatch(/^checks:/);
@@ -249,7 +228,7 @@ function peers(root: string) {
   );
 }
 
-test("check --online reports both credential identities through the built CLI", () => {
+test("check --online reports the GH_CONFIG_DIR identity through the built CLI, ignoring GH_TOKEN", () => {
   const f = cliFixture();
   // Captured viewer (learnings-PROVENANCE.md), projected to the requested fields.
   const viewer = {
@@ -274,8 +253,8 @@ test("check --online reports both credential identities through the built CLI", 
   writeFileSync(
     preload,
     `import assert from 'node:assert/strict';
-    const viewers=${JSON.stringify([viewer, actor(1)])};
-    const tokens=['Bearer orchestrator-token','Bearer worker-token'];
+    const viewers=${JSON.stringify([viewer])};
+    const tokens=['Bearer orchestrator-token'];
     globalThis.fetch=async (url, init)=> {
       assert.equal(String(url),'https://api.github.com/graphql');
       assert.equal(init.method,'POST');
@@ -287,14 +266,12 @@ test("check --online reports both credential identities through the built CLI", 
     process.on('exit',()=>{assert.equal(viewers.length,0);assert.equal(tokens.length,0);});`
   );
   const result = f.run(["check", "--online"], ["--import", preload], {
-    EXAMPLE_GITHUB_TOKEN: "orchestrator-token",
-    EXAMPLE_WORKER_GITHUB_TOKEN: "worker-token",
+    GH_CONFIG_DIR: ghConfig("orchestrator-token"),
+    GH_TOKEN: "ignored-token",
   });
   expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
-  expect(result.stdout).toContain("credentials.githubToken: vimescmd (orchestrator)");
-  expect(result.stdout).toContain("credentials.workerGithubToken: worker (worker)");
+  expect(result.stdout).toContain("GH_CONFIG_DIR: vimescmd (orchestrator)");
   expect(result.stdout).not.toContain("orchestrator-token");
-  expect(result.stdout).not.toContain("worker-token");
 }, 5000);
 
 test("Markdown CLI reports missing peers with a stable exit", () => {
@@ -418,144 +395,6 @@ test.each(
   30000
 );
 
-test.each(["auto-", ""])(
-  "start-task prefix %j uses PATH fakes, installs once, and continues old bundled code after package replacement",
-  (prefix) => {
-    const f = cliFixture(6000);
-    writeFileSync(join(f.root, "people.yaml"), stringify(people));
-    const config = readFileSync(join(f.root, "vmethod.yaml"), "utf8").replace(
-      "mainCheckout: /replace/with/consumer/checkout",
-      `mainCheckout: ${f.root}`
-    );
-    writeFileSync(
-      join(f.root, "vmethod.yaml"),
-      config.replace("branches:", `branches:\n  worktreePrefix: ${JSON.stringify(prefix)}`)
-    );
-    const target = join(f.root, ".worktrees", `${prefix}7-task`);
-    const bin = join(f.root, "bin");
-    mkdirSync(bin);
-    symlinkSync(process.execPath, join(bin, "node"));
-    const steps = join(f.root, "git-steps.json");
-    const git = [
-      {
-        args: [
-          "-c",
-          "credential.helper=",
-          "-c",
-          'credential.helper=!f() { printf "%s\\n" "username=x-access-token" "password=$VMETHOD_GIT_TOKEN"; }; f',
-          "fetch",
-          "-q",
-          "https://github.com/example/project.git",
-          "+refs/heads/pack/x:refs/remotes/origin/pack/x",
-          "+refs/heads/7-task:refs/remotes/origin/7-task",
-        ],
-      },
-      { args: ["for-each-ref", "--format=%(refname)", "refs/heads/7-task"] },
-      {
-        args: ["worktree", "add", "-b", "7-task", target, "refs/remotes/origin/7-task"],
-        create: true,
-      },
-      { args: ["rev-parse", "--show-toplevel"], output: target },
-      { args: ["rev-parse", "--git-common-dir"], output: join(f.root, ".git") },
-      {
-        args: ["rev-parse", "--git-dir"],
-        output: join(f.root, ".git/worktrees/7-task"),
-      },
-      { args: ["rev-parse", "--abbrev-ref", "HEAD"], output: "7-task\n" },
-      { args: ["status", "--porcelain"] },
-      { args: ["branch", "-q", "--set-upstream-to=origin/7-task"] },
-      { args: ["rev-list", "--count", "origin/pack/x..HEAD"], output: "1" },
-      { args: ["rev-list", "--count", "HEAD..origin/pack/x"], output: "2" },
-    ];
-    writeFileSync(steps, JSON.stringify(git));
-    writeFileSync(
-      join(bin, "git"),
-      `#!${process.execPath}\nimport fs from 'node:fs'; import assert from 'node:assert/strict'; const file=${JSON.stringify(steps)}; const steps=JSON.parse(fs.readFileSync(file)); const step=steps.shift(); assert.ok(step, 'Unexpected git call'); assert.deepEqual(process.argv.slice(2), step.args); fs.writeFileSync(file, JSON.stringify(steps)); if(step.create) { fs.mkdirSync(${JSON.stringify(target)}, {recursive:true}); fs.writeFileSync(${JSON.stringify(join(target, "package.json"))}, '{"name":"example/project","version":"1.0.0"}'); fs.writeFileSync(${JSON.stringify(join(target, "package-lock.json"))}, 'lock-v1'); } process.stdout.write(step.output ?? '');`,
-      { mode: 0o755 }
-    );
-    const installs = join(f.root, "installs");
-    writeFileSync(
-      join(bin, "npm"),
-      `#!${process.execPath}\nimport fs from 'node:fs'; import assert from 'node:assert/strict'; const args=process.argv.slice(2); assert.ok(args.length >= 1 && args[0] === 'ci', JSON.stringify(args)); assert.equal(process.cwd(), ${JSON.stringify(target)}); assert.equal(process.env.HUSKY,'0'); assert.equal(process.env.EXAMPLE_GITHUB_TOKEN, undefined); if (args.length === 1) { fs.appendFileSync(${JSON.stringify(installs)}, 'ci\\n'); fs.writeFileSync(${JSON.stringify(f.cli)}, 'throw new Error("NEW VERSION WAS LOADED");'); } else { assert.deepEqual(args, ['ci','--dry-run','--no-audit','--no-fund','--ignore-scripts']); fs.appendFileSync(${JSON.stringify(installs)}, 'dry\\n'); }`,
-      { mode: 0o755 }
-    );
-    const preload = join(f.root, "offline.mjs");
-    const response = {
-      data: {
-        repository: {
-          pullRequest: item({
-            author: actor(1),
-            headRefName: "7-task",
-            baseRefName: "pack/x",
-            state: "OPEN",
-            headRepository: { nameWithOwner: "example/project" },
-          }),
-        },
-      },
-    };
-    writeFileSync(
-      preload,
-      `import assert from 'node:assert/strict'; let calls=0; globalThis.fetch=async (url, init) => { assert.equal(String(url),'https://api.github.com/graphql'); const payload=JSON.parse(init.body); if (++calls===1) { assert.equal(payload.query,'query GatewayIdentity { viewer { databaseId login __typename } }'); return Response.json({data:{viewer:${JSON.stringify(actor(1))}}}); } assert.equal(calls,2); assert.equal(payload.variables.number,3); assert.ok(payload.query.includes('headRefName')); return new Response(${JSON.stringify(JSON.stringify(response))}); }; process.on('exit',()=>assert.equal(calls,2));`
-    );
-    const env = {
-      PATH: bin,
-      EXAMPLE_GITHUB_TOKEN: "fake-token",
-      VMETHOD_TASK_PR: "3",
-    };
-    const run = () => f.run(["start-task", "3"], ["--import", preload], env);
-    const first = run();
-    expect(first.status, first.stderr).toBe(0);
-    expect(first.stdout).toContain("ready. Next: scripts/agent/read-pr.sh 3");
-    expect(first.stderr).toContain("branch 7-task keeps its 1 commit(s); 2 behind origin/pack/x");
-    expect(first.stderr).toContain("checking lockfile sync");
-    expect(readFileSync(f.cli, "utf8")).toContain("NEW VERSION WAS LOADED");
-    expect(existsSync(join(target, "node_modules/.package-lock.sha"))).toBe(true);
-    expect(readFileSync(steps, "utf8")).toBe("[]");
-    expect(readFileSync(installs, "utf8")).toBe("dry\nci\n");
-    // A subsequent run loads the new version, while the first run completed entirely on the old one.
-    expect(f.run(["version"]).stderr).toContain("NEW VERSION WAS LOADED");
-    copyFileSync(bundle, f.cli);
-    writeFileSync(steps, JSON.stringify([git[0], ...git.slice(3)]));
-    const second = run();
-    expect(second.status, second.stderr).toBe(0);
-    expect(second.stderr).toContain("dependencies already match package-lock.json");
-    expect(readFileSync(installs, "utf8")).toBe("dry\nci\ndry\n");
-    const stamp = readFileSync(join(target, "node_modules/.package-lock.sha"), "utf8");
-    writeFileSync(join(target, "package-lock.json"), "lock-v2");
-    writeFileSync(
-      join(bin, "npm"),
-      `#!${process.execPath}\nconst dry = process.argv.slice(2)[1] === '--dry-run'; if (dry) { process.exit(0); } process.exit(7);`,
-      {
-        mode: 0o755,
-      }
-    );
-    writeFileSync(steps, JSON.stringify([git[0], ...git.slice(3)]));
-    const failedInstall = run();
-    expect(failedInstall.status).toBe(1);
-    expect(failedInstall.stdout).not.toContain("ready.");
-    expect(readFileSync(join(target, "node_modules/.package-lock.sha"), "utf8")).toBe(stamp);
-    // An out-of-sync lockfile stops before the install, with the one-line refusal.
-    writeFileSync(
-      join(bin, "npm"),
-      `#!${process.execPath}\nimport fs from 'node:fs'; if (process.argv.slice(2)[1] === '--dry-run') { process.stderr.write("npm error code EUSAGE\\nnpm error \`npm ci\` can only install packages when your package.json and package-lock.json or npm-shrinkwrap.json are in sync. Please update your lock file with \`npm install\` before continuing.\\nnpm error Invalid: lock file's yaml@2.9.1 does not satisfy yaml@2.9.0\\n"); process.exit(1); } process.exit(7);`,
-      {
-        mode: 0o755,
-      }
-    );
-    writeFileSync(steps, JSON.stringify([git[0], ...git.slice(3)]));
-    const refused = run();
-    expect(refused.status).toBe(1);
-    expect(refused.stdout).not.toContain("ready.");
-    expect(refused.stderr).toContain(
-      "lockfile out of sync with package.json: regenerate it on the task branch before starting"
-    );
-    expect(refused.stderr).toContain("Invalid: lock file's yaml@2.9.1 does not satisfy yaml@2.9.0");
-    expect(refused.stderr).not.toContain("npm error code EUSAGE");
-    expect(readFileSync(join(target, "node_modules/.package-lock.sha"), "utf8")).toBe(stamp);
-  },
-  15000
-);
-
 function stubFixture() {
   const f = cliFixture();
   peers(f.root);
@@ -619,7 +458,7 @@ test("stubs run from a nested directory resolve the repository root, never the c
   const { f, stub, gitEnv } = stubFixture();
   const push = stub("push.sh", [], gitEnv);
   expect(push.status, push.stderr).toBe(1);
-  expect(push.stderr).toContain("Missing configured GitHub token environment variable");
+  expect(push.stderr).toContain("Missing GH_CONFIG_DIR");
   expect(push.stderr).not.toContain("ENOENT");
   const config = stub("config.sh", ["get", "repo"], gitEnv);
   expect(config.status, config.stderr).toBe(0);

@@ -28,33 +28,30 @@ breakpoint report what is done, the uncommitted files and the remaining mechanic
 steps, then **end your turn**. The orchestrator decides whether to switch models or
 answer “carry on”; do not switch yourself. See the [shared lesson](../learnings/lessons.md).
 
-Use your assigned branch and worktree under `branches.worktreeRoot`. Never edit,
-build in or switch another checkout, or commit to `baseBranch` or `releaseBranch`.
-One session owns the worktree: resume it rather than launching a second worker there.
-`start-task` and `push` own mechanical preparation and submission; see the
-[worker command reference](gateway.md#worker-commands).
-Run `npm ci` in each worktree before using the pinned tools. Invoke the local bin
-through `npm exec --no -- vmethod`, never a downloading fallback.
+Use your assigned branch and worktree: a worktree of the project's worker checkout,
+already prepared by `worker start` (dependencies installed, branch and upstream set).
+Never edit, build in or switch another checkout, or commit to `baseBranch` or
+`releaseBranch`. One session owns the worktree: resume it rather than launching a
+second worker there. `push` owns submission; see the
+[worker command reference](gateway.md#worker-commands). Invoke the local bin through
+`npm exec --no -- vmethod`, never a downloading fallback. Your session already runs
+with the worker identity: `VMETHOD_ROLE=worker`, your own gh login in `GH_CONFIG_DIR`
+and your git author; never change them.
 
 ### Commands
 
-Every vmethod command needs this prefix outside a task worktree; a 'denied for client role' or 'own taskPr'
-error means the prefix is missing. Replace `<n>` with your assigned task PR number,
-not the issue number. The generated first prompt fills it in for you.
-
-In a linked task worktree, the CLI and generated `scripts/agent/*.sh` stubs infer
-worker context when neither environment variable is set. For example, you can run
-`scripts/agent/pr-comment.sh <n> .tmp/ack.md` without a prefix. Inference resolves
-the exact branch to one accepted open same-repository task PR; it never parses a
-branch number or grants orchestrator context. The result is cached under `.tmp/`,
-keyed by branch and head SHA. An explicit variable always wins and disables inference.
-If no unique task is found, the CLI reports that you must use the fallback prefix.
+`worker start` writes `.vmethod/.env` in your worktree naming your task PR
+(`VMETHOD_TASK_PR`), so commands need no environment prefix. Replace `<n>` with your
+assigned task PR number, not the issue number; the generated first prompt fills it
+in. A 'denied for client role' or 'own taskPr' error means you are outside your
+worktree or `.vmethod/.env` is missing; report it as BLOCKED rather than setting
+variables yourself. The generated `scripts/agent/*.sh` stubs work the same way.
 
 ```sh
-VMETHOD_ROLE=worker VMETHOD_TASK_PR=<n> npm exec --no -- vmethod read-pr <n>
-VMETHOD_ROLE=worker VMETHOD_TASK_PR=<n> npm exec --no -- vmethod pr-comment <n> .tmp/<file>.md
-VMETHOD_ROLE=worker VMETHOD_TASK_PR=<n> npm exec --no -- vmethod push
-VMETHOD_ROLE=worker VMETHOD_TASK_PR=<n> npm exec --no -- vmethod wait-checks <n>
+npm exec --no -- vmethod read-pr <n>
+npm exec --no -- vmethod pr-comment <n> .tmp/<file>.md
+npm exec --no -- vmethod push
+npm exec --no -- vmethod wait-checks <n>
 ```
 
 Keep scratch code, prompts, failure logs and generated reports in ignored `.tmp/`.

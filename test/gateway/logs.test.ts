@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
 import { GitHubClient, type Dependencies } from "../../src/gateway/client.js";
+import { ghConfig } from "../helpers.js";
 
 test("job logs follow one signed HTTPS redirect without sending API authorization to blob storage", async () => {
   let count = 0;
@@ -34,11 +35,7 @@ test("job logs follow one signed HTTPS redirect without sending API authorizatio
       throw new Error("Unexpected report");
     },
   };
-  const client = new GitHubClient(
-    { credentials: { githubToken: "TOKEN" } },
-    { TOKEN: "private-token" },
-    deps
-  );
+  const client = new GitHubClient({}, { GH_CONFIG_DIR: ghConfig("private-token") }, deps);
   expect(await client.jobLog("/repos/example/project/actions/jobs/30/logs")).toBe(
     "Error: [redacted] was mentioned in the log"
   );
@@ -50,8 +47,8 @@ test.each(["http://logs.example/log", "https://user:password@logs.example/log"])
   async (location) => {
     let calls = 0;
     const client = new GitHubClient(
-      { credentials: { githubToken: "TOKEN" } },
-      { TOKEN: "private-token" },
+      {},
+      { GH_CONFIG_DIR: ghConfig("private-token") },
       {
         fetch: async () => {
           expect(++calls).toBe(1);

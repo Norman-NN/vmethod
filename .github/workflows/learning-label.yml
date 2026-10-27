@@ -22,7 +22,12 @@ jobs:
       - run: npm run build
       - name: Validate metadata and label authorized submissions
         env:
-          GH_TOKEN: ${{ github.token }}
+          TOKEN: ${{ github.token }}
           VMETHOD_ROLE: orchestrator
           PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: node dist/vmethod.mjs learnings check-pr "$PR_NUMBER" --label
+        # vmethod reads GitHub credentials only from the gh login in GH_CONFIG_DIR.
+        run: |
+          export GH_CONFIG_DIR="$RUNNER_TEMP/gh"
+          mkdir -p "$GH_CONFIG_DIR"
+          printf 'github.com:\n    oauth_token: %s\n' "$TOKEN" > "$GH_CONFIG_DIR/hosts.yml"
+          node dist/vmethod.mjs learnings check-pr "$PR_NUMBER" --label

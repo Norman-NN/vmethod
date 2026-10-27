@@ -22,7 +22,8 @@ and graded state during adoption so old events do not replay. Obsolete merged/tu
 writer stamps are imported once; new writes are attributed through the
 gateway journal, never by a verb writing watcher state directly. State and caches
 belong under the OS user's state/cache roots, not the package tree.
-Each user runs the package from their own checkout; never another user's installation.
+The orchestrator and workers each run the package from their own checkout; never
+another checkout's installation.
 
 ## GraphQL budget and listing lag
 

@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { getConfig, loadYaml } from "./config.js";
@@ -6,8 +6,8 @@ import type { Config } from "./config.js";
 import permissionTemplate from "../templates/claude-settings.json" with { type: "json" };
 import packageMetadata from "../package.json" with { type: "json" };
 import { gitIdentityVariables } from "./gateway/git.js";
-import { claudeCredentialFindings } from "./gateway/identity.js";
 import type { Person } from "./gateway/people.js";
+import { workerCheckout } from "./gateway/worker-path.js";
 
 const mermaidPin = packageMetadata.peerDependencies.mermaid;
 const secretPattern =
@@ -47,6 +47,9 @@ export function check(
       const value = kind === "vmethod" ? getConfig(root, env) : loadYaml(root, kind);
       if (kind === "vmethod") {
         vmethodValue = value as Config;
+        if (env.VMETHOD_ROLE === "orchestrator") {
+          messages.push(...workerCheckoutFindings(root, vmethodValue));
+        }
         const secrets = secretPaths(value);
         for (const path of secrets) {
           messages.push(`Secret-looking config value at ${path} (redacted)`);
@@ -101,11 +104,6 @@ export function check(
       messages.push((error as Error).message);
     }
   }
-  try {
-    messages.push(...claudeCredentialFindings(root, env));
-  } catch {
-    // The configuration loop above already reports invalid models/configuration.
-  }
   let peerPath: string | undefined;
   try {
     peerPath = createRequire(join(root, "package.json")).resolve("mermaid/package.json");
@@ -154,8 +152,40 @@ export function check(
       );
     }
   }
+  if (!claudeIgnored(root)) {
+    messages.push(
+      "Ignore .claude/ in .gitignore: each checkout keeps its own identity in .claude/settings.local.json"
+    );
+  }
   warnings.push(...codeownersWarnings(root));
   return { code: missing ? 2 : messages.length ? 1 : 0, messages: [...messages, ...warnings] };
+}
+
+/** The orchestrator launches workers in their own clone; it must exist apart from this one. */
+function workerCheckoutFindings(root: string, config: Config): string[] {
+  let checkout: string;
+  try {
+    checkout = workerCheckout(root, config);
+  } catch (error) {
+    return [(error as Error).message];
+  }
+  return existsSync(join(checkout, ".git"))
+    ? []
+    : [`workerCheckout ${checkout} is not a git clone; clone the repository there for workers`];
+}
+
+/** A root .gitignore line ignoring the whole .claude directory, without negations after it. */
+function claudeIgnored(root: string): boolean {
+  let lines: string[];
+  try {
+    lines = readFileSync(join(root, ".gitignore"), "utf8").split(/\r?\n/);
+  } catch {
+    return false;
+  }
+  const ignored = lines.findLastIndex((line) => /^\/?\.claude\/?$/.test(line.trim()));
+  return (
+    ignored >= 0 && !lines.slice(ignored + 1).some((line) => /^!\/?\.claude\//.test(line.trim()))
+  );
 }
 
 function secretPaths(value: unknown, path = ""): string[] {

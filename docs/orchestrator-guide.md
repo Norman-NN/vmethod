@@ -365,8 +365,9 @@ Use a capable generalist for design, judgment and cross-cutting work; consider a
 cheaper model for a well-specified bounded task, and require vision when needed.
 The baseline default family is sol unless an explicit selection or an issue hint
 supplies another; project policy and current learnings guide deliberate overrides.
-Backend isolation differs: an edit-acceptance mode is not a filesystem sandbox;
-consider `workerUser` and actual OS access. Never bypass permissions. Owner-gated
+An edit-acceptance mode is not a filesystem sandbox: workers run as your OS user,
+separated by their own checkout and identity, not by file permissions. Never
+bypass permissions. Owner-gated
 families (`gate: owner`, today astra and fable) require two-layer authorization,
 including when selected by full id: your own `--owner-approved` flag on
 `open-task`, `worker start` or `worker model`, **and** an approval the gateway

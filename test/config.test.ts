@@ -45,11 +45,11 @@ test.each([undefined, "premium", "expensive", "standard", "cheap"])(
 
 test.each([
   { kind: "opencode", model: "provider/model", gate: "none", valid: true },
-  { kind: "claude", model: "claude-sonnet-5-5", gate: "none", valid: true },
-  { kind: "claude", model: "claude-opus-5-5", gate: "owner", valid: true },
+  { kind: "opencode", model: "claude-code/claude-opus-5-5[1m]", gate: "owner", valid: true },
   { kind: "opencode", model: "bare-model", gate: "none", valid: false },
-  { kind: "claude", model: "provider/model", gate: "none", valid: false },
-  { kind: "claude", model: "model with spaces", gate: "none", valid: false },
+  { kind: "opencode", model: "provider/model with spaces", gate: "none", valid: false },
+  { kind: "claude", model: "claude-sonnet-5-5", gate: "none", valid: false },
+  { kind: "claude", model: "claude-code/claude-sonnet-5-5", gate: "none", valid: false },
   { kind: "opencode", model: "provider/model", gate: "-", valid: false },
 ])(
   "models schema validates kind=$kind model=$model gate=$gate (valid=$valid)",
@@ -169,23 +169,23 @@ test("VMETHOD overrides config; VECS, SPACEROCKS and bare BASE are ignored", () 
 test("default board switch, arrays and credential-name overrides are typed and validated", () => {
   const root = validProject();
   const path = join(root, "vmethod.yaml");
-  writeFileSync(path, readFileSync(path, "utf8").replace("EXAMPLE_GITHUB_TOKEN", "GH_TOKEN"));
   expect(getConfig(root, {})).toMatchObject({ board: { enabled: true } });
-  expect(getConfig(root, {})).toMatchObject({
-    credentials: { githubToken: "GH_TOKEN" },
-  });
+  expect(getConfig(root, {})).toMatchObject({ credentials: { sshKey: "EXAMPLE_SSH_KEY" } });
   expect(
     getConfig(root, {
-      VMETHOD_CREDENTIALS_GITHUB_TOKEN: "OTHER_TOKEN",
+      VMETHOD_CREDENTIALS_SSH_KEY: "OTHER_KEY",
       VMETHOD_BOARD_REPOS: "[example/one, example/two]",
     })
   ).toMatchObject({
-    credentials: { githubToken: "OTHER_TOKEN" },
+    credentials: { sshKey: "OTHER_KEY" },
     board: { repos: ["example/one", "example/two"] },
   });
-  expect(() => getConfig(root, { VMETHOD_CREDENTIALS_GITHUB_TOKEN: "literal-value" })).toThrow(
+  expect(() => getConfig(root, { VMETHOD_CREDENTIALS_SSH_KEY: "literal-value" })).toThrow(
     "pattern"
   );
+  // GitHub access comes from GH_CONFIG_DIR alone; a token variable name is refused.
+  writeFileSync(path, `${readFileSync(path, "utf8")}  githubToken: GH_TOKEN\n`);
+  expect(() => getConfig(root, {})).toThrow("/credentials must NOT have additional properties");
 }, 15000);
 
 test("VMETHOD board, track and base switches map to config", () => {

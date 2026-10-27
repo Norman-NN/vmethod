@@ -7,7 +7,7 @@ import { GitHubClient } from "../../src/gateway/client.js";
 import { PeopleFilter, type ObjectData } from "../../src/gateway/people.js";
 import { Digest } from "../../src/gateway/digest.js";
 import { getConfig } from "../../src/config.js";
-import { validProject } from "../helpers.js";
+import { validProject, ghConfig } from "../helpers.js";
 import { actor, people } from "./helpers.js";
 import { scopeIssue, scopeComment } from "./scope-fixture.js";
 import { bodyHash, scopeApproved } from "../../src/gateway/scope.js";
@@ -123,7 +123,7 @@ test.each([
 function setup() {
   const root = validProject();
   const config = getConfig(root, {});
-  const env = { EXAMPLE_GITHUB_TOKEN: "secret", XDG_STATE_HOME: join(root, "state") };
+  const env = { GH_CONFIG_DIR: ghConfig("secret"), XDG_STATE_HOME: join(root, "state") };
   const filter = new PeopleFilter(people, "example", new Digest(env, "autopilot", () => 0));
   return { root, config, env, filter };
 }

@@ -11,15 +11,26 @@ Adopt the pinned package in one reviewed change without copying shared methodolo
       registered compatibility stubs; it never overwrites existing configuration or
       an unmarked script. Resolve conflicting local scripts explicitly, not by
       deleting them blindly. Current verbs are listed in [Package commands](package.md).
-- [ ] Fill `repo`, `org`, `baseBranch`, `releaseBranch`, `workerUser`, `stateName`,
-      `branches`, `board`, `checks`, `postMerge`, `changelog` and `credentials` from
-      local settings as appropriate. Preserve existing state names and markers so
-      watchers do not replay old events. Credentials are env names, not values.
-- [ ] Check `branches.worktreePrefix` (default `"auto-"`) against your worker
-      directory convention. Use `""` for intentional unprefixed directories.
-      Existing unprefixed task directories are looked up without renaming them when
-      the prefixed path is absent; new worktrees use the configured prefix.
+- [ ] Fill `repo`, `org`, `baseBranch`, `releaseBranch`, `stateName`, `workerCheckout`,
+      `branches`, `board`, `checks`, `postMerge` and `changelog` from local settings
+      as appropriate. Preserve existing state names and markers so watchers do not
+      replay old events. Configuration holds no credentials.
+- [ ] **Give workers their own checkout.** Clone the repository a second time, for
+      example next to the orchestrator's (`../<project>-worker`), and point
+      `workerCheckout` (or `VMETHOD_WORKER_CHECKOUT`) at it. Workers never run in the
+      orchestrator's checkout. Register both folders as OpenChamber projects. Check
+      `branches.worktreePrefix` (default `"auto-"`), which names task worktrees.
       See [worker worktree configuration](package.md#worker-worktree-configuration).
+- [ ] **Ignore `.claude/`** in `.gitignore` (`init` adds it; `check` requires it).
+      In each checkout, the owner writes `.claude/settings.local.json` with an `env`
+      block for that identity, read by OpenCode and Claude alike. The orchestrator
+      checkout sets `VMETHOD_ROLE=orchestrator`, the `GH_CONFIG_DIR` of the
+      orchestrator's gh login, `GIT_SSH_COMMAND`, the `GIT_AUTHOR_*` and
+      `GIT_COMMITTER_*` identity, and the `OPENCODE_*` server credentials. The
+      worker checkout sets `VMETHOD_ROLE=worker`, the `GH_CONFIG_DIR` of the
+      worker's gh login, `GIT_SSH_COMMAND` and the worker's git identity. Give the
+      orchestrator's OpenCode permissions access to the worker checkout and
+      OpenCode's worktree directory (`external_directory`).
 - [ ] Set `board.repos` to **every** repository sharing the board. Set
       `learningsPrivacy` before any submission. Keep concrete paths, hosts, commands
       and domain rules local. Port behavioral differences into reviewed project hooks.
@@ -33,10 +44,11 @@ Adopt the pinned package in one reviewed change without copying shared methodolo
 - [ ] Rename old environment prefixes to `VMETHOD_*`. Use the
       [documented mapping](package.md#environment-mapping); do not assume old names
       remain aliases. Set `board.enabled: false` for intentional offline/fork work.
-- [ ] Set the configured GitHub token variables and `GIT_AUTHOR_NAME`,
-      `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME`, `GIT_COMMITTER_EMAIL` in the
-      orchestrator wrapper environment. Identity kept only in git config is not
-      used. `VMETHOD_ROLE=orchestrator vmethod check` reports missing identities.
+- [ ] Log each identity into its own gh config directory with
+      `GH_CONFIG_DIR=<dir> gh auth login`; vmethod never reads `GH_TOKEN`. Identity
+      kept only in git config is not used. `VMETHOD_ROLE=orchestrator vmethod check`
+      reports missing identities and a missing worker checkout. In each checkout,
+      `vmethod check --online` reports which login it holds.
 - [ ] Migrate in-flight opencode sessions with `worker adopt <pr> <session-id>`,
       or configure `legacyWorkers` relative directory paths and run `worker adopt --from-legacy`
       (see [worker management](gateway.md#worker-management-orchestrator-only)). Review every skipped record;
@@ -123,9 +135,10 @@ Headless Claude `key=value` records are **not adoptable**: there is no verified
 server session lookup. The importer reports the PR and recorded id but does not
 contact opencode, trust the recorded model/directory, or adopt the session. If
 the task is still open, explicitly relaunch it with
-`worker start <pr> --model <claude-family>` using your configured Claude family
-and any required owner approval. This starts a new worker, not a continuation
-of the legacy Claude process; coordinate stopping that process before relaunching.
+`worker start <pr> --model <family>` and any required owner approval; Claude
+families now run through OpenCode's `claude-code` provider. This starts a new
+worker, not a continuation of the legacy Claude process; coordinate stopping that
+process before relaunching.
 
 ## Every upgrade
 

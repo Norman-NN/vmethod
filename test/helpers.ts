@@ -16,12 +16,28 @@ export function fixture(): string {
   fixtures.push(root);
   return root;
 }
+const ghConfigs = new Map<string, string>();
+/** A gh config directory whose plain-text login holds this token (GH_CONFIG_DIR). */
+export function ghConfig(token: string): string {
+  let directory = ghConfigs.get(token);
+  if (!directory) {
+    directory = join(fixture(), "gh");
+    mkdirSync(directory);
+    writeFileSync(
+      join(directory, "hosts.yml"),
+      `github.com:\n    oauth_token: ${JSON.stringify(token)}\n    user: fixture\n`
+    );
+    ghConfigs.set(token, directory);
+  }
+  return directory;
+}
 export function validProject(): string {
   const root = fixture();
   init(root, templates);
   mkdirSync(join(root, ".claude"));
   cpSync(join(templates, "claude-settings.json"), join(root, ".claude/settings.json"));
   writeFileSync(join(root, "CODEOWNERS"), "* @owner\n");
+  writeFileSync(join(root, ".gitignore"), ".claude/\n");
   peer(root);
   return root;
 }

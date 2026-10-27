@@ -3,9 +3,10 @@ repo: example/project
 org: example
 baseBranch: dev
 releaseBranch: master
-# Set when workers run as a different OS user; both users must belong to workerGroup.
-# workerUser: example-worker
-# workerGroup: example-workers
+# The workers' own clone of the repository, relative to this checkout or absolute;
+# VMETHOD_WORKER_CHECKOUT overrides it per machine. Worker sessions run in worktrees
+# of it, with the worker identity from its .claude/settings.local.json.
+workerCheckout: ../example-worker
 stateName: example-state
 # Import only these directories under the OS state root; tracks append -<track>.
 # legacyState: [vecs-watch]
@@ -42,8 +43,7 @@ merge:
 changelog:
   directory: changes/unreleased
   kinds: [breaking, feature, fix]
+# GitHub access comes from the gh login in GH_CONFIG_DIR. sshKey optionally names an
+# environment variable holding a private key path, for SSH fetch/push when HTTPS fails.
 credentials:
-  githubToken: EXAMPLE_GITHUB_TOKEN
   sshKey: EXAMPLE_SSH_KEY
-  workerPassword: EXAMPLE_WORKER_PASSWORD
-  workerGithubToken: EXAMPLE_WORKER_GITHUB_TOKEN

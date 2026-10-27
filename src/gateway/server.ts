@@ -2,7 +2,7 @@ import { existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { assertEstimate } from "../board/estimate.js";
 import { ownerAgreement } from "./owner-agreement.js";
 import { getConfig, loadYaml, type Config } from "../config.js";
-import { workerWorktree } from "./worker-path.js";
+import { WorkerWorktrees } from "./worker-launch.js";
 import { WorktreeService, type WorktreeTask } from "./worktrees.js";
 import { GitHubClient, GitHubHttpError, type Dependencies } from "./client.js";
 import { Digest } from "./digest.js";
@@ -52,8 +52,6 @@ import { realpathSync } from "node:fs";
 import { matchesGlob, resolve } from "node:path";
 import { BoardService } from "./board.js";
 import { WorkerService, type TaskMetadata } from "./workers.js";
-import { workerAccess } from "./access.js";
-import { startTask } from "./worker-verbs.js";
 import {
   EventLoop,
   eventDeps,
@@ -117,64 +115,20 @@ class GatewayServer {
     return false;
   }
 
+  private get workerWorktrees(): WorkerWorktrees {
+    return new WorkerWorktrees(this.root, this.config, this.env, this.deps);
+  }
+
   private get workers(): WorkerService {
     return (this.workersClient ??= new WorkerService(this.root, this.config, this.env, this.deps, {
       metadata: (pr) => this.workerMetadata(pr),
       prepare: async (pr) => {
         const task = await this.task({ ref: String(pr) }, { role: "orchestrator" });
-        const directory = workerWorktree(this.root, this.config, task.branch);
-        // Keep dependency installation/dirty-tree guards in the existing preparation path.
-        if (!existsSync(directory)) {
-          await startTask(
-            {
-              call: async (operation, input) => {
-                if (operation === "workerAccess") {
-                  return this.workerAccess(input as Operations["workerAccess"]["input"], {
-                    role: "orchestrator",
-                  }) as never;
-                }
-                if (operation !== "task") {
-                  throw new Error("Unexpected preparation operation");
-                }
-                return this.task(input as Operations["task"]["input"], {
-                  role: "orchestrator",
-                }) as never;
-              },
-            },
-            this.root,
-            String(pr),
-            this.env,
-            { role: "orchestrator" },
-            {
-              exec: this.deps.exec,
-              report: this.deps.report,
-            }
-          );
-        }
-        const git = (...args: string[]) =>
-          this.deps.exec(
-            "git",
-            [...(this.config.workerUser ? ["-c", `safe.directory=${directory}`] : []), ...args],
-            {
-              cwd: directory,
-              env: { PATH: this.env.PATH, HOME: this.env.HOME },
-            }
-          );
-        if (
-          realpathSync((await git("rev-parse", "--show-toplevel")).trim()) !==
-            realpathSync(directory) ||
-          (await git("rev-parse", "--abbrev-ref", "HEAD")).trim() !== task.branch
-        ) {
-          throw new Error("Worker directory is not the PR's worktree/branch");
-        }
-        if (
-          resolve(directory, (await git("rev-parse", "--git-common-dir")).trim()) ===
-          resolve(directory, (await git("rev-parse", "--git-dir")).trim())
-        ) {
-          throw new Error("Worker start requires a linked task worktree, not a main checkout");
-        }
-        await workerAccess(this.root, directory, this.config, this.deps);
-        return directory;
+        return this.workerWorktrees.prepare({ pr, ...task });
+      },
+      locate: async (pr) => {
+        const task = await this.task({ ref: String(pr) }, { role: "orchestrator" });
+        return this.workerWorktrees.locate(task.branch);
       },
       setModel: async (pr, family) => {
         await this.setWorkerField(pr, "pr", "Model", family);
@@ -207,7 +161,6 @@ class GatewayServer {
       },
       modelApproval: (pr, issue, family) => this.modelApproval(family, { pr, issue }),
       submitLearnings: () => this.learningService().command({ action: "submit" }),
-      workerIdentity: () => this.workerIdentity(),
       issue: (issue) => this.workerIssue(issue),
       diffStats: async (_pr, base, head) => {
         if (![base, head].every((sha) => /^[a-f0-9]{40}$/i.test(sha))) {
@@ -409,16 +362,6 @@ class GatewayServer {
       ? "orchestrator"
       : "peer-orchestrator";
   }
-  workerAccess: Handlers["workerAccess"] = async ({ directory }, ctx) => {
-    if (ctx.role === "worker") {
-      const task = await this.task({ ref: String(ctx.taskPr) }, ctx);
-      if (resolve(directory) !== workerWorktree(this.root, this.config, task.branch)) {
-        throw new Error("Worker access requires its own worktree");
-      }
-    }
-    return workerAccess(this.root, directory, this.config, this.deps);
-  };
-
   private localNumber(ref: string): number {
     const target = reference(ref, this.config);
     if (target.repo.toLowerCase() !== String(this.config.repo).toLowerCase()) {
@@ -639,53 +582,6 @@ class GatewayServer {
       comments,
     };
   }
-  private async workerIdentity(): Promise<NodeJS.ProcessEnv> {
-    if (this.config.workerUser) {
-      const run = (...args: string[]) =>
-        this.deps.exec("id", args, { cwd: this.root, env: { PATH: this.env.PATH } });
-      const current = (await run("-u")).trim();
-      const worker = (await run("-u", String(this.config.workerUser))).trim();
-      if (!/^\d+$/.test(current) || current !== worker) {
-        throw new Error(
-          `Claude launch must run as the worker user ${String(this.config.workerUser)}; use that user's login`
-        );
-      }
-    }
-    const name = object(this.config.credentials).workerGithubToken;
-    const token = typeof name === "string" ? this.env[name] : undefined;
-    if (!token) {
-      throw new Error(
-        "Claude workers require credentials.workerGithubToken naming a worker-scoped token environment variable"
-      );
-    }
-    const client = new GitHubClient(
-      { ...this.config, credentials: { githubToken: name } },
-      this.env,
-      this.deps
-    );
-    const viewer = object(
-      object(
-        await client.graphql(`query WorkerIdentity { viewer { __typename login databaseId } }`)
-      ).viewer
-    );
-    if (this.filter.identity(viewer, false)?.role !== "worker") {
-      throw new Error(
-        "Configured Claude GitHub identity is not a pinned worker; refusing orchestrator identity"
-      );
-    }
-    const env: NodeJS.ProcessEnv = { GH_TOKEN: token, GITHUB_TOKEN: token, VMETHOD_ROLE: "worker" };
-    const githubName = object(this.config.credentials).githubToken;
-    if (typeof githubName === "string") {
-      env[githubName] = token;
-    }
-    for (const key of ["PATH", "HOME", "TMPDIR", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]) {
-      if (this.env[key]) {
-        env[key] = this.env[key];
-      }
-    }
-    // Credentials for the gateway/opencode/orchestrator are deliberately not inherited.
-    return env;
-  }
   private readonly loops = new Map<string, EventLoop>();
 
   nextEvents: Handlers["nextEvents"] = async (input) => {
@@ -707,6 +603,9 @@ class GatewayServer {
           ),
           github: this.github,
           workerStatus: (pr) => this.workers.watchStatus(pr),
+          // Without a configured worker checkout no task can have a worker worktree.
+          workerTrees: async () =>
+            this.config.workerCheckout === undefined ? [] : this.workerWorktrees.registered(),
           workerSend: (pr, text) => this.workers.resume(pr, text),
           workerMetric: (pr, event) => this.workers.recordMetric(pr, event),
           resolveConflicts: (pr) => this.conflicts.resolve(pr),
@@ -2269,7 +2168,6 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     worker: server.worker,
     grade: server.grade,
     suggestModel: server.suggestModel,
-    workerAccess: server.workerAccess,
     openTask: server.openTask,
     reviewTask: server.reviewTask,
     askIssue: server.askIssue,
@@ -2316,7 +2214,6 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     worker: ["orchestrator"],
     grade: ["orchestrator"],
     suggestModel: ["orchestrator"],
-    workerAccess: ["worker", "orchestrator"],
     openTask: ["orchestrator"],
     reviewTask: ["orchestrator"],
     askIssue: ["orchestrator"],
@@ -2388,7 +2285,7 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
         target.repo.toLowerCase() !== String(config.repo).toLowerCase()
       ) {
         throw new Error(
-          "Worker may post only to its own taskPr in the configured repository; use VMETHOD_ROLE=worker VMETHOD_TASK_PR=<assigned PR number> on every vmethod command"
+          "Worker may post only to its own taskPr in the configured repository; run vmethod in your task worktree, whose .vmethod/.env sets VMETHOD_ROLE=worker and VMETHOD_TASK_PR"
         );
       }
     }

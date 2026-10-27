@@ -1,5 +1,5 @@
 import { expect, test, vi } from "vitest";
-import { fixture } from "../helpers.js";
+import { fixture, ghConfig } from "../helpers.js";
 import { verifyConflictHead } from "../../src/gateway/verify-hook.js";
 import type { Dependencies } from "../../src/gateway/client.js";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -88,7 +88,7 @@ test.each([true, false])(
         root,
         head,
         { repo: "example/project" },
-        { XDG_STATE_HOME: root, TOKEN: "secret" },
+        { XDG_STATE_HOME: root, GH_CONFIG_DIR: ghConfig("secret") },
         deps
       )
     ).toBe(success);

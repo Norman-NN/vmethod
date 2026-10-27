@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { expect } from "vitest";
 import { parse, Kind } from "graphql";
@@ -18,7 +18,7 @@ import {
 } from "../../src/gateway/client.js";
 import { Digest } from "../../src/gateway/digest.js";
 import { PeopleFilter, object, type ObjectData } from "../../src/gateway/people.js";
-import { fixture } from "../helpers.js";
+import { fixture, ghConfig } from "../helpers.js";
 import { actor, people, sha } from "./helpers.js";
 import recordedActions from "../fixtures/github/watch-actions.json" with { type: "json" };
 import recordedBoard from "../fixtures/github/board-write-inputs.json" with { type: "json" };
@@ -58,12 +58,11 @@ export class WatchFake {
     baseBranch: "dev",
     board: { owner: "example", number: 5, repos: ["example/project"] },
     vmethod: { repo: "vworlds/vmethod" },
-    credentials: { githubToken: "TOKEN" },
     gateway: { maxRetries: 0 },
   };
   env = {
     XDG_STATE_HOME: join(this.root, "state"),
-    TOKEN: "fake-secret",
+    GH_CONFIG_DIR: ghConfig("fake-secret"),
     OPENCODE_BASE_URL: "http://opencode.invalid",
     OPENCODE_SERVER_USERNAME: "fake",
     OPENCODE_SERVER_PASSWORD: "fake",
@@ -913,6 +912,8 @@ export class WatchFake {
     this.unexpected.push(String(url));
     throw new Error(`Unexpected request ${url}`);
   }
+  /** Overrides the worker checkout's registered task worktrees for the next loops. */
+  workerTrees?: () => Promise<{ path: string; branch: string }[]>;
   loop(input: SessionInput = {}): EventLoop {
     const digest = new Digest(this.env, "watch-test", this.deps.now);
     const loop = new EventLoop(
@@ -924,6 +925,21 @@ export class WatchFake {
         filter: new PeopleFilter(this.watchPeople, "example", digest, ["vworlds/vmethod"]),
         digest,
         github: new GitHubClient(this.config, this.env, this.deps),
+        // Directories under <root>/.worktrees stand in for the worker checkout's
+        // registered task worktrees, named <prefix><branch>.
+        workerTrees: async () => {
+          if (this.workerTrees) {
+            return this.workerTrees();
+          }
+          const parent = join(this.root, ".worktrees");
+          const prefix = String(object(this.config.branches).worktreePrefix ?? "auto-");
+          return existsSync(parent)
+            ? readdirSync(parent).map((name) => ({
+                path: join(parent, name),
+                branch: name.startsWith(prefix) ? name.slice(prefix.length) : name,
+              }))
+            : [];
+        },
         workerStatus: async (pr) => {
           this.staleWorkerReads.push(pr);
           if (this.workerStatus) {

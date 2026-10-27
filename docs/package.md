@@ -33,21 +33,27 @@ automatic watcher dispatch, cheap-model turns and `conflicts.escalatePaths`.
 
 ## Worker worktree configuration
 
-Worker preparation, adoption, status and watching share the directory resolver in
-`src/gateway/worker-path.ts`. Configure these keys under `branches`:
+Workers run in their own clone of the repository, the **worker checkout**, never in
+the orchestrator's. `src/gateway/worker-path.ts` is the one place it is read:
 
-| Key              | Default              | Meaning                                                                                           |
-| ---------------- | -------------------- | ------------------------------------------------------------------------------------------------- |
-| `mainCheckout`   | Gateway project root | Base directory for relative worktree roots.                                                       |
-| `worktreeRoot`   | `.worktrees`         | Parent directory for task and orchestrator worktrees.                                             |
-| `worktreePrefix` | `"auto-"`            | Worker directory prefix; set `""` for unprefixed worker directories. Path separators are refused. |
+| Key                       | Default              | Meaning                                                                                                           |
+| ------------------------- | -------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `workerCheckout`          | (required)           | The worker checkout, relative to the orchestrator's checkout or absolute. `VMETHOD_WORKER_CHECKOUT` overrides it. |
+| `branches.worktreePrefix` | `"auto-"`            | Task worktree name prefix; set `""` for unprefixed names. Path separators are refused.                            |
+| `branches.worktreeRoot`   | `.worktrees`         | Parent of the orchestrator's own worktrees, such as `orchestrator-review`.                                        |
+| `branches.mainCheckout`   | Gateway project root | Base directory for a relative `worktreeRoot`.                                                                     |
 
-New worker worktrees use `<worktreeRoot>/<worktreePrefix><branch>`. Existing
-unprefixed `<worktreeRoot>/<branch>` directories remain a read-only lookup fallback
-when the prefixed directory is absent: lookup never renames or migrates them.
-Normal task preparation can reuse that existing worktree. Orchestrator worktrees
-such as `orchestrator-review` do not use this prefix. Status reads preserve the
-recorded session/directory binding rather than silently attaching it to a new tree.
+`worker start` creates each task worktree through OpenCode's worktree API from the
+worker checkout, named `<worktreePrefix><branch>`, in OpenCode's own worktree
+directory. Worker records keep the directory OpenCode returned; status, watching
+and cleanup find a task's tree among the worker checkout's registered worktrees by
+branch, never by deriving a path.
+
+The worker checkout's gitignored `.claude/settings.local.json` sets the worker
+identity for every session in it: `VMETHOD_ROLE=worker`, the worker's
+`GH_CONFIG_DIR`, `GIT_SSH_COMMAND` and `GIT_AUTHOR_*`/`GIT_COMMITTER_*`. The
+orchestrator's checkout has its own, with `VMETHOD_ROLE=orchestrator` and the
+`OPENCODE_*` credentials vmethod uses to launch workers.
 
 ## Environment mapping
 

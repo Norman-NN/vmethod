@@ -1,69 +1,34 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
-import type { WorkerDependencies } from "./worker-verbs.js";
-import type { Transport } from "./transport.js";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { taskEnvironmentFile } from "./worker-launch.js";
 
-/** Infer only worker scope in a linked worktree; explicit environment context always wins.
- * Cache a unique gateway resolution by branch and head SHA in the worktree's scratch directory.
+/** The only variables a task environment file may set. */
+const taskVariables = new Set(["VMETHOD_ROLE", "VMETHOD_TASK_PR"]);
+
+/**
+ * Load the task environment `worker start` wrote into a worker worktree
+ * (`.vmethod/.env`), so worker verbs never need the PR spelled out. Only
+ * VMETHOD_ROLE and VMETHOD_TASK_PR are read; a variable already set in the
+ * environment wins, so an explicit override still applies.
  */
-export async function inferWorkerEnvironment(
-  root: string,
-  env: NodeJS.ProcessEnv,
-  transport: Transport,
-  deps: WorkerDependencies
-): Promise<NodeJS.ProcessEnv> {
-  if (env.VMETHOD_ROLE !== undefined || env.VMETHOD_TASK_PR !== undefined) {
-    return env;
-  }
-  const git = async (...args: string[]) =>
-    (await deps.exec("git", ["rev-parse", ...args], { cwd: root })).trim();
+export function taskEnvironment(root: string, env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  let text: string;
   try {
-    if (resolve(root, await git("--git-dir")) === resolve(root, await git("--git-common-dir"))) {
-      return env;
-    }
-    const branch = await git("--abbrev-ref", "HEAD");
-    const head = await git("HEAD");
-    if (branch === "HEAD" || !/^[a-f\d]{40}$/i.test(head)) {
-      return env;
-    }
-    const file = join(root, ".tmp", "worker-context.json");
-    let taskPr: number | null = null;
-    if (existsSync(file)) {
-      try {
-        const cache = JSON.parse(readFileSync(file, "utf8"));
-        if (
-          cache.branch === branch &&
-          cache.head === head &&
-          Number.isSafeInteger(cache.taskPr) &&
-          cache.taskPr > 0
-        ) {
-          taskPr = cache.taskPr;
-        }
-      } catch (error) {
-        deps.report(
-          `vmethod: ignoring unreadable worker context cache: ${(error as Error).message}`
-        );
-      }
-    }
-    if (taskPr === null) {
-      taskPr = await transport.call("resolveTask", { branch }, { role: "worker" });
-      if (taskPr === null) {
-        deps.report(
-          "vmethod: no unique open task PR for this branch; use VMETHOD_ROLE=worker VMETHOD_TASK_PR=<assigned PR number>"
-        );
-        return env;
-      }
-      if (!Number.isSafeInteger(taskPr) || taskPr < 1) {
-        throw new Error("Invalid resolved task PR");
-      }
-      mkdirSync(join(root, ".tmp"), { recursive: true });
-      writeFileSync(file, JSON.stringify({ branch, head, taskPr }) + "\n");
-    }
-    return { ...env, VMETHOD_ROLE: "worker", VMETHOD_TASK_PR: String(taskPr) };
+    text = readFileSync(join(root, taskEnvironmentFile), "utf8");
   } catch (error) {
-    deps.report(
-      `vmethod: worker context inference failed: ${(error as Error).message}; use VMETHOD_ROLE=worker VMETHOD_TASK_PR=<assigned PR number>`
-    );
-    return env;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return env;
+    }
+    throw error;
   }
+  const loaded: NodeJS.ProcessEnv = {};
+  for (const line of text.split(/\r?\n/)) {
+    const entry = /^\s*([A-Z][A-Z0-9_]*)=(.*)$/.exec(line);
+    if (entry && taskVariables.has(entry[1])) {
+      loaded[entry[1]] = entry[2].trim();
+    } else if (line.trim() && !line.trim().startsWith("#")) {
+      throw new Error(`Invalid line in ${taskEnvironmentFile}: ${JSON.stringify(line)}`);
+    }
+  }
+  return { ...loaded, ...env };
 }

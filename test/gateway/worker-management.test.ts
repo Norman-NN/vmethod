@@ -21,7 +21,7 @@ import recordedClosedPulls from "../fixtures/github/diagnostic-pulls-closed.json
 import recordedCompare from "../fixtures/github/diagnostic-compare.json" with { type: "json" };
 import type { Dependencies } from "../../src/gateway/client.js";
 import { object, type ObjectData } from "../../src/gateway/people.js";
-import { validProject } from "../helpers.js";
+import { fixture as scratch, validProject, ghConfig } from "../helpers.js";
 import { actor, item, people } from "./helpers.js";
 import { WatchFake } from "./watch-fake.js";
 import { gatewayVerb } from "../../src/cli/gateway.js";
@@ -30,15 +30,20 @@ import { WorkerService, type WorkerHooks } from "../../src/gateway/workers.js";
 
 function fixture(prefix?: string, legacy = false) {
   const root = validProject();
-  const directory = join(root, ".worktrees", `${legacy ? "" : (prefix ?? "")}9-task`);
-  mkdirSync(join(directory, "node_modules/.bin"), { recursive: true });
-  mkdirSync(join(directory, ".tmp"));
-  writeFileSync(join(directory, "node_modules/.bin/vmethod"), "fake", { mode: 0o755 });
+  mkdirSync(join(root, ".git"));
+  // The workers' own clone and the trees OpenCode created in it for task branches.
+  const workers = scratch();
+  const checkout = join(workers, "checkout");
+  const trees = join(workers, "trees");
+  mkdirSync(join(checkout, ".git/worktrees/9-task"), { recursive: true });
+  const directory = join(trees, `${legacy ? "" : (prefix ?? "")}9-task`);
+  mkdirSync(directory, { recursive: true });
   writeFileSync(join(root, "people.yaml"), stringify(people));
   writeFileSync(
     join(root, "vmethod.yaml"),
     readFileSync(join(root, "vmethod.yaml"), "utf8")
       .replace("/replace/with/consumer/checkout", root)
+      .replace("workerCheckout: ../example-worker", `workerCheckout: ${JSON.stringify(checkout)}`)
       .replace(
         "branches:",
         `branches:${prefix === undefined ? "" : `\n  worktreePrefix: ${JSON.stringify(prefix)}`}`
@@ -49,7 +54,6 @@ function fixture(prefix?: string, legacy = false) {
     stringify([
       { family: "glm", model: "fake/glm", kind: "opencode", gate: "none", tier: "cheap" },
       { family: "sol", model: "fake/sol", kind: "opencode", gate: "none", tier: "standard" },
-      { family: "sonnet", model: "claude-fake", kind: "claude", gate: "none", tier: "standard" },
       // Owner-gated expensive family for the #242 card-Model gate tests.
       { family: "astra", model: "fake/astra", kind: "opencode", gate: "owner", tier: "expensive" },
     ])
@@ -119,14 +123,12 @@ function fixture(prefix?: string, legacy = false) {
   const optionNames: Record<string, string> = {
     O_glm: "glm",
     O_sol: "sol",
-    O_sonnet: "sonnet",
     O_astra: "astra",
   };
   const gradePosts: unknown[] = [];
   const modelPosts: unknown[] = [];
   const unexpected: string[] = [];
-  let viewer = actor(1),
-    active = false,
+  let active = false,
     turnError: unknown;
   let permissions: unknown[] = [];
   const deps: Dependencies = {
@@ -217,12 +219,6 @@ function fixture(prefix?: string, legacy = false) {
       } else if (url.origin === "https://api.github.com" && url.pathname === "/graphql") {
         const { query, variables } = JSON.parse(String(init?.body));
         parse(query);
-        if (query.includes("query WorkerIdentity")) {
-          // `viewer` is a User: an `... on Bot` spread is a GraphQL validation error live.
-          expect(query).toBe("query WorkerIdentity { viewer { __typename login databaseId } }");
-          expect(object(init?.headers).authorization).toBe("Bearer worker-token");
-          return Response.json({ data: { viewer } });
-        }
         if (query === "query GatewayIdentity { viewer { databaseId login __typename } }") {
           expect(object(init?.headers).authorization).toBe("Bearer orchestrator-token");
           return Response.json({ data: { viewer: actor(2) } });
@@ -252,7 +248,7 @@ function fixture(prefix?: string, legacy = false) {
                       name: "Model",
                       dataType: "SINGLE_SELECT",
                       createdAt: recordedFields.node.fields.nodes[0].createdAt,
-                      options: ["glm", "sol", "sonnet", "astra"].map((name) => ({
+                      options: ["glm", "sol", "astra"].map((name) => ({
                         id: `O_${name}`,
                         name,
                         color: "GRAY",
@@ -372,22 +368,26 @@ function fixture(prefix?: string, legacy = false) {
     },
     exec: async (file, args, options) => {
       expect(file).toBe("git");
-      expect(options?.cwd).toBe(directory);
       expect(JSON.stringify(options?.env)).not.toMatch(
         /orchestrator-token|worker-token|secret-password/
       );
-      const key = args.join(" ");
-      if (key === "rev-parse --show-toplevel") {
-        return directory;
-      }
-      if (key === "rev-parse --abbrev-ref HEAD") {
-        return "9-task";
-      }
-      if (key === "rev-parse --git-common-dir") {
-        return join(root, ".git");
-      }
-      if (key === "rev-parse --git-dir") {
-        return join(root, ".git/worktrees/9-task");
+      const key = `${String(options?.cwd)}: ${args.join(" ")}`;
+      switch (key) {
+        case `${root}: rev-parse --git-common-dir`:
+          return join(root, ".git");
+        case `${checkout}: rev-parse --git-common-dir`:
+        case `${directory}: rev-parse --git-common-dir`:
+          return join(checkout, ".git");
+        case `${checkout}: worktree list --porcelain -z`:
+          return `worktree ${checkout}\0HEAD ${"a".repeat(40)}\0branch refs/heads/dev\0\0worktree ${directory}\0HEAD ${"b".repeat(40)}\0branch refs/heads/9-task\0\0`;
+        case `${directory}: rev-parse --show-toplevel`:
+          return directory;
+        case `${directory}: rev-parse --abbrev-ref HEAD`:
+          return "9-task";
+        case `${directory}: rev-parse --git-dir`:
+          return join(checkout, ".git/worktrees/9-task");
+        case `${directory}: branch -q --set-upstream-to=origin/9-task`:
+          return "";
       }
       throw new Error(`Unexpected fake git ${key}`);
     },
@@ -396,15 +396,9 @@ function fixture(prefix?: string, legacy = false) {
       throw new Error("Unexpected sleep");
     },
     report: vi.fn(),
-    processes: {
-      launch: vi.fn(async () => ({ pid: 123, born: "fake" })),
-      alive: () => true,
-      stop: vi.fn(),
-    },
   };
   const env = {
-    EXAMPLE_GITHUB_TOKEN: "orchestrator-token",
-    EXAMPLE_WORKER_GITHUB_TOKEN: "worker-token",
+    GH_CONFIG_DIR: ghConfig("orchestrator-token"),
     OPENCODE_BASE_URL: "https://opencode.invalid",
     OPENCODE_SERVER_USERNAME: "user",
     OPENCODE_SERVER_PASSWORD: "secret-password",
@@ -414,6 +408,8 @@ function fixture(prefix?: string, legacy = false) {
   const ctx = { role: "orchestrator" as const };
   return {
     root,
+    checkout,
+    trees,
     directory,
     pr,
     issue,
@@ -436,9 +432,6 @@ function fixture(prefix?: string, legacy = false) {
     },
     setProgress: (name: string) => {
       prProjects.nodes[0].fieldValues.nodes.push({ field: { name: "Progress" }, name });
-    },
-    setViewer: (index: number) => {
-      viewer = actor(index);
     },
     setStatus: (busy: boolean, error?: unknown) => {
       active = busy;
@@ -546,8 +539,8 @@ test.each(["success", "failure", "existing", "populated", "symlink-parent"])(
       rmSync(f.directory, { recursive: true });
     }
     if (scenario === "symlink-parent") {
-      renameSync(join(f.root, ".worktrees"), join(f.root, "trees-alias"));
-      symlinkSync(join(f.root, "trees-alias"), join(f.root, ".worktrees"), "dir");
+      renameSync(f.trees, `${f.trees}-alias`);
+      symlinkSync(`${f.trees}-alias`, f.trees, "dir");
     }
     const fetch = f.deps.fetch;
     const attempts: boolean[] = [];
@@ -710,7 +703,7 @@ test.each([
         f.ctx
       );
       expect(result).toContain("Started ses_test for #31 on astra");
-      // The opencode-kind family launches through the session create, not a claude process.
+      // The family launches through the OpenCode session create.
       expect(f.requests).toContain("POST https://opencode.invalid/api/session");
       // The launch resynchronizes the card's Model through the board write.
       expect(JSON.stringify(f.mutations)).toContain("O_astra");
@@ -718,7 +711,6 @@ test.each([
       await expect(
         f.transport.call("worker", { args: ["start", "31", "--owner-approved"] }, f.ctx)
       ).rejects.toThrow("APPROVE MODEL astra");
-      expect(f.deps.processes!.launch).not.toHaveBeenCalled();
       expect(f.mutations).toEqual([]);
       expect(f.requests.every((request) => !request.includes("opencode.invalid"))).toBe(true);
     }
@@ -789,7 +781,6 @@ test("worker stop --cleanup closes an unmerged task session before safe removal"
   await f.transport.call("worker", { args: ["start", "31"] }, f.ctx);
   f.pr.state = "CLOSED";
   f.pr.labels = { nodes: [], pageInfo: { hasNextPage: false } };
-  mkdirSync(join(f.root, ".git"));
   const events: string[] = [];
   const fetch = f.deps.fetch;
   f.deps.fetch = async (input, init) => {
@@ -803,13 +794,29 @@ test("worker stop --cleanup closes an unmerged task session before safe removal"
       events.push("close");
       return Response.json({ data: {} });
     }
+    // OpenCode removes the tree, so its worktree inventory forgets it as well.
+    if (path === "/api/location") {
+      expect(new URL(String(input)).searchParams.get("location[directory]")).toBe(f.checkout);
+      return Response.json({ directory: f.checkout, project: { id: "project-id" } });
+    }
+    if (path === "/api/worktree" && init?.method === "DELETE") {
+      expect(JSON.parse(String(init.body))).toEqual({
+        projectID: "project-id",
+        directory: f.directory,
+        force: true,
+      });
+      events.push("remove");
+      rmSync(f.directory, { recursive: true });
+      return new Response(null, { status: 204 });
+    }
     return fetch(input, init);
   };
-  f.deps.exec = async (file, args) => {
+  f.deps.exec = async (file, args, options) => {
     expect(file).toBe("git");
     const command = args.join(" ");
     if (command === "rev-parse --git-common-dir") {
-      return join(f.root, ".git");
+      expect([f.checkout, f.directory]).toContain(options?.cwd);
+      return join(f.checkout, ".git");
     }
     if (command === "symbolic-ref --quiet HEAD") {
       return "refs/heads/9-task";
@@ -821,14 +828,11 @@ test("worker stop --cleanup closes an unmerged task session before safe removal"
       return `worktree ${f.directory}\0HEAD ${f.pr.headRefOid}\0branch refs/heads/9-task\0\0`;
     }
     if (command === "for-each-ref --format=%(objectname) refs/heads/9-task") {
-      return "";
-    }
-    if (command === `worktree remove --force ${f.directory}`) {
-      events.push("remove");
-      rmSync(f.directory, { recursive: true });
+      expect(options?.cwd).toBe(f.checkout);
       return "";
     }
     if (command === "worktree prune") {
+      expect(options?.cwd).toBe(f.checkout);
       return "";
     }
     throw new Error(`Unexpected cleanup command ${command}`);
@@ -949,7 +953,7 @@ test.each(["auto-", "", "legacy"])(
           setModel: unexpected,
           modelComment: unexpected,
           setEstimate: unexpected,
-          workerIdentity: unexpected,
+          locate: unexpected,
           issue: unexpected,
           modelApproval: unexpected,
         };
@@ -960,6 +964,8 @@ test.each(["auto-", "", "legacy"])(
         };
         await f.transport.call("worker", { args: ["start", "31"] }, f.ctx);
         f.setStatus(true);
+        // The watcher polls only PRs with a registered worker-checkout tree.
+        w.workerTrees = async () => [{ path: f.directory, branch: "9-task" }];
         const loop = w.loop();
         expect(await w.once(loop)).toEqual([]);
         if (state === "permission") {
@@ -1413,50 +1419,6 @@ test("gateway refuses blocked starts and unlinked grading without reaching openc
   );
   expect(f.requests.join("\n")).not.toContain("opencode.invalid");
   expect(f.mutations).toEqual([]);
-  f.done();
-});
-
-test("gateway verifies worker token identity and launches Claude with no orchestrator/opencode credentials", async () => {
-  const f = fixture();
-  f.pr.projectItems = {
-    nodes: [
-      {
-        id: "CARD31",
-        project: { number: 1, owner: { login: "example" } },
-        fieldValues: { nodes: [{ field: { name: "Model" }, name: "sonnet" }] },
-      },
-    ],
-  };
-  f.setViewer(2);
-  await expect(f.transport.call("worker", { args: ["start", "31"] }, f.ctx)).rejects.toThrow(
-    "not a pinned worker"
-  );
-  expect(f.deps.processes!.launch).not.toHaveBeenCalled();
-  f.setViewer(1);
-  await f.transport.call("worker", { args: ["start", "31"] }, f.ctx);
-  expect(f.deps.processes!.launch).toHaveBeenCalledWith(
-    expect.objectContaining({
-      env: {
-        GH_TOKEN: "worker-token",
-        GITHUB_TOKEN: "worker-token",
-        EXAMPLE_GITHUB_TOKEN: "worker-token",
-        VMETHOD_ROLE: "worker",
-        VMETHOD_TASK_PR: "31",
-      },
-    })
-  );
-  expect(f.requests.join("\n")).not.toContain("opencode.invalid");
-  f.done();
-});
-
-test("Claude worker start refuses a missing worker credential before launch", async () => {
-  const f = fixture();
-  f.env.EXAMPLE_WORKER_GITHUB_TOKEN = "";
-  await expect(
-    f.transport.call("worker", { args: ["start", "31", "--model", "sonnet"] }, f.ctx)
-  ).rejects.toThrow("Claude workers require credentials.workerGithubToken");
-  expect(f.deps.processes!.launch).not.toHaveBeenCalled();
-  expect(f.requests.join("\n")).not.toContain("opencode.invalid");
   f.done();
 });
 

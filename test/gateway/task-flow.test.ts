@@ -10,7 +10,7 @@ import { GitHubClient, type Dependencies } from "../../src/gateway/client.js";
 import { getConfig } from "../../src/config.js";
 import { object, type ObjectData, type Person } from "../../src/gateway/people.js";
 import type { Card } from "../../src/board/types.js";
-import { validProject } from "../helpers.js";
+import { validProject, ghConfig } from "../helpers.js";
 import { actor, people, sha } from "./helpers.js";
 import legacyBodies from "../fixtures/github/legacy-task-bodies.json" with { type: "json" };
 import closingReferences from "../fixtures/github/task-closing-references.json" with { type: "json" };
@@ -1017,7 +1017,7 @@ function fixture() {
     },
   };
   const env = {
-    EXAMPLE_GITHUB_TOKEN: "secret",
+    GH_CONFIG_DIR: ghConfig("secret"),
     XDG_STATE_HOME: join(root, "state"),
     GIT_AUTHOR_NAME: "A",
     GIT_AUTHOR_EMAIL: "a@b",
@@ -2042,16 +2042,17 @@ test("merge session failure is nonfatal and retried without replaying completed 
   f.done();
 });
 
-test("merge follow-up captures worker usage before removing the worktree, and retry is a no-op", async () => {
-  const f = fixture();
-  const order: string[] = [];
-  const git = (...args: string[]) =>
+/** A git fixture repository, its separate worker clone holding the PR's task worktree,
+ * and fakes passing worktree git through and removing trees the way OpenCode does. */
+function workerTaskTree(f: ReturnType<typeof fixture>, onRemove: () => void = () => {}) {
+  const run = (cwd: string, ...args: string[]) =>
     execFileSync("git", args, {
-      cwd: f.root,
+      cwd,
       encoding: "utf8",
       timeout: 5000,
       stdio: ["ignore", "pipe", "pipe"],
     }).trim();
+  const git = (...args: string[]) => run(f.root, ...args);
   git("init", "-b", "dev");
   git("config", "user.name", "Test");
   git("config", "user.email", "test@example.invalid");
@@ -2059,10 +2060,72 @@ test("merge follow-up captures worker usage before removing the worktree, and re
   git("add", ".gitignore");
   git("commit", "-m", "initial");
   f.set({ state: "MERGED", head: git("rev-parse", "HEAD"), changed: false });
-  const path = join(f.root, ".worktrees/auto-8-task");
-  git("worktree", "add", "-b", "8-task", path);
+  const clone = `${f.root}-worker`;
+  run(f.root, "clone", "-q", f.root, clone);
+  f.config.workerCheckout = clone;
+  const path = join(`${f.root}-trees`, "auto-8-task");
+  run(clone, "worktree", "add", "-b", "8-task", path);
   mkdirSync(join(path, "node_modules"));
   writeFileSync(join(path, "node_modules/payload"), "ignored");
+  Object.assign(f.env, {
+    OPENCODE_BASE_URL: "http://opencode.test",
+    OPENCODE_SERVER_USERNAME: "user",
+    OPENCODE_SERVER_PASSWORD: "password",
+  });
+  const fetch = f.deps.fetch;
+  f.deps.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (url.host !== "opencode.test") {
+      return fetch(input, init);
+    }
+    if (url.pathname === "/api/location") {
+      expect(url.searchParams.get("location[directory]")).toBe(clone);
+      return Response.json({ directory: clone, project: { id: "project-id" } });
+    }
+    if (url.pathname === "/api/worktree" && init?.method === "DELETE") {
+      expect(JSON.parse(String(init.body))).toEqual({
+        projectID: "project-id",
+        directory: path,
+        force: true,
+      });
+      onRemove();
+      run(clone, "worktree", "remove", "--force", path);
+      return new Response(null, { status: 204 });
+    }
+    throw new Error(`Unexpected opencode ${init?.method} ${url.pathname}`);
+  };
+  const exec = f.deps.exec;
+  f.deps.exec = async (file, args, options) => {
+    if (
+      file === "git" &&
+      (["worktree", "for-each-ref", "symbolic-ref", "rev-list", "branch", "update-ref"].includes(
+        args[0]
+      ) ||
+        args.join(" ") === "rev-parse --git-common-dir" ||
+        args.join(" ") === "status --porcelain --untracked-files=all")
+    ) {
+      return execFileSync(file, [...args], {
+        cwd: options?.cwd,
+        encoding: "utf8",
+        timeout: 5000,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    }
+    return exec(file, args, options);
+  };
+  return {
+    path,
+    branch: () => run(clone, "for-each-ref", "--format=%(refname)", "refs/heads/8-task"),
+  };
+}
+
+test("merge follow-up captures worker usage before removing the worktree, and retry is a no-op", async () => {
+  const f = fixture();
+  const order: string[] = [];
+  const { path } = workerTaskTree(f, () => {
+    expect(order).toEqual(["capture"]);
+    order.push("remove");
+  });
   f.deps.workers!.captureUsage = async (pr) => {
     expect(pr).toBe(27);
     const journal = JSON.parse(
@@ -2075,29 +2138,6 @@ test("merge follow-up captures worker usage before removing the worktree, and re
     order.push("capture");
     return true;
   };
-  const exec = f.deps.exec;
-  f.deps.exec = async (file, args, options) => {
-    if (
-      file === "git" &&
-      (["worktree", "for-each-ref", "symbolic-ref", "rev-list", "branch", "update-ref"].includes(
-        args[0]
-      ) ||
-        args.join(" ") === "rev-parse --git-common-dir" ||
-        args.join(" ") === "status --porcelain --untracked-files=all")
-    ) {
-      if (args[0] === "worktree" && args[1] === "remove") {
-        expect(order).toEqual(["capture"]);
-        order.push("remove");
-      }
-      return execFileSync(file, [...args], {
-        cwd: options?.cwd,
-        encoding: "utf8",
-        timeout: 5000,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-    }
-    return exec(file, args, options);
-  };
   await f.flow().merge("27");
   await f.flow().merge("27");
   expect(order).toEqual(["capture", "remove"]);
@@ -2107,49 +2147,10 @@ test("merge follow-up captures worker usage before removing the worktree, and re
 
 test("merge follow-up retains the worktree while usage capture fails, then removes it", async () => {
   const f = fixture();
-  const git = (...args: string[]) =>
-    execFileSync("git", args, {
-      cwd: f.root,
-      encoding: "utf8",
-      timeout: 5000,
-      stdio: ["ignore", "pipe", "pipe"],
-    }).trim();
-  git("init", "-b", "dev");
-  git("config", "user.name", "Test");
-  git("config", "user.email", "test@example.invalid");
-  writeFileSync(join(f.root, ".gitignore"), "node_modules/\n.tmp/\n.worktrees/\n");
-  git("add", ".gitignore");
-  git("commit", "-m", "initial");
-  f.set({ state: "MERGED", head: git("rev-parse", "HEAD"), changed: false });
-  const path = join(f.root, ".worktrees/auto-8-task");
-  git("worktree", "add", "-b", "8-task", path);
-  mkdirSync(join(path, "node_modules"));
-  writeFileSync(join(path, "node_modules/payload"), "ignored");
+  let removals = 0;
+  const { path } = workerTaskTree(f, () => removals++);
   let capture = false;
   f.deps.workers!.captureUsage = async () => capture;
-  let removals = 0;
-  const exec = f.deps.exec;
-  f.deps.exec = async (file, args, options) => {
-    if (
-      file === "git" &&
-      (["worktree", "for-each-ref", "symbolic-ref", "rev-list", "branch", "update-ref"].includes(
-        args[0]
-      ) ||
-        args.join(" ") === "rev-parse --git-common-dir" ||
-        args.join(" ") === "status --porcelain --untracked-files=all")
-    ) {
-      if (args[0] === "worktree" && args[1] === "remove") {
-        removals++;
-      }
-      return execFileSync(file, [...args], {
-        cwd: options?.cwd,
-        encoding: "utf8",
-        timeout: 5000,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-    }
-    return exec(file, args, options);
-  };
   expect(await f.flow().merge("27")).toContain("Merged");
   expect(removals).toBe(0);
   expect(existsSync(path)).toBe(true);
@@ -2192,55 +2193,18 @@ test.each(["live", "unknown"] as const)(
 
 test("merged follow-up stops before removing the real task directory and branch, and retry is a no-op", async () => {
   const f = fixture();
-  const git = (...args: string[]) =>
-    execFileSync("git", args, {
-      cwd: f.root,
-      encoding: "utf8",
-      timeout: 5000,
-      stdio: ["ignore", "pipe", "pipe"],
-    }).trim();
-  git("init", "-b", "dev");
-  git("config", "user.name", "Test");
-  git("config", "user.email", "test@example.invalid");
-  writeFileSync(join(f.root, ".gitignore"), "node_modules/\n.tmp/\n.worktrees/\n");
-  git("add", ".gitignore");
-  git("commit", "-m", "initial");
-  f.set({ state: "MERGED", head: git("rev-parse", "HEAD"), changed: false });
-  const path = join(f.root, ".worktrees/auto-8-task");
-  git("worktree", "add", "-b", "8-task", path);
-  mkdirSync(join(path, "node_modules"));
-  writeFileSync(join(path, "node_modules/payload"), "ignored");
   let stops = 0,
     removals = 0;
+  const tree = workerTaskTree(f, () => {
+    expect(stops).toBeGreaterThan(0);
+    removals++;
+  });
   f.deps.workers!.stop = async () => {
     stops++;
   };
-  const exec = f.deps.exec;
-  f.deps.exec = async (file, args, options) => {
-    if (
-      file === "git" &&
-      (["worktree", "for-each-ref", "symbolic-ref", "rev-list", "branch", "update-ref"].includes(
-        args[0]
-      ) ||
-        args.join(" ") === "rev-parse --git-common-dir" ||
-        args.join(" ") === "status --porcelain --untracked-files=all")
-    ) {
-      if (args[0] === "worktree" && args[1] === "remove") {
-        expect(stops).toBeGreaterThan(0);
-        removals++;
-      }
-      return execFileSync(file, [...args], {
-        cwd: options?.cwd,
-        encoding: "utf8",
-        timeout: 5000,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-    }
-    return exec(file, args, options);
-  };
   await f.flow().merge("27");
-  expect(existsSync(path)).toBe(false);
-  expect(git("for-each-ref", "--format=%(refname)", "refs/heads/8-task")).toBe("");
+  expect(existsSync(tree.path)).toBe(false);
+  expect(tree.branch()).toBe("");
   await f.flow().merge("27");
   expect(removals).toBe(1);
   f.done();
@@ -2248,24 +2212,7 @@ test("merged follow-up stops before removing the real task directory and branch,
 
 test("a merged PR without a worker record skips the stop silently and removes its worktree", async () => {
   const f = fixture();
-  const git = (...args: string[]) =>
-    execFileSync("git", args, {
-      cwd: f.root,
-      encoding: "utf8",
-      timeout: 5000,
-      stdio: ["ignore", "pipe", "pipe"],
-    }).trim();
-  git("init", "-b", "dev");
-  git("config", "user.name", "Test");
-  git("config", "user.email", "test@example.invalid");
-  writeFileSync(join(f.root, ".gitignore"), "node_modules/\n.tmp/\n.worktrees/\n");
-  git("add", ".gitignore");
-  git("commit", "-m", "initial");
-  f.set({ state: "MERGED", head: git("rev-parse", "HEAD"), changed: false });
-  const path = join(f.root, ".worktrees/auto-8-task");
-  git("worktree", "add", "-b", "8-task", path);
-  mkdirSync(join(path, "node_modules"));
-  writeFileSync(join(path, "node_modules/payload"), "ignored");
+  const tree = workerTaskTree(f);
   f.deps.workers!.recorded = async () => false;
   let stops = 0,
     closes = 0;
@@ -2277,30 +2224,11 @@ test("a merged PR without a worker record skips the stop silently and removes it
     closes++;
     return true;
   };
-  const exec = f.deps.exec;
-  f.deps.exec = async (file, args, options) => {
-    if (
-      file === "git" &&
-      (["worktree", "for-each-ref", "symbolic-ref", "rev-list", "branch", "update-ref"].includes(
-        args[0]
-      ) ||
-        args.join(" ") === "rev-parse --git-common-dir" ||
-        args.join(" ") === "status --porcelain --untracked-files=all")
-    ) {
-      return execFileSync(file, [...args], {
-        cwd: options?.cwd,
-        encoding: "utf8",
-        timeout: 5000,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-    }
-    return exec(file, args, options);
-  };
   await f.flow().merge("27");
   expect(stops).toBe(0);
   expect(closes).toBe(0);
-  expect(existsSync(path)).toBe(false);
-  expect(git("for-each-ref", "--format=%(refname)", "refs/heads/8-task")).toBe("");
+  expect(existsSync(tree.path)).toBe(false);
+  expect(tree.branch()).toBe("");
   expect(f.events.some((event) => event.includes("worker stop"))).toBe(false);
   expect(f.events.some((event) => event.includes("session not closed"))).toBe(false);
   expect(f.events.some((event) => event.includes("skipped:"))).toBe(false);
@@ -3067,8 +2995,8 @@ test.each(["astra", "fable"])(
           },
           {
             family: "fable",
-            model: "claude-fable-5-1",
-            kind: "claude",
+            model: "claude-code/claude-fable-5-1",
+            kind: "opencode",
             gate: "owner",
             tier: "expensive",
             fallback: ["sol"],
@@ -3451,7 +3379,7 @@ test("a PR with no recorded worker session merges through the real session guard
     setModel: unexpected,
     modelComment: unexpected,
     setEstimate: unexpected,
-    workerIdentity: unexpected,
+    locate: unexpected,
     issue: unexpected,
     modelApproval: unexpected,
   });
@@ -4003,9 +3931,7 @@ test("open held task, release, and worker start; second release has no side effe
       setCost: async () => {},
       gradeComment: async () => {},
       submitLearnings: async () => "unused",
-      workerIdentity: async () => {
-        throw new Error("Unexpected Claude identity");
-      },
+      locate: async () => directory,
       issue: async () => {
         throw new Error("Unexpected issue read");
       },

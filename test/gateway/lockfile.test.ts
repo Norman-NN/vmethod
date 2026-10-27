@@ -9,6 +9,7 @@ import {
   npmCiCheckArguments,
   npmCiEnvironment,
 } from "../../src/gateway/lockfile.js";
+import { ghConfig } from "../helpers.js";
 
 const invalid = "npm error Invalid: lock file's yaml@2.9.1 does not satisfy yaml@2.9.0";
 const missing = "npm error Missing: yaml@2.9.1 from lock file";
@@ -79,7 +80,7 @@ test("npmCiEnvironment filters credentials and lifecycle hooks out of npm subpro
     PATH: "/bin",
     HOME: "/home/agent",
     OPENCODE_SERVER_PASSWORD: "secret",
-    EXAMPLE_GITHUB_TOKEN: "token",
+    GH_CONFIG_DIR: ghConfig("token"),
     GIT_AUTHOR_NAME: "A",
   });
   expect(env).toEqual({ HUSKY: "0", PATH: "/bin", HOME: "/home/agent" });

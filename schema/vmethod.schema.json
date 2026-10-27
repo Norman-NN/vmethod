@@ -12,8 +12,7 @@
     "baseBranch": { "type": "string", "minLength": 1 },
     "releaseBranch": { "type": "string" },
     "track": { "type": "string" },
-    "workerUser": { "type": "string" },
-    "workerGroup": { "type": "string" },
+    "workerCheckout": { "type": "string", "minLength": 1 },
     "stateName": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$" },
     "legacyState": {
       "type": "array",
@@ -139,9 +138,9 @@
     },
     "credentials": {
       "type": "object",
-      "additionalProperties": {
-        "type": "string",
-        "pattern": "^[A-Z][A-Z0-9_]*$"
+      "additionalProperties": false,
+      "properties": {
+        "sshKey": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" }
       }
     },
     "push": {

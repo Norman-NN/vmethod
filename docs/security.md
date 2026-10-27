@@ -78,7 +78,8 @@ protect identity changes with owner review.
 
 ## Credentials and supply chain
 
-Gateway authority comes from the configured token's viewer, matched against the
+Gateway authority comes from the viewer of the gh login in `GH_CONFIG_DIR`
+(`GH_TOKEN` is never read), matched against the
 numeric ID, login and account type in owner-approved `people.yaml`. Only pinned
 orchestrator and worker identities may call general gateway operations. `VMETHOD_ROLE`
 defaults to worker and can only narrow authority: a worker token claiming
@@ -105,16 +106,25 @@ Unpinned-token errors report the viewer's login, numeric database ID and account
 type, using `<missing>` for absent fields. These identity diagnostics contain no
 credential values; use them to investigate pin mismatches without guessing.
 
-Run `check --online` to report each configured GitHub credential's pinned login
-and role. It fails unless `credentials.githubToken` belongs to an orchestrator
-and, when configured, `credentials.workerGithubToken` belongs to a worker.
-Claude families require the worker credential setting even in offline `check`;
-Claude launch independently verifies that token's worker identity before starting.
+Run `check --online` to report the `GH_CONFIG_DIR` login's pinned login and role.
+It fails unless that role matches `VMETHOD_ROLE` (or, without it, is an
+orchestrator or worker). Run it in both checkouts.
 
-Configuration stores credential **environment-variable names**, never values.
-Take credentials only from the launching wrapper's environment, not global git
-configuration or command-line arguments. Never place tokens in prompts or logs.
-Use `credentials` and the configured worker endpoint; do not assume a local host.
+Each identity has its own checkout. The orchestrator's checkout and the worker
+checkout each keep a gitignored `.claude/settings.local.json` whose `env` sets
+`VMETHOD_ROLE`, `GH_CONFIG_DIR`, `GIT_SSH_COMMAND` and the git author for every
+session OpenCode runs there, whatever the model. vmethod never hands a token to a
+worker: the worker session reads its own login. Keep `GH_TOKEN` out of the agent
+host's environment (or set it to a non-token value): sessions inherit it.
+Workers and the orchestrator run as the same OS user, so file permissions do not
+separate their secrets; the separation is per-checkout environment and the gateway's
+identity checks.
+
+Configuration stores no credential values: `credentials.sshKey` names an
+environment variable. Take credentials only from `GH_CONFIG_DIR` and the
+environment, not global git configuration or command-line arguments. Never place
+tokens in prompts or logs. Use the `OPENCODE_*` endpoint from the environment; do
+not assume a local host.
 
 Pin the package exactly, preserve lockfile integrity and review release notes plus
 package diff on upgrade. Protect source/release branches, immutable release tags

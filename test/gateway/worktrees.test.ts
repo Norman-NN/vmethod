@@ -1,15 +1,18 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { basename } from "node:path";
 import { expect, onTestFinished, test, vi } from "vitest";
 import type { Dependencies } from "../../src/gateway/client.js";
 import { WorktreeService, type WorktreeTask } from "../../src/gateway/worktrees.js";
 import { fixture } from "../helpers.js";
 
+/** The worker checkout (a git repository) apart from the orchestrator's root, task trees
+ * in OpenCode's own directory, and an OpenCode fake that removes them through git. */
 function setup() {
   const root = fixture();
-  const git = (args: string[], cwd = root) =>
+  const checkout = fixture();
+  const trees = fixture();
+  const git = (args: string[], cwd = checkout) =>
     execFileSync("git", args, {
       cwd,
       encoding: "utf8",
@@ -19,13 +22,14 @@ function setup() {
   git(["init", "-b", "dev"]);
   git(["config", "user.name", "Test"]);
   git(["config", "user.email", "test@example.invalid"]);
-  writeFileSync(join(root, ".gitignore"), ".worktrees/\nnode_modules/\n.tmp/\n");
+  writeFileSync(join(checkout, ".gitignore"), "node_modules/\n.tmp/\n");
   git(["add", ".gitignore"]);
   git(["commit", "-m", "initial"]);
   const head = git(["rev-parse", "HEAD"]);
   const reports: string[] = [];
   const commands: string[] = [];
   const unexpected: string[] = [];
+  const removals: string[] = [];
   onTestFinished(() => expect(unexpected).toEqual([]));
   const sessions = new Map<number, "live" | "stopped" | "unknown">();
   const deps: Dependencies = {
@@ -55,7 +59,21 @@ function setup() {
         stdio: ["ignore", "pipe", "pipe"],
       });
     },
-    fetch: async () => {
+    fetch: async (input, init) => {
+      const url = new URL(String(input));
+      if (url.host === "opencode.test" && url.pathname === "/api/location") {
+        expect(url.searchParams.get("location[directory]")).toBe(checkout);
+        return Response.json({ directory: checkout, project: { id: "project-id" } });
+      }
+      if (url.host === "opencode.test" && url.pathname === "/api/worktree") {
+        expect(init?.method).toBe("DELETE");
+        const body = JSON.parse(String(init?.body));
+        expect(body).toMatchObject({ projectID: "project-id", force: true });
+        removals.push(body.directory);
+        commands.push(`opencode worktree remove ${body.directory}`);
+        git(["worktree", "remove", "--force", body.directory]);
+        return new Response(null, { status: 204 });
+      }
       unexpected.push("network");
       throw new Error("Unexpected network");
     },
@@ -70,21 +88,37 @@ function setup() {
     repo: "example/project",
     baseBranch: "dev",
     releaseBranch: "master",
-    branches: { mainCheckout: root },
+    workerCheckout: checkout,
+  };
+  const env = {
+    OPENCODE_BASE_URL: "http://opencode.test",
+    OPENCODE_SERVER_USERNAME: "user",
+    OPENCODE_SERVER_PASSWORD: "password",
   };
   const service = () =>
-    new WorktreeService(root, config, {}, deps, async (pr) => sessions.get(pr) ?? "stopped");
-  const add = (
-    pr: number,
-    state = "MERGED",
-    location = join(root, ".worktrees", `auto-task-${pr}`)
-  ) => {
+    new WorktreeService(root, config, env, deps, async (pr) => sessions.get(pr) ?? "stopped");
+  const add = (pr: number, state = "MERGED", location = join(trees, `auto-task-${pr}`)) => {
     const branch = `task-${pr}`;
     git(["worktree", "add", "-b", branch, location, "dev"]);
     const task: WorktreeTask = { pr, branch, state, head, base: "dev" };
     return { task, path: location };
   };
-  return { root, git, head, deps, config, reports, commands, sessions, service, add };
+  return {
+    root,
+    checkout,
+    trees,
+    git,
+    head,
+    deps,
+    config,
+    env,
+    reports,
+    commands,
+    removals,
+    sessions,
+    service,
+    add,
+  };
 }
 
 test.each([false, true])(
@@ -128,7 +162,7 @@ test.each(["stopped", "live", "unknown"] as const)(
       expect(existsSync(tree.path)).toBe(true);
       return true;
     });
-    const service = new WorktreeService(f.root, f.config, {}, f.deps, async () => status, close);
+    const service = new WorktreeService(f.root, f.config, f.env, f.deps, async () => status, close);
     await service.list(async () => tree.task, false);
     expect(close).not.toHaveBeenCalled();
     await service.list(async () => tree.task, true);
@@ -159,7 +193,7 @@ test("cleanup removes ignored dependencies and local branch; a retry is harmless
   expect(existsSync(tree.path)).toBe(false);
   expect(f.git(["for-each-ref", "--format=%(refname)", `refs/heads/${tree.task.branch}`])).toBe("");
   expect(await f.service().cleanup(tree.task)).toBe(true);
-  expect(f.commands.filter((line) => line.includes("worktree remove"))).toHaveLength(1);
+  expect(f.removals).toEqual([tree.path]);
 }, 15000);
 
 test("listing and prune include only closed/merged tasks, skip live and unknown sessions, and show sizes", async () => {
@@ -195,7 +229,7 @@ test.each(["tracked", "untracked", "unpushed"])(
     expect(f.reports.join("\n")).toContain(
       kind === "unpushed" ? "unpushed work" : "uncommitted work"
     );
-    expect(f.commands.some((line) => line.includes("worktree remove"))).toBe(false);
+    expect(f.removals).toEqual([]);
   },
   15000
 );
@@ -210,23 +244,21 @@ test("containment accepts a branch ancestor of the merged head, not a divergent 
   expect(await f.service().cleanup(tree.task)).toBe(true);
 }, 15000);
 
-test("never touches foreign roots, unprefixed trees, symlink aliases or the main checkout", async () => {
+test("never touches a tree not named for its branch", async () => {
   const f = setup();
-  const outside = f.add(1, "MERGED", join(f.root, "outside", "auto-task-1"));
-  const unprefixed = f.add(2, "MERGED", join(f.root, ".worktrees", "task-2"));
-  symlinkSync(outside.path, join(f.root, ".worktrees", "auto-task-1"));
+  const unprefixed = f.add(2, "MERGED", join(f.trees, "task-2"));
   const lookedUp: string[] = [];
   expect(
     await f.service().list(async (branch) => {
       lookedUp.push(branch);
-      return outside.task;
+      return unprefixed.task;
     }, true)
   ).toBe("Total freed: 0 KiB");
   expect(lookedUp).toEqual([]);
-  expect(await f.service().cleanup(outside.task)).toBe(false);
   expect(await f.service().cleanup(unprefixed.task)).toBe(false);
-  expect(existsSync(outside.path)).toBe(true);
+  expect(f.reports.join("\n")).toContain("not a task worktree of the worker checkout");
   expect(existsSync(unprefixed.path)).toBe(true);
+  expect(f.removals).toEqual([]);
 }, 15000);
 
 test("unmerged closed work must be contained in base, not just the abandoned PR head", async () => {
@@ -241,30 +273,28 @@ test("unmerged closed work must be contained in base, not just the abandoned PR 
   expect(f.reports.join("\n")).toContain("unpushed work");
 }, 15000);
 
-test("a branch also checked out outside the project task root is retained", async () => {
+test("a branch also checked out in another worktree is retained", async () => {
   const f = setup();
   const tree = f.add(1);
   const other = join(f.root, "orchestrator");
   f.git(["worktree", "add", "--force", other, tree.task.branch]);
   expect(await f.service().cleanup(tree.task)).toBe(false);
-  expect(f.reports.join("\n")).toContain("branch belongs to another worktree");
+  // Whichever of the two trees git lists first, neither is removed.
+  expect(f.reports.join("\n")).toMatch(/branch belongs to another worktree|not a task worktree/);
   expect(existsSync(tree.path)).toBe(true);
   expect(existsSync(other)).toBe(true);
 }, 15000);
 
 test.each(["job-", ""])(
-  "respects a custom worktree root and prefix %j",
+  "respects a custom worktree prefix %j",
   async (prefix) => {
     const f = setup();
-    const own = f.add(1, "MERGED", join(f.root, "workers", `${prefix}task-1`));
+    const own = f.add(1, "MERGED", join(f.trees, `${prefix}task-1`));
     const other = f.add(2);
     const service = new WorktreeService(
       f.root,
-      {
-        ...f.config,
-        branches: { mainCheckout: f.root, worktreeRoot: "workers", worktreePrefix: prefix },
-      },
-      {},
+      { ...f.config, branches: { worktreePrefix: prefix } },
+      f.env,
       f.deps,
       async () => "stopped"
     );
@@ -280,35 +310,27 @@ test.each(["job-", ""])(
   15000
 );
 
-test("main checkout and a different repository under the configured root are never removed", async () => {
+test("the worker checkout and an unregistered repository named like a task tree are never removed", async () => {
   const f = setup();
-  const service = new WorktreeService(
-    f.root,
-    { ...f.config, branches: { mainCheckout: f.root, worktreeRoot: "..", worktreePrefix: "" } },
-    {},
-    f.deps,
-    async () => "stopped"
-  );
+  // The checkout's own branch is never a task tree, even with a task-like name.
+  f.git(["checkout", "-q", "-b", "task-9"]);
   expect(
-    await service.cleanup({
-      pr: 1,
-      branch: basename(f.root),
-      base: "dev",
-      head: f.head,
-      state: "MERGED",
-    })
+    await f
+      .service()
+      .cleanup({ pr: 9, branch: "task-9", base: "dev", head: f.head, state: "MERGED" })
   ).toBe(false);
-  const path = join(f.root, ".worktrees", "auto-task-1");
+  expect(f.reports.join("\n")).toContain("branch belongs to another worktree");
+  f.git(["checkout", "-q", "dev"]);
+  const path = join(f.trees, "auto-task-1");
   mkdirSync(path, { recursive: true });
-  f.git(["init", "-b", "task-1"], path);
+  execFileSync("git", ["init", "-q", "-b", "task-1"], { cwd: path });
   expect(
     await f
       .service()
       .cleanup({ pr: 1, branch: "task-1", base: "dev", head: f.head, state: "MERGED" })
-  ).toBe(false);
-  expect(f.reports.join("\n")).toContain("another repository");
+  ).toBe(true);
   expect(existsSync(path)).toBe(true);
-  expect(f.commands.some((line) => line.includes("worktree remove"))).toBe(false);
+  expect(f.removals).toEqual([]);
 }, 15000);
 
 test("failed commit reads and unknown session reads retain the tree", async () => {
@@ -317,12 +339,12 @@ test("failed commit reads and unknown session reads retain the tree", async () =
   tree.task.head = "f".repeat(40); // Missing object, never assume an empty rev-list.
   expect(await f.service().cleanup(tree.task)).toBe(false);
   expect(f.reports.join("\n")).toContain("safety check failed");
-  const service = new WorktreeService(f.root, f.config, {}, f.deps, async () => {
+  const service = new WorktreeService(f.root, f.config, f.env, f.deps, async () => {
     throw new Error("offline");
   });
   expect(await service.cleanup(tree.task)).toBe(false);
   expect(existsSync(tree.path)).toBe(true);
-  expect(f.commands.some((line) => line.includes("worktree remove"))).toBe(false);
+  expect(f.removals).toEqual([]);
 }, 15000);
 
 test("crash recovery deletes an orphan branch but preserves a concurrently advanced ref", async () => {
@@ -365,18 +387,18 @@ test("cleanup captures delivery usage before removal and retains the tree while 
   const service = new WorktreeService(
     f.root,
     f.config,
-    {},
+    f.env,
     f.deps,
     async () => "stopped",
     close,
     capture
   );
-  const exec = f.deps.exec;
-  f.deps.exec = async (file, args, options) => {
-    if (file === "git" && args[0] === "worktree" && args[1] === "remove") {
+  const fetch = f.deps.fetch;
+  f.deps.fetch = async (input, init) => {
+    if (init?.method === "DELETE") {
       order.push("remove");
     }
-    return exec(file, args, options);
+    return fetch(input, init);
   };
   const tree = f.add(1);
   expect(await service.cleanup(tree.task)).toBe(true);

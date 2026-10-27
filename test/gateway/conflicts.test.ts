@@ -3,7 +3,7 @@ import { promisify } from "node:util";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test, vi } from "vitest";
-import { fixture } from "../helpers.js";
+import { fixture, ghConfig } from "../helpers.js";
 import { proc } from "./watch-fake.js";
 import { type EventDeps } from "../../src/gateway/events.js";
 import {
@@ -22,7 +22,7 @@ async function setup(conflict: boolean, approved: boolean, bad = false, escalate
   const env = {
     ...process.env,
     XDG_STATE_HOME: join(fixture(), "state"),
-    TOKEN: "fake-token",
+    GH_CONFIG_DIR: ghConfig("fake-token"),
     GIT_AUTHOR_NAME: "Test",
     GIT_AUTHOR_EMAIL: "test@example.com",
     GIT_COMMITTER_NAME: "Test",
@@ -143,7 +143,6 @@ async function setup(conflict: boolean, approved: boolean, bad = false, escalate
       {
         repo: "example/project",
         stateName: "conflict-test",
-        credentials: { githubToken: "TOKEN" },
         ...(escalated ? { conflicts: { escalatePaths: ["**/*.txt"] } } : {}),
       },
       env,

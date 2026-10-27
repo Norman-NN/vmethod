@@ -9,8 +9,7 @@ import {
   type CostRequest,
 } from "../cost.js";
 import type { Config } from "../config.js";
-import type { ProcessRuntime } from "./claude.js";
-import type { WorkerFilesystem } from "./access.js";
+import { githubToken } from "./github-token.js";
 import { object, type ObjectData } from "./people.js";
 import { WriteJournal } from "./write-journal.js";
 
@@ -38,8 +37,6 @@ export interface Dependencies {
   now: () => number;
   sleep: (ms: number) => Promise<void>;
   report: (message: string) => void;
-  processes?: ProcessRuntime;
-  workerFilesystem?: WorkerFilesystem;
 }
 
 /** A GraphQL answer that carried `errors`: the data is refused, and the watcher reports at once. */
@@ -117,11 +114,7 @@ export class GitHubClient {
     env: NodeJS.ProcessEnv,
     private deps: Dependencies
   ) {
-    const credentials = config.credentials as Record<string, string> | undefined;
-    this.token = env[credentials?.githubToken ?? ""] ?? "";
-    if (!this.token) {
-      throw new Error("Missing configured GitHub token environment variable");
-    }
+    this.token = githubToken(env);
     const budget = config.gateway as { reserve?: number; maxRetries?: number } | undefined;
     this.reserve = budget?.reserve ?? 100;
     this.retries = budget?.maxRetries ?? 3;
@@ -542,7 +535,7 @@ export class OpencodeClient {
   }
 
   async request(
-    method: "GET" | "POST" | "PATCH",
+    method: "GET" | "POST" | "PATCH" | "DELETE",
     path: string,
     body?: unknown,
     deadline?: number
@@ -861,7 +854,7 @@ export interface WorkerSessionStatus {
   prCost?: { pr: number; usd: number | null; lowerBound?: boolean };
 }
 
-export function classifyTurn(turn: ObjectData): WorkerSessionStatus {
+function classifyTurn(turn: ObjectData): WorkerSessionStatus {
   if (
     turn.outcome !== "failed" &&
     !turn.error &&

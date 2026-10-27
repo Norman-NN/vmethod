@@ -27,7 +27,7 @@ test("consumer examples initialize valid configs without installing agent routin
   expect(loadYaml(root, "models")).toEqual(
     expect.arrayContaining([
       expect.objectContaining({ kind: "opencode", gate: "owner" }),
-      expect.objectContaining({ kind: "claude", gate: "none" }),
+      expect.objectContaining({ family: "sonnet", model: expect.stringMatching(/^claude-code\//) }),
     ])
   );
   peer(root);

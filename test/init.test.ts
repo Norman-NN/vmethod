@@ -96,7 +96,7 @@ test("stub resolves git root and preserves hostile arguments without shell evalu
   expect(JSON.parse(copiedContext.stdout)).toEqual(["check", ...args]);
 }, 4000);
 
-test("converts the verbatim vecs registry with ungated and owner-gated opencode/claude rows intact", () => {
+test("converts the verbatim vecs registry, moving legacy claude rows onto the claude-code provider", () => {
   const root = fixture();
   const text = readFileSync("test/fixtures/models-vecs.tsv", "utf8");
   writeFileSync(join(root, "models.tsv"), text);
@@ -127,12 +127,18 @@ test("converts the verbatim vecs registry with ungated and owner-gated opencode/
     },
     {
       family: "sonnet",
-      model: "claude-sonnet-5-5",
+      model: "claude-code/claude-sonnet-5-5",
       tier: "standard",
-      kind: "claude",
+      kind: "opencode",
       gate: "none",
     },
-    { family: "opus", model: "claude-opus-5-5", kind: "claude", gate: "none", tier: "standard" },
+    {
+      family: "opus",
+      model: "claude-code/claude-opus-5-5",
+      kind: "opencode",
+      gate: "none",
+      tier: "standard",
+    },
     {
       family: "glm",
       model: "ollama-cloud/glm-5.3",

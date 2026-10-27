@@ -1,14 +1,10 @@
-import { randomUUID } from "node:crypto";
 import { estimateScale } from "../board/estimate.js";
 import { parseProgress } from "../board/progress.js";
 import { taskHeld } from "./task-hold.js";
 import { taskModelOverride } from "./task-flow-types.js";
-import { assertLockfileInSync, lockfileCheckable, npmCiEnvironment } from "./lockfile.js";
 import {
   addTokens,
   boardCost,
-  claudeUsage,
-  claudeRequests,
   requestCost,
   sumUsd,
   usageDelta,
@@ -27,9 +23,7 @@ import {
   type ExactMetrics,
 } from "../learning-metrics.js";
 import {
-  accessSync,
   appendFileSync,
-  constants,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -45,21 +39,20 @@ import { homedir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { loadYaml, type Config } from "../config.js";
 import {
-  classifyTurn,
   OpencodeClient,
   OpencodeError,
   type Dependencies,
   type WorkerSessionStatus,
 } from "./client.js";
-import { processes, type ProcessIdentity } from "./claude.js";
 import { object, untrusted } from "./people.js";
 import { modelGateError } from "./model-gate.js";
-import { workerWorktree, workerWorktreePrefix } from "./worker-path.js";
+import { workerWorktreePrefix } from "./worker-path.js";
 import { workerFirstPrompt } from "./worker-prompt.js";
 
 interface Model {
   family: string;
   model: string;
+  /** "claude" only on records of the removed `claude -p` backend: their session is unknown. */
   kind: "opencode" | "claude";
   gate: "none" | "owner";
   tier: "expensive" | "standard" | "cheap";
@@ -96,9 +89,6 @@ interface Session {
   model: Model;
   segments: Segment[];
   points_open: number | null;
-  process?: ProcessIdentity;
-  interrupted?: boolean;
-  logOffset?: number;
   finalized?: boolean;
   gradePosted?: boolean;
   /** #262: merge-time capture; grade trusts the stored usage without session resolution. */
@@ -140,7 +130,10 @@ export interface TaskMetadata {
 }
 export interface WorkerHooks {
   metadata(pr: number): Promise<TaskMetadata>;
+  /** Find or create the task's worktree in the worker checkout, installed and named. */
   prepare(pr: number): Promise<string>;
+  /** Verify the task's existing worker worktree; never creates one. */
+  locate(pr: number): Promise<string>;
   setModel(pr: number, family: string): Promise<void>;
   /** Post a model-switch audit note without handing back the protocol turn. */
   modelComment(pr: number, text: string): Promise<void>;
@@ -154,7 +147,6 @@ export interface WorkerHooks {
   gradeComment?(issue: number, text: string): Promise<void>;
   /** Submit locally staged grades through the same privacy and rolling-PR pipeline. */
   submitLearnings?(): Promise<string>;
-  workerIdentity(): Promise<NodeJS.ProcessEnv>;
   issue(ref: number): Promise<{ estimate?: number; kind: string }>;
   diffStats?(pr: number, base: string, head: string): Promise<ExactMetrics["diff"]>;
   /** #218: the pinned owner verified this gated family on the task issue or PR. */
@@ -164,7 +156,6 @@ export interface WorkerHooks {
 export class WorkerService {
   private readonly state: string;
   private readonly models: Model[];
-  private readonly runtime;
   constructor(
     private root: string,
     private config: Config,
@@ -193,7 +184,6 @@ export class WorkerService {
         }
       }
     }
-    this.runtime = deps.processes ?? processes;
   }
   private client() {
     return new OpencodeClient(this.env, this.deps.fetch, this.deps.now);
@@ -321,51 +311,17 @@ export class WorkerService {
     deadline?: number,
     drainWake = true
   ): Promise<WorkerSessionStatus> {
-    const directory = workerWorktree(this.root, this.config, { directory: record.directory });
-    if (resolve(directory) !== resolve(record.directory)) {
+    if (record.model.kind !== "opencode") {
       return { reason: "session unknown", active: false };
     }
-    let status: WorkerSessionStatus;
-    if (record.model.kind === "claude") {
-      if (record.process && this.runtime.alive(record.process)) {
-        status = { reason: "running", active: true };
-      } else {
-        const log = join(record.directory, ".tmp/claude-worker.log");
-        const turn = existsSync(log)
-          ? readFileSync(log)
-              .subarray(record.logOffset ?? 0)
-              .toString("utf8")
-          : "";
-        const lines = turn.split("\n").map((line) => {
-          try {
-            return object(JSON.parse(line));
-          } catch {
-            return {};
-          }
-        });
-        const result = lines.filter((m) => m.type === "result").at(-1);
-        status = result
-          ? classifyTurn(result)
-          : record.interrupted
-            ? { reason: "idle", active: false }
-            : record.process
-              ? {
-                  reason: "provider-error",
-                  active: false,
-                  error: turn || "Claude exited without a turn result",
-                }
-              : { reason: "session unknown", active: false };
-      }
-    } else {
-      status = await this.client().status(
-        directory,
-        record.id,
-        deadline,
-        record.costHistoryLoaded
-          ? record.segments.flatMap((segment) => Object.keys(segment.requests ?? {}))
-          : []
-      );
-    }
+    const status = await this.client().status(
+      record.directory,
+      record.id,
+      deadline,
+      record.costHistoryLoaded
+        ? record.segments.flatMap((segment) => Object.keys(segment.requests ?? {}))
+        : []
+    );
     if (status.reason === "idle" && comments) {
       const meta = await this.hooks.metadata(record.pr);
       const latest = (role: string) =>
@@ -380,17 +336,6 @@ export class WorkerService {
     }
     if (status.error) {
       status.error = this.redact(status.error);
-    }
-    if (record.model.kind === "claude") {
-      const events = this.claudeLog(record).map((line) => {
-        try {
-          return JSON.parse(line);
-        } catch {
-          return {};
-        }
-      });
-      status.usage = claudeUsage(events);
-      status.requests = claudeRequests(events);
     }
     if (status.usage && !record.finalized) {
       const segment = record.segments.at(-1)!;
@@ -460,7 +405,7 @@ export class WorkerService {
       );
       segment.usd = cost.usd;
       segment.lowerBound = cost.lowerBound;
-      if (record.model.kind === "opencode" && status.requests) {
+      if (status.requests) {
         record.costHistoryLoaded = true;
       }
       this.save(record);
@@ -497,9 +442,7 @@ export class WorkerService {
       if (queued.some((text) => !text.startsWith("[orchestrator] CHECK-IN:"))) {
         await this.restoreConflictModel(record, status);
       }
-      if (await this.resumeModel(record, status)) {
-        return { ...status, reason: "running", active: true };
-      }
+      await this.resumeModel(record, status);
       await this.prompt(record, queued.join("\n"), "queue");
       delete record.pendingWake;
       this.save(record);
@@ -591,7 +534,7 @@ export class WorkerService {
       ? "unknown"
       : `input ${tokens.input} output ${tokens.output} cached ${tokens.cached}`;
     const titleMismatch =
-      record.model.kind === "opencode" && status.title !== this.sessionTitle(record.pr)
+      status.title !== this.sessionTitle(record.pr)
         ? ` | TITLE MISMATCH expected ${JSON.stringify(this.sessionTitle(record.pr))}`
         : "";
     return `#${record.pr} ${record.id} ${status.reason}${details}${titleMismatch} | tokens ${tokenText} | USD ${usd === null ? "unknown" : `${record.segments.some((segment) => segment.lowerBound) ? "≥ " : ""}$${usd.toFixed(6)}`}${status.error ? ` ${untrusted(status.error)}` : ""}${advice}`;
@@ -615,10 +558,7 @@ export class WorkerService {
       ) {
         throw error;
       }
-      const directory = workerWorktree(this.root, this.config, { directory: record.directory });
-      if (resolve(directory) !== resolve(record.directory)) {
-        throw new Error("session directory mismatch", { cause: error });
-      }
+      const directory = resolve(record.directory);
       if (realpathSync(dirname(directory)) !== resolve(dirname(directory))) {
         throw new Error("session directory parent is a symlink alias", { cause: error });
       }
@@ -669,20 +609,8 @@ export class WorkerService {
       },
     });
   }
-  private claudeLog(record: Session): string[] {
-    const file = join(record.directory, ".tmp/claude-worker.log");
-    return existsSync(file) ? readFileSync(file, "utf8").trim().split("\n") : [];
-  }
   private async interrupt(record: Session, deadline?: number) {
-    if (record.model.kind === "claude") {
-      if (record.process) {
-        this.runtime.stop(record.process);
-        record.interrupted = true;
-        this.save(record);
-      }
-    } else {
-      await this.client().request("POST", `${this.idPath(record)}/interrupt`, undefined, deadline);
-    }
+    await this.client().request("POST", `${this.idPath(record)}/interrupt`, undefined, deadline);
   }
   private async idle(record: Session, seconds: number, end = this.deps.now() + seconds * 1000) {
     for (;;) {
@@ -699,49 +627,16 @@ export class WorkerService {
       await this.deps.sleep(Math.min(1000, end - this.deps.now()));
     }
   }
-  private async prompt(record: Session, text: string, delivery = "steer", resume = true) {
-    if (record.model.kind === "opencode") {
-      await this.client().request("POST", `${this.idPath(record)}/prompt`, { text, delivery });
-    } else {
-      const env = await this.hooks.workerIdentity();
-      const log = join(record.directory, ".tmp/claude-worker.log");
-      record.logOffset = existsSync(log) ? statSync(log).size : 0;
-      record.interrupted = false;
-      record.process = await this.runtime.launch({
-        args: [
-          "-p",
-          resume ? "--resume" : "--session-id",
-          record.id,
-          "--model",
-          record.model.model,
-          "--output-format",
-          "stream-json",
-          "--verbose",
-          "--permission-mode",
-          "acceptEdits",
-          "--allowedTools",
-          "Bash",
-          "Edit",
-          "Write",
-          "Read",
-          "Grep",
-          "Glob",
-        ],
-        cwd: record.directory,
-        env: { ...env, VMETHOD_TASK_PR: String(record.pr) },
-        prompt: `${this.sessionTitle(record.pr)}\n\n${text}`,
-        log,
-      });
-      this.save(record);
-    }
+  private async prompt(record: Session, text: string, delivery = "steer") {
+    await this.client().request("POST", `${this.idPath(record)}/prompt`, { text, delivery });
   }
   /** Execute worker management. Legacy adoption reads only configured state-root
    * directories, verifies existing opencode sessions and reports every skipped
-   * entry; headless Claude records are reported with an explicit relaunch route.
+   * entry; Claude records of the removed backend are reported with a relaunch route.
    * Only --from-legacy may snapshot a missing opening Estimate from the linked
    * issue, recording "legacy snapshot at adoption" in the persisted segment.
    * `reopen <pr>` restores only OpenChamber list visibility, without restarting
-   * the worker or recreating a removed worktree; Claude sessions are skipped.
+   * the worker or recreating a removed worktree.
    */
   async command(args: string[]): Promise<string> {
     const [verb, ref, ...rest] = args;
@@ -840,9 +735,6 @@ export class WorkerService {
         if (rest.length) {
           throw new Error("Usage: worker reopen <pr>");
         }
-        if (record.model.kind === "claude") {
-          return "Claude session skipped (no OpenChamber list)";
-        }
         await this.setWorkState(record, "open");
         return `Reopened ${record.id}`;
       }
@@ -888,9 +780,7 @@ export class WorkerService {
           this.hooks.modelApproval(pr, meta.issue, family)
         );
         if (model.family === record.model.family && model.model === record.model.model) {
-          if (record.model.kind === "opencode") {
-            await this.setOpenCodeTitle(record);
-          }
+          await this.setOpenCodeTitle(record);
           await this.hooks.setModel(pr, model.family);
           return `Model unchanged for ${record.id}; PR Model synchronized`;
         }
@@ -933,18 +823,9 @@ export class WorkerService {
           } catch (error) {
             throw new Error(`Did not send: ${(error as Error).message}`, { cause: error });
           }
-        } else if (record.model.kind === "claude") {
-          if (rest[1] === "--queue") {
-            await this.idle(record, 600);
-          } else if ((await this.status(record, false)).active) {
-            throw new Error("Session running: use --queue or --now; prompt not sent");
-          }
         }
-        if (await this.resumeModel(record, undefined, meta)) {
-          record.pendingWake = [...(record.pendingWake ?? []), text];
-        } else {
-          await this.prompt(record, text, rest[1] === "--queue" ? "queue" : "steer");
-        }
+        await this.resumeModel(record, undefined, meta);
+        await this.prompt(record, text, rest[1] === "--queue" ? "queue" : "steer");
         const round = this.round(meta);
         const segment = record.segments.at(-1)!;
         if (!segment.rounds.includes(round)) {
@@ -961,9 +842,6 @@ export class WorkerService {
         if (verb === "wait") {
           return this.render(record, await this.idle(record, n));
         }
-        if (record.model.kind === "claude") {
-          return untrusted(this.redact(this.claudeLog(record).slice(-n).join("\n")));
-        }
         return untrusted(
           this.redact(
             JSON.stringify(
@@ -976,11 +854,6 @@ export class WorkerService {
       }
       if (rest.length > 1 || (rest[0] && !["once", "always", "reject"].includes(rest[0]))) {
         throw new Error("Usage: worker permit <pr> [once|always|reject]");
-      }
-      if (record.model.kind === "claude") {
-        throw new Error(
-          "Claude uses owner-installed permission rules; no gateway permission requests"
-        );
       }
       const requests = object(await this.client().request("GET", `${path}/permission`)).data;
       if (!Array.isArray(requests)) {
@@ -1013,44 +886,14 @@ export class WorkerService {
     boundaryStatus?: WorkerSessionStatus,
     reason: SwitchReason = "orchestrator-judgement"
   ) {
-    const backendChanged = model.kind !== record.model.kind;
     const boundary = boundaryStatus ?? (await this.status(record, false, undefined, false));
-    if (
-      (boundary.active || boundary.reason === "permission-wait") &&
-      (backendChanged || record.model.kind === "claude")
-    ) {
-      throw new Error("Stop the worker turn before switching backend or Claude model");
-    }
     if (!boundary.usage) {
       throw new Error("Cannot switch model without provider usage baseline");
     }
-    if (backendChanged && model.kind === "claude") {
-      await this.hooks.workerIdentity();
-    }
-    if (model.kind === "opencode") {
-      if (backendChanged) {
-        const response = object(
-          object(
-            await this.client().request("POST", "/api/session", {
-              location: { directory: record.directory },
-              model: this.apiModel(model),
-              title: this.sessionTitle(record.pr),
-            })
-          ).data
-        );
-        if (typeof response.id !== "string" || !/^[\w-]+$/.test(response.id)) {
-          throw new Error("Server returned no valid session id");
-        }
-        record.id = response.id;
-      } else {
-        await this.client().request("POST", `${this.idPath(record)}/model`, {
-          model: this.apiModel(model),
-        });
-        await this.setOpenCodeTitle(record);
-      }
-    } else if (backendChanged) {
-      record.id = randomUUID();
-    }
+    await this.client().request("POST", `${this.idPath(record)}/model`, {
+      model: this.apiModel(model),
+    });
+    await this.setOpenCodeTitle(record);
     record.model = model;
     record.segments.at(-1)!.endOid = meta.headOid;
     record.segments.at(-1)!.pointsFinal = meta.estimate ?? null;
@@ -1063,41 +906,19 @@ export class WorkerService {
       startOid: meta.headOid,
       pointsOpen: meta.estimate ?? null,
       at: new Date(this.deps.now()).toISOString(),
-      ...(!backendChanged
-        ? { baseline: boundary.usage }
-        : model.kind === "claude"
-          ? {
-              baseline: claudeUsage(
-                this.claudeLog(record).map((line) => {
-                  try {
-                    return JSON.parse(line);
-                  } catch {
-                    return {};
-                  }
-                })
-              ),
-            }
-          : {}),
+      baseline: boundary.usage,
     });
-    if (backendChanged) {
-      delete record.process;
-      delete record.costHistoryLoaded;
-    }
     this.save(record);
-    if (backendChanged) {
-      await this.prompt(record, this.firstPrompt(record, meta), "steer", false);
-    }
   }
   private async resumeModel(
     record: Session,
     status?: WorkerSessionStatus,
     metadata?: TaskMetadata
-  ): Promise<boolean> {
+  ): Promise<void> {
     const meta = metadata ?? (await this.hooks.metadata(record.pr));
     const model = await this.resolve(meta.model ?? "", true);
     if (record.model.family !== model.family || record.model.model !== model.model) {
       await this.resolve(meta.model ?? "", false);
-      const backendChanged = record.model.kind !== model.kind;
       await this.changeModel(
         record,
         model,
@@ -1110,9 +931,7 @@ export class WorkerService {
         record.pr,
         `[orchestrator] NOTE: model switched to ${model.family} (PR Model changed on resume); reason: owner-hint`
       );
-      return backendChanged;
     }
-    return false;
   }
   private firstPrompt(record: Session, meta: TaskMetadata): string {
     const packagePath = join(record.directory, "package.json");
@@ -1161,7 +980,8 @@ export class WorkerService {
         if (!record) {
           throw new Error("session unknown");
         }
-        if (record.model.kind === "claude") {
+        if (record.model.kind !== "opencode") {
+          // A record of the removed Claude backend has no OpenChamber session to close.
           return true;
         }
         const status = await this.status(record, false);
@@ -1262,11 +1082,7 @@ export class WorkerService {
           if (!text.startsWith("[orchestrator] CHECK-IN:")) {
             await this.restoreConflictModel(record, status);
           }
-          if (await this.resumeModel(record, status)) {
-            record.pendingWake = [...(record.pendingWake ?? []), text];
-            this.save(record);
-            return `queued for #${pr}`;
-          }
+          await this.resumeModel(record, status);
           await this.prompt(record, text, "queue");
           return `sent to #${pr}`;
         });
@@ -1411,17 +1227,15 @@ export class WorkerService {
           : "Adopt requires an open task PR with linked issue and opening Estimate"
       );
     }
-    if (legacy) {
-      const expected = workerWorktree(this.root, this.config, meta.branch);
-      if (!existsSync(expected)) {
-        throw new Error("Missing PR worktree; legacy adoption never creates one");
-      }
-      if (legacy.key && legacy.key !== expected.replaceAll("/", "_")) {
-        throw new Error("Legacy key does not belong to the PR worktree");
-      }
+    // Adoption never creates a worktree: the session must already run in the PR's one.
+    const directory = await this.hooks.locate(pr).catch((error: unknown) => {
+      throw new Error(`Missing PR worktree in the worker checkout; adoption never creates one`, {
+        cause: error,
+      });
+    });
+    if (legacy?.key && legacy.key !== directory.replaceAll("/", "_")) {
+      throw new Error("Legacy key does not belong to the PR worktree");
     }
-    // Retain the existing repository/branch checks, after refusing absent legacy worktrees.
-    const directory = await this.hooks.prepare(pr);
     const session = object(
       object(
         await this.client()
@@ -1528,7 +1342,7 @@ export class WorkerService {
             const id = ids.length === 1 ? ids[0].slice(3) : "";
             const taskPr = Number.isSafeInteger(pr) && pr > 0 ? String(pr) : "<pr>";
             lines.push(
-              `Skipped ${label}: claude worker record ${file}: not adoptable; relaunch with \`worker start ${taskPr} --model <claude-family>\` if the task is still open (id=${JSON.stringify(id || "unavailable")})`
+              `Skipped ${label}: claude worker record ${file}: not adoptable; relaunch with \`worker start ${taskPr} --model <family>\` if the task is still open (id=${JSON.stringify(id || "unavailable")})`
             );
             continue;
           }
@@ -1594,9 +1408,6 @@ export class WorkerService {
     const model = await this.resolve(selected ?? meta.model ?? "", approved, (family) =>
       this.hooks.modelApproval(pr, meta.issue, family)
     );
-    if (model.kind === "claude") {
-      await this.hooks.workerIdentity();
-    }
     const previous = this.read(pr);
     let unknown = false;
     if (previous) {
@@ -1617,44 +1428,17 @@ export class WorkerService {
     }
     // An opening override recorded by open-task grades as this segment's reason.
     const override = !unknown && !replace ? taskModelOverride(meta.body) : undefined;
+    // The launcher installs dependencies and writes .vmethod/.env for the task.
     const directory = await this.hooks.prepare(pr);
-    const packagePath = join(directory, "package.json");
-    const selfHosting =
-      existsSync(packagePath) &&
-      object(JSON.parse(readFileSync(packagePath, "utf8"))).name === "@vworlds/vmethod";
-    const npmEnv = npmCiEnvironment(this.env);
-    if (lockfileCheckable(directory)) {
-      this.deps.report("checking task worktree lockfile sync");
-      await assertLockfileInSync(this.deps, directory, npmEnv);
-    }
-    if (selfHosting) {
-      await this.deps.exec("npm", ["ci"], { cwd: directory, env: npmEnv });
-      await this.deps.exec("npm", ["run", "build"], { cwd: directory, env: npmEnv });
-    }
-    try {
-      accessSync(
-        join(directory, selfHosting ? "dist/vmethod.mjs" : "node_modules/.bin/vmethod"),
-        selfHosting ? constants.R_OK : constants.X_OK
-      );
-    } catch {
-      throw new Error(
-        selfHosting
-          ? "Missing built dist/vmethod.mjs in task worktree"
-          : "Missing node_modules/.bin/vmethod; run npm ci in the task worktree"
-      );
-    }
-    const response =
-      model.kind === "opencode"
-        ? object(
-            object(
-              await this.client().request("POST", "/api/session", {
-                location: { directory },
-                model: this.apiModel(model),
-                title: this.sessionTitle(pr),
-              })
-            ).data
-          )
-        : { id: randomUUID() };
+    const response = object(
+      object(
+        await this.client().request("POST", "/api/session", {
+          location: { directory },
+          model: this.apiModel(model),
+          title: this.sessionTitle(pr),
+        })
+      ).data
+    );
     if (typeof response.id !== "string" || !/^[\w-]+$/.test(response.id)) {
       throw new Error("Server returned no valid session id");
     }
@@ -1690,24 +1474,11 @@ export class WorkerService {
           at: new Date(this.deps.now()).toISOString(),
           startOid: meta.headOid ?? meta.baseOid,
           ...(previous?.segments.length ? { switchReason: "orchestrator-judgement" as const } : {}),
-          ...(model.kind === "claude" && previous
-            ? {
-                baseline: claudeUsage(
-                  this.claudeLog(previous).map((line) => {
-                    try {
-                      return JSON.parse(line);
-                    } catch {
-                      return {};
-                    }
-                  })
-                ),
-              }
-            : {}),
         },
       ],
     };
     this.save(record);
-    await this.prompt(record, conflictPrompt ?? this.firstPrompt(record, meta), "steer", false);
+    await this.prompt(record, conflictPrompt ?? this.firstPrompt(record, meta), "steer");
     if (
       previous &&
       (previous.model.family !== model.family || previous.model.model !== model.model)
@@ -1717,13 +1488,9 @@ export class WorkerService {
         `[orchestrator] NOTE: model switched to ${model.family} (new worker context); reason: orchestrator-judgement`
       );
     }
-    if (model.kind === "opencode") {
-      const firstTurn = object(
-        object(await this.client().request("GET", this.idPath(record))).data
-      );
-      if (firstTurn.title !== this.sessionTitle(pr)) {
-        await this.setOpenCodeTitle(record);
-      }
+    const firstTurn = object(object(await this.client().request("GET", this.idPath(record))).data);
+    if (firstTurn.title !== this.sessionTitle(pr)) {
+      await this.setOpenCodeTitle(record);
     }
     if (!conflictPrompt) {
       await this.hooks.setModel(pr, model.family);

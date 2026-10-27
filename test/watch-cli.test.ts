@@ -143,7 +143,6 @@ test("built CLI --once exits promptly on two successive empty runs against the s
       stateName: "watch-cli",
       board: { enabled: false, owner: "example", number: 5, repos: ["example/project"] },
       vmethod: { repo: "off" },
-      credentials: { githubToken: "EXAMPLE_GITHUB_TOKEN" },
       gateway: { maxRetries: 0 },
     })
   );

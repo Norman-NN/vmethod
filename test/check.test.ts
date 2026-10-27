@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { check } from "../src/check.js";
-import { peer, validProject as unpricedProject } from "./helpers.js";
+import { fixture, peer, validProject as unpricedProject } from "./helpers.js";
 import { parse, stringify } from "yaml";
 
 function validProject() {
@@ -166,15 +166,36 @@ test("orchestrator check reports each missing git identity up front, workers do 
     expect(missing.messages.join("\n")).toContain(key);
   }
   expect(check(root, { VMETHOD_ROLE: "worker" }).code).toBe(0);
-  expect(
-    check(root, {
-      VMETHOD_ROLE: "orchestrator",
-      GIT_AUTHOR_NAME: "A",
-      GIT_AUTHOR_EMAIL: "a@b",
-      GIT_COMMITTER_NAME: "C",
-      GIT_COMMITTER_EMAIL: "c@b",
-    }).code
-  ).toBe(0);
+  const identity = {
+    VMETHOD_ROLE: "orchestrator",
+    GIT_AUTHOR_NAME: "A",
+    GIT_AUTHOR_EMAIL: "a@b",
+    GIT_COMMITTER_NAME: "C",
+    GIT_COMMITTER_EMAIL: "c@b",
+  };
+  // The orchestrator also needs the workers' own clone to launch them in.
+  const worker = fixture();
+  expect(check(root, { ...identity, VMETHOD_WORKER_CHECKOUT: worker })).toEqual({
+    code: 1,
+    messages: [
+      `workerCheckout ${worker} is not a git clone; clone the repository there for workers`,
+    ],
+  });
+  mkdirSync(join(worker, ".git"));
+  expect(check(root, { ...identity, VMETHOD_WORKER_CHECKOUT: worker }).code).toBe(0);
+});
+
+test("check requires .claude/ to be gitignored, since it holds each checkout's identity", () => {
+  const root = validProject();
+  expect(check(root).code).toBe(0);
+  writeFileSync(join(root, ".gitignore"), "node_modules/\n");
+  expect(check(root).messages).toContain(
+    "Ignore .claude/ in .gitignore: each checkout keeps its own identity in .claude/settings.local.json"
+  );
+  writeFileSync(join(root, ".gitignore"), "/.claude\n!.claude/settings.json\n");
+  expect(check(root).code).toBe(1);
+  writeFileSync(join(root, ".gitignore"), "/.claude/\n");
+  expect(check(root).code).toBe(0);
 });
 
 test("check returns 0 for a valid project, 1 for findings, 2 for a missing dependency", () => {
@@ -191,25 +212,6 @@ test("check returns 0 for a valid project, 1 for findings, 2 for a missing depen
     messages: ["Dependency missing: install mermaid@12.1.0"],
   });
 }, 15000);
-
-test("Claude families require a separately configured worker token", () => {
-  const root = validProject();
-  writeFileSync(
-    join(root, "models.yaml"),
-    "- family: sonnet\n  model: claude-test\n  kind: claude\n  gate: none\n  tier: standard\n"
-  );
-  const path = join(root, "vmethod.yaml");
-  const original = readFileSync(path, "utf8");
-  expect(original).toContain("  workerGithubToken: EXAMPLE_WORKER_GITHUB_TOKEN\n");
-  writeFileSync(path, original.replace("  workerGithubToken: EXAMPLE_WORKER_GITHUB_TOKEN\n", ""));
-  expect(check(root)).toMatchObject({ code: 1 });
-  expect(check(root).messages.join("\n")).toContain("credentials.workerGithubToken");
-  writeFileSync(path, original);
-  expect(check(root)).toEqual({
-    code: 0,
-    messages: ["WARN models.yaml: sonnet has no price; delivery usd is null"],
-  });
-});
 
 test("permissions, numeric ids, model families and secret-looking values are checked without leaking secrets", () => {
   const root = validProject();

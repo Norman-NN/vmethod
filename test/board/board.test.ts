@@ -6,7 +6,7 @@ import { readState, writeState } from "../../src/board/readme.js";
 import { loadMigrations, validateMigrations } from "../../src/board/migrations.js";
 import { createGateway } from "../../src/gateway/server.js";
 import { gatewayVerb } from "../../src/cli/gateway.js";
-import { validProject } from "../helpers.js";
+import { validProject, ghConfig } from "../helpers.js";
 import { people } from "../gateway/helpers.js";
 import type { Migration } from "../../src/board/types.js";
 import { baseline, FakeBoard } from "./fake.js";
@@ -1625,7 +1625,7 @@ test("new operations use the same orchestrator policy and board CLI transport se
   writeFileSync(join(root, "people.yaml"), stringify(people));
   const transport = createGateway(
     root,
-    { FAKE_TOKEN: "offline", XDG_STATE_HOME: join(root, "state") },
+    { GH_CONFIG_DIR: ghConfig("offline"), XDG_STATE_HOME: join(root, "state") },
     {
       ...board.deps,
       fetch: async (url, init) => {

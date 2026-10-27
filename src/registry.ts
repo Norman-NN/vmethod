@@ -29,7 +29,6 @@ export const verbs = [
   { name: "post", stub: "scripts/agent/post.sh" },
   { name: "gh-read", stub: "scripts/agent/gh-read.sh" },
   { name: "dropped", stub: "scripts/agent/dropped.sh" },
-  { name: "start-task", stub: "scripts/agent/start-task.sh" },
   { name: "read-pr", stub: "scripts/agent/read-pr.sh" },
   { name: "pr-comment", stub: "scripts/agent/pr-comment.sh" },
   { name: "push", stub: "scripts/agent/push.sh" },

@@ -14,7 +14,7 @@ import { checkLearningPr } from "../../src/gateway/learning-check.js";
 import { createGateway } from "../../src/gateway/server.js";
 import { learningsVerb } from "../../src/cli/learnings.js";
 import { WorkerService } from "../../src/gateway/workers.js";
-import { fixture, validProject } from "../helpers.js";
+import { fixture, validProject, ghConfig } from "../helpers.js";
 import recorded from "../fixtures/github/learnings-recorded.json" with { type: "json" };
 import { WatchFake } from "./watch-fake.js";
 
@@ -128,12 +128,11 @@ function setup(
   const root = fixture();
   mkdirSync(join(root, ".vmethod"));
   writeFileSync(join(root, ".vmethod/model-log.jsonl"), JSON.stringify(record()) + "\n");
-  const env = { XDG_STATE_HOME: join(root, "state"), TOKEN: "secret" };
+  const env = { XDG_STATE_HOME: join(root, "state"), GH_CONFIG_DIR: ghConfig("secret") };
   const config = {
     repo,
     stateName: "test",
     learningsPrivacy: options.privacy ?? "private",
-    credentials: { githubToken: "TOKEN" },
     gateway: { maxRetries: 0 },
   };
   let forkCreated = !options.createFork;
@@ -584,10 +583,9 @@ test("unmodified captured contents decode through show and the pre-binding regis
     repo,
     learningsPrivacy: "private",
     stateName: "capture",
-    credentials: { githubToken: "TOKEN" },
     gateway: { maxRetries: 0 },
   };
-  const env = { TOKEN: "secret", XDG_STATE_HOME: join(root, "state") };
+  const env = { GH_CONFIG_DIR: ghConfig("secret"), XDG_STATE_HOME: join(root, "state") };
   const calls: string[] = [];
   const deps: Dependencies = {
     fetch: loudFetch(async (input, init) => {
@@ -843,7 +841,7 @@ test("grades stage locally, batch into one PR, and start fresh after merge witho
     prepare: unexpected,
     setModel: unexpected,
     modelComment: unexpected,
-    workerIdentity: unexpected,
+    locate: unexpected,
     issue: unexpected,
     modelApproval: unexpected,
     setEstimate: async () => {},
@@ -1159,7 +1157,7 @@ test("report reads local JSONL or the bundled records and fails for missing scan
 test("show reads dev, fences hostile advice and falls back to the injected bundled snapshot offline", async () => {
   const calls: string[] = [];
   let offline = false;
-  const config = { credentials: { githubToken: "TOKEN" }, gateway: { maxRetries: 0 } };
+  const config = { gateway: { maxRetries: 0 } };
   const deps: Dependencies = {
     fetch: loudFetch(async (input) => {
       const url = new URL(String(input));
@@ -1196,7 +1194,7 @@ test("show reads dev, fences hostile advice and falls back to the injected bundl
     config,
     {},
     deps,
-    () => new GitHubClient(config, { TOKEN: "secret" }, deps),
+    () => new GitHubClient(config, { GH_CONFIG_DIR: ghConfig("secret") }, deps),
     {
       "learnings/models/sol.md": "Offline model advice",
       "learnings/lessons.md": "Offline lessons",
@@ -1240,7 +1238,7 @@ test("show reads legacy seeds and new records/notes without treating their conte
 }, 15000);
 
 test("a successful show read with no page reports central absence, not bundled fallback", async () => {
-  const config = { credentials: { githubToken: "TOKEN" }, gateway: { maxRetries: 0 } };
+  const config = { gateway: { maxRetries: 0 } };
   const deps: Dependencies = {
     fetch: loudFetch(async (input) => {
       const url = new URL(String(input));
@@ -1272,7 +1270,7 @@ test("a successful show read with no page reports central absence, not bundled f
     config,
     {},
     deps,
-    () => new GitHubClient(config, { TOKEN: "secret" }, deps),
+    () => new GitHubClient(config, { GH_CONFIG_DIR: ghConfig("secret") }, deps),
     { "learnings/models/sol.md": "Stale bundled advice" }
   );
   const result = await service.command({ action: "show", family: "sol" });
@@ -1439,8 +1437,8 @@ test.each([
       report: () => {},
     };
     const github = new GitHubClient(
-      { credentials: { githubToken: "TOKEN" }, gateway: { maxRetries: 0 } },
-      { TOKEN: "secret" },
+      { gateway: { maxRetries: 0 } },
+      { GH_CONFIG_DIR: ghConfig("secret") },
       deps
     );
     if (scenario === "empty") {

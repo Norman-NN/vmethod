@@ -411,7 +411,7 @@ test("dropped requires a credential and persisted digest contains no hostile con
     gatewayVerb(transport, "dropped", [], {
       VMETHOD_ROLE: "orchestrator",
     })
-  ).rejects.toThrow("Missing configured GitHub token");
+  ).rejects.toThrow("Missing GH_CONFIG_DIR");
   expect(await fixture.transport.call("dropped", {})).toContain("Dropped: 1");
   const text = readFileSync(
     join(fixture.env.XDG_STATE_HOME, "vmethod/example-state/dropped.jsonl"),

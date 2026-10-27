@@ -11,6 +11,7 @@ export function init(root: string, templateRoot: string, dryRun = false): string
     "vmethod.yaml",
     "people.yaml",
     "models.yaml",
+    ".gitignore",
     ...verbs.map((verb) => verb.stub),
   ]) {
     const parts = path.split("/");
@@ -76,11 +77,26 @@ export function init(root: string, templateRoot: string, dryRun = false): string
             ])
           );
           row.tier ??= row.gate === "owner" ? "expensive" : "standard";
+          // Legacy headless-claude rows now run through OpenCode's claude-code provider.
+          if (row.kind === "claude") {
+            row.kind = "opencode";
+            row.model = `claude-code/${row.model}`;
+          }
           return [row];
         })
       );
     }
     plans.push({ path, text });
+  }
+  // Each checkout keeps its own identity in .claude/settings.local.json; never commit it.
+  const gitignore = existsSync(join(root, ".gitignore"))
+    ? readFileSync(join(root, ".gitignore"), "utf8")
+    : "";
+  if (!gitignore.split(/\r?\n/).some((line) => /^\/?\.claude\/?$/.test(line.trim()))) {
+    plans.push({
+      path: ".gitignore",
+      text: `${gitignore}${gitignore && !gitignore.endsWith("\n") ? "\n" : ""}.claude/\n`,
+    });
   }
   for (const verb of verbs) {
     const path = join(root, verb.stub);

@@ -16,7 +16,7 @@ import { MarkdownDependencyError } from "../gateway/markdown.js";
 import { execFile, execFileSync } from "node:child_process";
 import { watchClient } from "./watch.js";
 import { promisify } from "node:util";
-import { inferWorkerEnvironment } from "../gateway/worker-context.js";
+import { taskEnvironment } from "../gateway/worker-context.js";
 import type { Dependencies } from "../gateway/client.js";
 
 declare const __VERSION__: string;
@@ -62,7 +62,6 @@ try {
     case "scope-review":
     case "autopilot":
     case "dropped":
-    case "start-task":
     case "read-pr":
     case "pr-comment":
     case "push":
@@ -93,7 +92,7 @@ try {
         report: (message) => console.error(message),
       } satisfies Dependencies;
       const transport = createGateway(root(), process.env, dependencies);
-      const env = await inferWorkerEnvironment(root(), process.env, transport, dependencies);
+      const env = taskEnvironment(root(), process.env);
       if (verb === "learnings") {
         console.log(await learningsVerb(transport, args, env));
         break;
@@ -108,7 +107,7 @@ try {
         process.exitCode = result.code;
         break;
       }
-      const output = ["start-task", "read-pr", "pr-comment", "push"].includes(verb)
+      const output = ["read-pr", "pr-comment", "push"].includes(verb)
         ? await workerVerb(transport, root(), verb, args, env, {
             exec: async (file, args, options) =>
               (

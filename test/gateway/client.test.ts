@@ -186,7 +186,7 @@ test("recorded opencode validation errors name method/path and flatten the JSON 
   );
 });
 
-test("REST/GraphQL use only the configured token name, no exec, and reject cross-origin requests", async () => {
+test("REST/GraphQL use only the GH_CONFIG_DIR login, never GH_TOKEN, no exec, and reject cross-origin requests", async () => {
   const fixture = fixtureServer([
     { path: "/repos/example/project", method: "GET", json: { id: 3 } },
   ]);
@@ -205,7 +205,7 @@ test("REST/GraphQL use only the configured token name, no exec, and reject cross
   await expect(client.rest("//evil.invalid")).rejects.toThrow("endpoint");
   expect(
     () => new GitHubClient(getConfig(fixture.root, {}), { GH_TOKEN: "wrong" }, fixture.deps)
-  ).toThrow("Missing configured");
+  ).toThrow("Missing GH_CONFIG_DIR");
   fixture.done();
 }, 15000);
 

@@ -1196,7 +1196,7 @@ test("an own-account not-planned close still notifies a verified peer requester"
 });
 
 test.each(["auto-", "", "legacy"])(
-  "worker stops use the configured path (%s), deduplicate failures and allow recovery STALE",
+  "worker stops use the worker checkout's task worktree (%s), deduplicate failures and allow recovery STALE",
   async (prefix) => {
     const f = setup();
     f.config.branches = { worktreePrefix: prefix === "legacy" ? "auto-" : prefix };
